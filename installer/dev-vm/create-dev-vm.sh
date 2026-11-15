@@ -46,6 +46,15 @@ echo
 echo "Collez la clé SSH publique qui aura accès à la VM (une ligne, commence par ssh-ed25519 ou ssh-rsa) :"
 read -r PUBKEY < /dev/tty
 case "$PUBKEY" in ssh-ed25519\ *|ssh-rsa\ *|ecdsa-sha2-*) ;; *) err "Ce n'est pas une clé SSH publique." ;; esac
+KEYFILE=$(mktemp); echo "$PUBKEY" > "$KEYFILE"
+FP=$(ssh-keygen -lf "$KEYFILE" 2>/dev/null | awk '{print $2}') || true
+[ -n "$FP" ] || { rm -f "$KEYFILE"; err "Clé illisible : recopiez la ligne entière (ssh-ed25519 AAAA… commentaire)."; }
+ok "Empreinte de la clé : $FP"
+echo "   Vérifiez qu'elle est identique à celle affichée sur votre PC (ssh-keygen -lf <fichier .pub>)."
+echo
+echo "Mot de passe de secours pour la console Proxmox de la VM (utilisateur lapinou) :"
+read -r -s -p "Mot de passe : " CIPASS < /dev/tty; echo
+[ ${#CIPASS} -ge 8 ] || { rm -f "$KEYFILE"; err "8 caractères minimum."; }
 
 echo
 msg "Récapitulatif : VM $VMID « lapinou-dev », $CORES cœurs, $RAM Mo, $DISK Go sur $STORAGE, réseau $BRIDGE (DHCP)"
@@ -66,7 +75,6 @@ if [ "$EXPECTED" != "$ACTUAL" ]; then
 fi
 ok "Image vérifiée"
 
-KEYFILE=$(mktemp); echo "$PUBKEY" > "$KEYFILE"
 msg "Création de la VM…"
 qm create "$VMID" --name lapinou-dev --cores "$CORES" --memory "$RAM" --cpu host \
   --net0 "virtio,bridge=$BRIDGE" --scsihw virtio-scsi-single --agent enabled=1 \
@@ -74,7 +82,8 @@ qm create "$VMID" --name lapinou-dev --cores "$CORES" --memory "$RAM" --cpu host
 qm set "$VMID" --scsi0 "$STORAGE:0,import-from=$IMG,discard=on,ssd=1" >/dev/null
 qm resize "$VMID" scsi0 "${DISK}G" >/dev/null
 qm set "$VMID" --ide2 "$STORAGE:cloudinit" --boot order=scsi0 \
-  --ciuser lapinou --sshkeys "$KEYFILE" --ipconfig0 ip=dhcp --ciupgrade 1 >/dev/null
+  --ciuser lapinou --cipassword "$CIPASS" --sshkeys "$KEYFILE" --ipconfig0 ip=dhcp --ciupgrade 1 >/dev/null
+unset CIPASS
 rm -f "$KEYFILE"
 ok "VM $VMID créée"
 
@@ -93,6 +102,7 @@ echo
 if [ -n "$IP" ]; then
   ok "VM prête : ssh lapinou@$IP"
 else
-  warn "L'agent invité n'a pas encore répondu (il s'installe au premier démarrage)."
-  warn "L'adresse IP sera visible dans Proxmox (VM $VMID > Résumé) ou dans votre box."
+  warn "L'image Ubuntu n'a pas d'agent invité : l'adresse IP n'est pas visible ici."
+  warn "Cherchez « lapinou-dev » dans votre box, ou connectez-vous à la console (qm terminal $VMID,"
+  warn "utilisateur lapinou + mot de passe de secours) et tapez : ip -4 addr show"
 fi
