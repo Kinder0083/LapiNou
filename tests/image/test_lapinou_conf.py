@@ -244,10 +244,7 @@ class ApplySettingsTest(unittest.TestCase):
         for args in (("--check",), ()):
             with self.subTest(args=args):
                 self.setUp()
-                sb = self.sandbox("WIFI_SSID=testssid
-WIFI_PASSWORD=testpassword
-MQTT_HOST=192.168.1.50
-")
+                sb = self.sandbox("WIFI_SSID=testssid\nWIFI_PASSWORD=testpassword\nMQTT_HOST=192.168.1.50\n")
                 (sb / "mnt/usbkey/lapinou-conf.sh").unlink()
                 r = self.run_script(sb, *args)
                 self.assertNotEqual(r.returncode, 0)
