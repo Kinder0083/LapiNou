@@ -3,7 +3,7 @@
 (transcripteur et segmenteur factices) puis les vrais modèles (Parakeet + Silero).
 
 Les tests avec les vrais modèles sont ignorés (skip) tant que ceux-ci ne sont pas là :
-`python tools/app-server/asr_server.py --fetch` (~640 Mo, SHA-256 vérifié) et sherpa-onnx
+`python -m lapinou.voice.models fetch` (~640 Mo, SHA-256 vérifié) et sherpa-onnx
 (uv sync). Fichiers : les enregistrements français de LapinLibre (test_wavs du modèle),
 les synthèses de la tâche 16 (lapinou_*.wav, not_lapinou_*.wav) et les phrases complètes
 asr_*.wav (train.py export-asr-tests).
@@ -76,6 +76,10 @@ def test_matches_the_name_at_the_start(text, command):
         "Dis",  # un mot d'introduction seul
         "Dis bonjour",
         "Allume le salon",
+        "Lapin, où es-tu ?",  # la ponctuation sépare les mots
+        "Lapin ou lièvre ?",
+        "Lapin où",
+        "Lapi. Nou",
     ],
 )
 def test_ignores_everything_else(text):
@@ -162,14 +166,66 @@ def test_each_segment_is_transcribed_once_whatever_the_block_size():
     assert counts == [(2, [(40, ""), (490, "éteins")])] * 4
 
 
-def test_long_segments_are_cut_to_max_segment_s():
+def test_long_sentence_is_cut_but_its_chunks_complete_the_command():
     n = int(2.5 * SR)
-    asr = ScriptedTranscriber("Lapinou, allume", "on parle encore", "Lapinou")
+    asr = ScriptedTranscriber("Lapinou, ajoute du lait", "et des oeufs.", "Lapinou pour demain")
     detector = AsrWakeDetector(asr, max_segment_s=1.0, segmenter=RunSegmenter())
     hits = detector.feed(np.concatenate([speech(n), silence(5)]))
     assert asr.lengths == [SR, SR, n - 2 * SR]
-    assert [(h.at_sample, h.command) for h in hits] == [(0, "allume"), (2 * SR, "")]
+    assert len(hits) == 1  # « Lapinou » en début de 3e morceau : au milieu de la phrase, ignoré
+    assert (hits[0].at_sample, hits[0].more) == (0, False)
+    assert hits[0].command == "ajoute du lait et des oeufs Lapinou pour demain"
     assert detector.transcribed_s == pytest.approx(2.5)
+
+
+def test_name_inside_a_long_sentence_is_not_a_wake_word():
+    asr = ScriptedTranscriber("Il fait très beau aujourd'hui", "Lapinou, allume le salon")
+    detector = AsrWakeDetector(asr, max_segment_s=1.0, segmenter=RunSegmenter())
+    assert detector.feed(np.concatenate([speech(int(2.5 * SR)), silence(5)])) == []
+    assert asr.lengths == [SR]  # les morceaux suivants ne sont même pas transcrits
+
+
+class ScriptSegmenter:
+    """Rend à chaque feed() les segments (début, durée en s) préparés, comme le VAD."""
+
+    def __init__(self, *rounds):
+        self.rounds = list(rounds)
+
+    def feed(self, pcm):
+        return [(a, np.full(int(d * SR), 0.1, np.float32)) for a, d in (self.rounds.pop(0) if self.rounds else [])]
+
+    def reset(self):
+        pass
+
+
+def test_vad_cut_segments_continue_the_open_hit():
+    asr = ScriptedTranscriber("Lapinou, ajoute du lait", "et des oeufs", "pour demain")
+    segmenter = ScriptSegmenter([(0, 1.0)], [(SR, 1.0)], [(2 * SR, 0.4)])
+    detector = AsrWakeDetector(asr, max_segment_s=1.0, segmenter=segmenter)
+    (hit,) = detector.feed(silence(10))
+    assert (hit.command, hit.more) == ("ajoute du lait", True)
+    assert detector.feed(silence(10)) == []  # pas une nouvelle détection : le même objet grandit
+    assert (hit.command, hit.more) == ("ajoute du lait et des oeufs", True)
+    detector.feed(silence(10))
+    assert (hit.command, hit.more) == ("ajoute du lait et des oeufs pour demain", False)
+    assert hit.text == "Lapinou, ajoute du lait et des oeufs pour demain"
+
+
+def test_vad_cut_segment_followed_by_the_name_is_not_a_wake_word():
+    asr = ScriptedTranscriber("Il parle depuis un moment", "Lapinou, allume")
+    segmenter = ScriptSegmenter([(0, 1.0)], [(SR, 0.5)])
+    detector = AsrWakeDetector(asr, max_segment_s=1.0, segmenter=segmenter)
+    assert detector.feed(silence(10)) == [] and detector.feed(silence(10)) == []
+    assert asr.lengths == [SR]
+
+
+def test_after_a_pause_the_name_is_a_new_utterance():
+    asr = ScriptedTranscriber("Il parle depuis un moment", "Lapinou, allume")
+    segmenter = ScriptSegmenter([(0, 1.0)], [(2 * SR, 0.5)])  # 1 s de silence entre les deux
+    detector = AsrWakeDetector(asr, max_segment_s=1.0, segmenter=segmenter)
+    detector.feed(silence(10))
+    hits = detector.feed(silence(10))
+    assert [(h.at_sample, h.command, h.more) for h in hits] == [(2 * SR, "allume", False)]
 
 
 def test_reset_drops_the_speech_in_progress_and_keeps_numbering():
@@ -253,7 +309,7 @@ def test_build_detector_both_loads_the_prefilter(monkeypatch):
 
 needs_models = pytest.mark.skipif(
     not wake_asr.models_present(),
-    reason="modèles Parakeet/Silero ou sherpa-onnx absents (tools/app-server/asr_server.py --fetch)",
+    reason="modèles Parakeet/Silero ou sherpa-onnx absents (python -m lapinou.voice.models fetch)",
 )
 
 TAIL = np.zeros(SR * 2, np.int16)  # le VAD termine un segment après 0,7 s de silence
@@ -283,6 +339,8 @@ def read_pcm16(path) -> np.ndarray:
 @needs_models
 def test_lapinlibre_french_recording_has_no_detection(recogniser):
     path = wake_asr.asr_server.MODELS / wake_asr.asr_server.PARAKEET / "test_wavs" / "fr.wav"
+    if not path.is_file():
+        pytest.skip("test_wavs/fr.wav absent (il vient de l'archive du modèle, pas du téléchargeur)")
     assert listen(recogniser, read_pcm16(path)) == []
 
 

@@ -14,12 +14,15 @@ le classifieur acoustique openWakeWord reste possible en option.
 ## Mise en place de la méthode `asr`
 
 ```
-python3 tools/app-server/asr_server.py --fetch      # Parakeet + Silero, ~640 Mo, SHA-256 vérifié
 cd server && uv sync                                # installe sherpa-onnx 2.0.1
+uv run python -m lapinou.voice.models fetch [--dir D]   # Parakeet + Silero, ~640 Mo, SHA-256 vérifié
 ```
 
-Les modèles vont dans `~/.cache/lapinlibre/asr`. Sans eux, les tests de détection réels sont
-ignorés (`skip`) et `wake_asr.models_present()` rend `False`.
+`lapinou.voice.models` est LE moyen de les installer : il vérifie les SHA-256 que le `check_models()`
+de LapinLibre attend. Ils vont dans `~/.cache/lapinlibre/asr`. Sans eux, les tests de détection
+réels sont ignorés (`skip`) et `wake_asr.models_present()` rend `False` (simple présence des
+fichiers ; les SHA-256 sont vérifiés au chargement par `load_recogniser()`).
+`asr_server.py --fetch` de LapinLibre n'est pas modifié mais ne fonctionne plus (voir en bas).
 
 Le code est `server/lapinou/voice/wake_asr.py` : `AsrWakeDetector(transcriber, names=["lapinou"],
 max_segment_s=6.0)`, un par lapin, partageant un seul `Recogniser` (`load_recogniser()`, ~0,9 Go de
@@ -29,6 +32,12 @@ mémoire). `feed(pcm_int16)` rend une liste de `WakeHit(at_sample, text, command
   (`reset()` ne remet pas le compteur à zéro) ;
 - `text` : la transcription complète ; `command` : ce qui suit le nom dans le même segment, vide
   si l'utilisateur s'est tu après « Lapinou » (le serveur écoute alors la suite).
+
+Une parole de plus de `max_segment_s` (6 s) est transcrite par morceaux : seul le premier est
+comparé au nom (un « lapinou » au milieu d'une longue phrase ne déclenche rien) et les
+morceaux suivants, contigus, complètent `command` et `text` du **même** objet `WakeHit`, dont
+`more` reste vrai tant qu'un morceau peut encore suivre. Les morceaux d'une parole sans nom
+ne sont pas transcrits.
 
 `feed()` transcrit dans l'appel : on le lance dans un fil (`asyncio.to_thread`), un détecteur
 n'est pas partagé entre fils. Un segment n'est rendu qu'après `voice.vad_silence_ms` (700 ms) de
@@ -44,12 +53,19 @@ Le texte est mis en minuscules, sans accents ni ponctuation. Le nom doit être a
   `lapinau` ;
 - en un à trois mots collés : `la pinou`, `lapi nou`, `l'apinou`, `la pi nou`.
 
-Jamais au milieu d'une phrase : « mon lapinou est mignon », « le lapin mange… », « la pinède » ne
+Un nom en plusieurs mots n'est accepté que sans ponctuation entre eux (« Lapin, où es-tu ? » ne
+déclenche rien), et « lapin ou/où » est refusé (« Lapin ou lièvre ? »). Jamais au milieu d'une phrase : « mon lapinou est mignon », « le lapin mange… », « la pinède » ne
 déclenchent rien. Deux fautes ne passent pas (`lapin`, `lapins`).
 
 Parakeet n'a pas « Lapinou » dans son vocabulaire : il l'écrit `Lapinou`, `Lapinot`, `La Pinou`,
 `L'apinou`, `D'apinou`… (tous reconnus), parfois autre chose (`Dila Pinou`, `Pinot` tout seul)
 ou rien (non reconnus : le rappel n'est pas de 100 %).
+
+## Confidentialité
+
+L'audio et les transcriptions des segments sans mot d'activation ne sont jamais journalisés
+ni stockés (ils ne quittent pas la mémoire du détecteur). L'orchestrateur ne doit pas
+journaliser `WakeHit.text` ni `WakeHit.command` : ils contiennent ce que dit l'utilisateur.
 
 ## Mesures
 
@@ -111,5 +127,5 @@ Le 2026-11-16, `asr_server.py --fetch` échoue : l'archive Parakeet de la releas
 republiée (SHA-256 `1495e91b…` au lieu de `5793d0fd…`), avec d'autres encodeur, décodeur et
 joiner (modèle réexporté en novembre 2026 ; `tokens.txt` est identique). Les SHA-256 d'origine
 des trois fichiers sont ceux de la révision `2bda32ec70b097a55adaa07d9a7173915b43cc78` du dépôt
-Hugging Face `csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` : c'est de là que les modèles
-ont été récupérés pour les tests (vérifiés par `asr_server.check_models`).
+Hugging Face `csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` : `lapinou.voice.models`
+télécharge de cette révision, avec les pins de LapinLibre importés (R25).
