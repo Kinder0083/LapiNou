@@ -157,6 +157,28 @@ def test_climate_range():
     )
 
 
+@pytest.mark.parametrize("data", [
+    {"temperature": "35"}, {"temperature": "20"}, {"temperature": True},
+    {"temperature": [35]}, {"temperature": float("nan")}, {"target_temp_high": "30"},
+    {"temperature": 20, "target_temp_low": "5"},
+])
+def test_climate_value_that_is_not_a_number_is_sensitive(data):
+    assert isinstance(policy().check("climate", "set_temperature", "climate.salon", data=data),
+                      Deny)
+    enabled = policy(allowed_entities=["climate.salon"])
+    assert isinstance(enabled.check("climate", "set_temperature", "climate.salon", data=data),
+                      NeedsConfirmation)
+
+
+@pytest.mark.parametrize("data", [
+    {"temperature": 20}, {"temperature": 20.5}, {"temperature": 20, "target_temp_low": None},
+    {"target_temp_low": 16, "target_temp_high": 24},
+])
+def test_climate_numbers_in_range_allowed(data):
+    assert isinstance(policy().check("climate", "set_temperature", "climate.salon", data=data),
+                      Allow)
+
+
 def test_confirms_yes_and_pin():
     assert policy().confirms("oui, vas-y")
     assert not policy().confirms("non merci")

@@ -419,3 +419,46 @@ async def test_reference_cycles_stop_at_depth_limit(ha, entity):
     assert result.is_error and result.content.startswith("REFUSÉ"), result.content
     assert service_calls(log) == []
     assert len(calls(log)) <= 12  # nombre d'appels à ha-mcp borné
+
+
+# --- Correction 4 : température en texte, clés non textuelles, données par domaine ------
+
+
+@pytest.mark.parametrize("entity,reason", [
+    ("script.bain_texte", "chauffage"),            # temperature: "35" (HA le lirait 35 °C)
+    ("scene.bain_texte", "chauffage"),             # état de scène avec température en texte
+    ("script.cles_data", "non textuelle"),         # YAML : data {1: x, foo: y}
+    ("script.cles_racine", "non textuelle"),       # YAML : clés {1, zz} au premier niveau
+    ("script.prise_luminosite", "'brightness'"),   # switch : aucune donnée permise
+    ("script.lumiere_temperature", "'temperature'"),  # light : pas de clé de chauffage
+    ("script.volet_volume", "'volume_level'"),     # cover : pas de clé de media_player
+])
+async def test_string_temperature_odd_keys_and_foreign_data_are_refused(ha, entity, reason):
+    tools, log, _ = ha
+    result = await call(tools, entity.split(".")[0], "turn_on", entity)
+    assert result.is_error and result.content.startswith("REFUSÉ"), result.content
+    assert reason in result.content
+    assert service_calls(log) == []
+
+
+@pytest.mark.parametrize("entity", [
+    "script.bain_tiede", "scene.bain_tiede", "script.lumiere_couleur", "script.volet_moitie",
+])
+async def test_numeric_temperature_and_domain_data_still_allowed(ha, entity):
+    tools, log, _ = ha
+    result = await call(tools, entity.split(".")[0], "turn_on", entity)
+    assert not result.is_error, result.content
+    assert [c["entity_id"] for c in service_calls(log)] == [entity]
+
+
+async def test_direct_call_with_string_temperature_is_refused(ha):
+    tools, log, _ = ha
+    result = await call(tools, "climate", "set_temperature", "climate.salon", temperature="35")
+    assert result.is_error and "temperature" in result.content  # refusé par le schéma
+    # Même si le schéma était contourné, la politique refuse.
+    decision = await tools.decide("climate", "set_temperature", "climate.salon",
+                                  {"temperature": "35"})
+    assert type(decision).__name__ == "Deny"
+    assert service_calls(log) == []
+    assert not (await call(tools, "climate", "set_temperature", "climate.salon",
+                           temperature=20)).is_error

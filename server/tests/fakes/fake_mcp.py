@@ -106,6 +106,46 @@ SCRIPTS: dict[str, dict[str, Any]] = {
                    "    target:\n      entity_id: light.salon\n"),
     "enorme": {"alias": "x" * 300_000, "sequence": [
         {"action": "light.turn_on", "target": {"entity_id": "light.salon"}}]},
+    # Correction 4 : température en texte, clés non textuelles, données par domaine.
+    "bain_texte": {"sequence": [{"action": "climate.set_temperature",
+                                 "target": {"entity_id": "climate.salon"},
+                                 "data": {"temperature": "35"}}]},
+    "bain_tiede": {"sequence": [{"action": "climate.set_temperature",
+                                 "target": {"entity_id": "climate.salon"},
+                                 "data": {"temperature": 20, "hvac_mode": "heat"}}]},
+    "cles_data": ("sequence:
+  - action: light.turn_on
+    target:
+"
+                  "      entity_id: light.salon
+    data:
+      1: x
+      foo: y
+"),
+    "cles_racine": ("1: a
+zz: b
+sequence:
+  - action: light.turn_on
+"
+                    "    target:
+      entity_id: light.salon
+"),
+    "prise_luminosite": {"sequence": [{"action": "switch.turn_on",
+                                       "target": {"entity_id": "switch.prise_salon"},
+                                       "data": {"brightness": 100}}]},
+    "lumiere_temperature": {"sequence": [{"action": "light.turn_on",
+                                          "target": {"entity_id": "light.salon"},
+                                          "data": {"temperature": 20}}]},
+    "volet_volume": {"sequence": [{"action": "cover.set_cover_position",
+                                   "target": {"entity_id": "cover.volet_chambre"},
+                                   "data": {"position": 50, "volume_level": 1}}]},
+    "lumiere_couleur": {"sequence": [{"action": "light.turn_on",
+                                      "target": {"entity_id": "light.salon"},
+                                      "data": {"color_temp_kelvin": 2700, "brightness_pct": 40,
+                                               "transition": 1}}]},
+    "volet_moitie": {"sequence": [{"action": "cover.set_cover_position",
+                                   "target": {"entity_id": "cover.volet_chambre"},
+                                   "data": {"position": 50}}]},
     # Formats de réponse : YAML brut, ou configuration en chaîne JSON échappée.
     "yaml_zone": "sequence:\n  - action: cover.open_cover\n    target:\n      area_id: garage\n",
     "yaml_sur": "sequence:\n  - action: light.turn_on\n    target:\n      entity_id: light.salon\n",
@@ -119,6 +159,9 @@ SCENES: dict[str, dict[str, Any]] = {
     "depart": {"entities": {"light.salon": {"state": "off"},
                             "lock.porte_entree": {"state": "locked"}}},
     "chaud": {"entities": {"climate.salon": {"state": "heat", "temperature": 28}}},
+    "bain_texte": {"entities": {"climate.salon": {"state": "heat", "temperature": "35"}}},
+    "bain_tiede": {"entities": {"climate.salon": {"state": "heat", "temperature": 20,
+                                                  "target_temp_low": None}}},
     "boucle": {"entities": {"scene.boucle": {"state": "on"}}},
     "ping": {"entities": {"script.pong": {"state": "on"}}},
 }
