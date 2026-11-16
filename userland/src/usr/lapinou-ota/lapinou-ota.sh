@@ -51,6 +51,7 @@ export PATH
 OTA_DIR=/usr/ota
 NEW=/usr/ota/new
 MARK=/usr/ota/resume.conf
+FAILED=/usr/ota/resume.failed
 RESUME=/karotz/scripts/ota-resume.sh
 CONF=/usr/etc/conf
 PUBKEY=/usr/share/lapinou/ota-pubkey.pub
@@ -117,17 +118,7 @@ mtd_field() { # mtdN column
 mtd_size() { mtd_field "$1" 2; }
 mtd_erase() { mtd_field "$1" 3; }
 
-# A release's version, vX.Y.Z (R44), each number at most 9 digits.
-release_ok() {
-    local v=${1#v} x y z
-    [ "${1}" != "${v}" ] || return 1
-    case "${v}" in *.*.*.*) return 1 ;; *.*.*) ;; *) return 1 ;; esac
-    x=${v%%.*}; v=${v#*.}; y=${v%%.*}; z=${v#*.}
-    for n in "${x}" "${y}" "${z}"; do
-        case "${n}" in ''|*[!0-9]*) return 1 ;; esac
-        [ ${#n} -le 9 ] || return 1
-    done
-}
+# A release's version, vX.Y.Z: install-lib.sh's release_ok.
 # "X Y Z" of a version: a release's numbers; 0 0 0 for a dev build (0.0.0-<commit>) or anything else.
 version_numbers() {
     local v=${1#v}
@@ -390,7 +381,11 @@ start() {
     mkdir -p "${OTA_DIR}" || die "can't make ${OTA_DIR}"
     exec 9> "${LOCK}"
     flock -n 9 || { LOG "ERROR: another lapinou-ota is running"; exit 1; }
-    # An install interrupted during /usr is linuxrc's to finish (at the next boot), with what it kept.
+    # An install interrupted during /usr is linuxrc's to finish (at the next boot), with what it kept;
+    # if that failed already (ota-resume.sh said why in resume.failed), only the USB key repairs it.
+    if [ -f "${FAILED}" ] && [ -f "${MARK}" ]; then
+        die "an interrupted install's /usr couldn't be finished at boot ($(head -n 1 "${FAILED}")): install with the USB key"
+    fi
     [ ! -f "${MARK}" ] ||
         die "an interrupted install's /usr is to be finished at the next boot (${MARK}): reboot the rabbit"
     # Whatever an interrupted download left.
@@ -421,6 +416,33 @@ download() { # name
     [ "$(sha256sum "${NEW}/${f}" | cut -d ' ' -f 1)" = "$(sha_of "${f}")" ] || die "${f}'s SHA-256 isn't the manifest's"
 }
 
+# LEN bytes of a partition into FILE: the read-back's one nanddump command, which the check before
+# the writing runs too.
+nand_read() { # mtdN len file
+    /sbin/nanddump -q --bb=skipbad -l "$2" -f "$3" "/dev/$1" > /dev/null 2>&1
+}
+
+# Before anything is erased: the tools the writing needs are there, and nanddump reads one erase
+# block of mtd1 with the read-back's own options (an older nanddump without --bb would only fail
+# once mtd1 is erased).
+check_flash_tools() {
+    local t erase
+    [ -x /sbin/flash_erase ] || [ -x /sbin/flash_eraseall ] ||
+        die "no /sbin/flash_erase (nor flash_eraseall) to erase the flash: nothing written"
+    for t in /sbin/nandwrite /sbin/nanddump; do
+        [ -x "${t}" ] || die "no ${t}: nothing written"
+    done
+    erase=$(mtd_erase mtd1)
+    num_ok "${erase}" && [ "${erase}" -gt 0 ] || die "can't read mtd1's erase block in /proc/mtd: nothing written"
+    rm -f "${NEW}/probe"
+    if ! nand_read mtd1 "${erase}" "${NEW}/probe" || [ "$(size_of "${NEW}/probe")" != "${erase}" ]; then
+        rm -f "${NEW}/probe"
+        die "nanddump can't read mtd1 as the read-back does (-q --bb=skipbad -l ${erase}): nothing written"
+    fi
+    rm -f "${NEW}/probe"
+    LOG "Flash tools: erasing, nandwrite and nanddump's read-back of mtd1 work"
+}
+
 # Does the partition hold the image? Read back by nanddump (no OOB, bad blocks skipped as nandwrite
 # -m skips them), whole erase blocks, and its first <image size> bytes' SHA-256 compared with the
 # checked one.
@@ -431,8 +453,7 @@ readback_ok() { # mtdN image sha256
     num_ok "${erase}" && [ "${erase}" -gt 0 ] || erase=131072
     len=$(( (size + erase - 1) / erase * erase ))
     rm -f "${NEW}/readback"
-    /sbin/nanddump -q --bb=skipbad -l "${len}" -f "${NEW}/readback" "/dev/$1" > /dev/null 2>&1 ||
-        { rm -f "${NEW}/readback"; return 1; }
+    nand_read "$1" "${len}" "${NEW}/readback" || { rm -f "${NEW}/readback"; return 1; }
     got=$(head -c "${size}" "${NEW}/readback" | sha256sum | cut -d ' ' -f 1)
     rm -f "${NEW}/readback"
     [ "${got}" = "$3" ]
@@ -503,6 +524,7 @@ install() {
             die "the root filesystem is ${raw} bytes uncompressed; the RAM disk holds $((sectors * 512))"
     fi
     [ -f "${RESUME}" ] || die "no ${RESUME} in this root filesystem: install with the USB key"
+    check_flash_tools
     LOG "Checks passed: installing ${VERSION} (build ${id})"
 
     # From here on the rabbit is being changed, and the checked files are kept whatever happens.
@@ -520,7 +542,8 @@ install() {
             cp -p "${CONF}/${f}" "${NEW}/kept-${f}" || die "can't keep the rabbit's ${f}"
         fi
     done
-    printf 'VERSION=%s\nBUILD_ID=%s\nUSR_SHA=%s\n' "${VERSION}" "${id}" "$(sha_of usr.tar.gz)" > "${MARK}.new" &&
+    rm -f "${FAILED}"
+    printf 'FORMAT=1\nVERSION=%s\nBUILD_ID=%s\nUSR_SHA=%s\n' "${VERSION}" "${id}" "$(sha_of usr.tar.gz)" > "${MARK}.new" &&
         sync && mv -f "${MARK}.new" "${MARK}" && sync || die "can't write ${MARK}"
     /bin/sh "${RESUME}" || die "replacing /usr failed (the next boot tries again from ${NEW})"
     LOG "Installed ${VERSION}: rebooting"

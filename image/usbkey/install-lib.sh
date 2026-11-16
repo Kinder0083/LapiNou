@@ -1,8 +1,9 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
-# The key's install helpers, sourced by autorun and applysettings.sh (and, from
-# /usr/share/lapinou/install-lib.sh, by lapinou-ota): the log, errors, the nose,
-# the install sounds, erasing a flash partition and emptying /usr for a new install.
+# The key's install helpers, sourced by autorun and applysettings.sh, and, as
+# /karotz/scripts/install-lib.sh in the root filesystem, by lapinou-ota and ota-resume.sh (the
+# image build copies this file there): the log, errors, the nose, the install sounds, erasing a
+# flash partition, emptying /usr for a new install and checking a release's version.
 #
 # Sourcing defines functions only. Runs on whichever system the rabbit has when the key's install
 # starts (LapinLibre, Free Rabbits OS or the factory's), so bash 3 and the common tools only.
@@ -153,4 +154,16 @@ clean_usr() { # [names kept in /usr]
     [ -d /usr/etc ] && remove_all_but /usr/etc conf
     [ -d /usr/karotz ] && remove_all_but /usr/karotz apps messages uuid.conf
     return 0
+}
+
+# A release's version, vX.Y.Z (R44), each number at most 9 digits.
+release_ok() {
+    local v=${1#v} x y z n
+    [ "${1}" != "${v}" ] || return 1
+    case "${v}" in *.*.*.*) return 1 ;; *.*.*) ;; *) return 1 ;; esac
+    x=${v%%.*}; v=${v#*.}; y=${v%%.*}; z=${v#*.}
+    for n in "${x}" "${y}" "${z}"; do
+        case "${n}" in ''|*[!0-9]*) return 1 ;; esac
+        [ ${#n} -le 9 ] || return 1
+    done
 }

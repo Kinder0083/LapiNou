@@ -652,7 +652,7 @@ class OtaTest(unittest.TestCase):
                 change(r.sb)
                 p = r.run("install")
                 self.assertNotEqual(p.returncode, 0)
-                self.assertIn(why, p.stderr)
+                self.assertIn(why, p.stderr.replace(str(r.sb), ""))
                 self.assertIn("nothing written", p.stderr)
                 self.assert_nothing_written(r)
         # The probe, when it can run: one erase block of mtd1, options as the read-back's.

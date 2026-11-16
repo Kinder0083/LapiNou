@@ -9,7 +9,8 @@ Signing writes DIR/manifest.json, {"version": TAG, "files": {NAME: {"sha256": HE
 and DIR/manifest.json.sig, the raw 64-byte Ed25519 signature of manifest.json's exact bytes. The
 files are those named by --file, else zImage, rootfs.img.gz, usr.tar.gz and the USB key's archive
 (LapinLibre-*.zip or lapinou-key-*.zip) found in DIR. --version is required: the release's tag,
-vX.Y.Z, which is the manifest's version (R44); never the build's commit (BUILD_VERSION).
+vX.Y.Z, which is the manifest's version (R44); never the build's commit (BUILD_VERSION). When DIR has a
+built key's install.conf, --version must be its RELEASE_VERSION.
 Each listed file is published as a release asset under the same name.
 
 --verify checks the signature with the public key, then every listed file's size and SHA-256.
@@ -54,6 +55,16 @@ def openssl(*args):
 def sign(key: Path, d: Path, version: str, names: list[str]):
     if not RELEASE.fullmatch(version):
         raise Fail(f"--version {version!r} isn't a release tag, vX.Y.Z (R44)")
+    # A built key's install.conf names the version its images install as (sys_version): the
+    # manifest must say the same.
+    conf = d / "install.conf"
+    if conf.is_file():
+        built = [line.split("=", 1)[1].strip() for line in conf.read_text(encoding="utf-8").splitlines()
+                 if line.startswith("RELEASE_VERSION=")]
+        if not built:
+            raise Fail(f"{conf} has no RELEASE_VERSION: a key built before R44, build it again")
+        if built[-1] != version:
+            raise Fail(f"--version {version} isn't {conf}'s RELEASE_VERSION={built[-1]}: the images were built as that")
     if not names:
         names = [n for n in IMAGES if (d / n).is_file()] + sorted(p.name for p in d.iterdir()
                                                                 if p.is_file() and KEY_ZIP.fullmatch(p.name))
