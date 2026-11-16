@@ -18,9 +18,9 @@ import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
-from lapinou.voice import wake_asr
+from lapinou.voice import vad
 
-asr_server = wake_asr.asr_server
+asr_server = vad.asr_server
 
 HF_REVISION = "2bda32ec70b097a55adaa07d9a7173915b43cc78"
 HF = f"https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/{HF_REVISION}/"
@@ -66,7 +66,7 @@ def fetch(directory: Path | None = None, opener: Callable = urllib.request.urlop
         finally:
             part.unlink(missing_ok=True)
     asr_server.check_models(directory)
-    wake_asr._models_present.cache_clear()
+    vad._models_present.cache_clear()
     return directory
 
 
