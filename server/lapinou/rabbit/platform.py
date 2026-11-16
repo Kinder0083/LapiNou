@@ -152,7 +152,8 @@ class Rabbit:
 
     # ---- commandes ----
 
-    async def _command(self, body: str) -> str:
+    async def _command(self, body: str, msg_id: str | None = None) -> str:
+        """Envoie une commande (id de message `msg_id`, sinon un uuid) ; rend cet id."""
         if self._link is None:
             raise ConnectionError(f"lapin {self.id} déconnecté")
         try:
@@ -162,16 +163,21 @@ class Rabbit:
         link = self._link
         if link is None:
             raise ConnectionError(f"lapin {self.id} déconnecté")
-        req = await link.send(f"interactiveId: {quote(self._interactive_id)} {body}")
+        req = await link.send(f"interactiveId: {quote(self._interactive_id)} {body}", msg_id)
         self._sent[req] = body
         for old in list(self._sent)[:-50]:
             del self._sent[old]
         return req
 
     async def play(self, url: str, playback_id: str) -> None:
+        """Joue `url`. L'id du message est `playback_id` : le contrôleur le passe à
+        multimedia-daemon, qui marque avec lui le début et la fin de la lecture dans le flux
+        micro (marques de l'annuleur d'écho, `RabbitStream.playback_marks`)."""
         previous, self._playback_id = self._playback_id, playback_id
         try:
-            self._play_req = await self._command(f"multimedia {{ play {{ url: {quote(url)} }} }}")
+            self._play_req = await self._command(
+                f"multimedia {{ play {{ url: {quote(url)} }} }}", msg_id=playback_id
+            )
         except BaseException:
             self._playback_id = previous
             raise
@@ -266,13 +272,14 @@ class Rabbit:
         log.warning("lapin %s : commande refusée (%s)", self.id, code)
         body = self._sent.pop(corr, None)
         if code == "BAD_INTERACTIVEID" and body is not None and self._link is not None:
-            self._registry._spawn(self._reenter_and_retry(body, corr == self._play_req))
+            self._registry._spawn(self._reenter_and_retry(body, corr, corr == self._play_req))
         elif corr == self._play_req and self._playback_id is not None:
             pid, self._playback_id = self._playback_id, None
             self._registry._emit("playback", self, pid, "error")
 
-    async def _reenter_and_retry(self, body: str, is_play: bool = False) -> None:
-        """Le contrôleur ne reconnaît plus notre prise de main : la reprendre, renvoyer une fois."""
+    async def _reenter_and_retry(self, body: str, req_id: str, is_play: bool = False) -> None:
+        """Le contrôleur ne reconnaît plus notre prise de main : la reprendre, renvoyer une fois.
+        Un `play` renvoyé garde son id (le playback_id des marques d'écho)."""
         link = self._link
         if link is None:
             return
@@ -280,7 +287,7 @@ class Rabbit:
         self.state = "connected"
         try:
             await self._start_interactive(link)
-            req = await self._command(body)
+            req = await self._command(body, msg_id=req_id if is_play else None)
             if is_play:
                 self._play_req = req
             self._sent.pop(req, None)  # pas de second renvoi

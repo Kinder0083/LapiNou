@@ -73,6 +73,8 @@ PLAY_MARGIN_S = 5.0  # fin de lecture attendue au plus durée + marge
 REFERENCES_KEPT = 16  # PCM des dernières phrases, pour l'annuleur d'écho
 WAKE_QUEUE_MAX = 300  # blocs en attente du détecteur (~40 s) ; au-delà, le plus ancien part
 _SENTENCE_DONE = re.compile(r"[.!?…]+[»”\"')\]]*\s*$")
+CLICKS = ("simple", "click")  # appui bref (ButtonCallback.SIMPLE)
+LONG_PRESSES = ("long_start", "lclick_start")  # début d'un appui long (LONG_START)
 _RESET = object()  # dans la file du détecteur : oublier la parole en cours
 _END = object()  # un tour qui clôt la conversation
 
@@ -171,9 +173,11 @@ class _Speaker:
     Chaque phrase porte l'époque de l'appel `respond()` qui l'a produite ; `retract()` tue
     l'époque en cours (file vidée, lecture arrêtée) et en ouvre une nouvelle."""
 
-    def __init__(self, session: RabbitSession, look: str | None = None) -> None:
+    def __init__(self, session: RabbitSession, look: str | None = None,
+                 on_start: Callable[[], None] | None = None) -> None:
         self._s = session
         self._look = look
+        self._on_start = on_start  # appelé quand le lapin a accepté la première lecture
         self._epoch = 0
         self._dead: set[int] = set()
         self._texts: deque[tuple[int, str]] = deque()
@@ -223,6 +227,11 @@ class _Speaker:
         for task in self._synth:
             task.cancel()
 
+    def _started(self) -> None:
+        on_start, self._on_start = self._on_start, None
+        if on_start is not None:
+            on_start()
+
     def _synthesize(self, item: tuple[int, str]) -> tuple[int, str, asyncio.Task]:
         task = asyncio.create_task(self._s.deps.voice.speak(item[1]))
         self._synth.add(task)
@@ -257,7 +266,7 @@ class _Speaker:
                 try:
                     self._s._remember(speech)
                     self._s._set_state(State.SPEAKING, look=self._look)
-                    await self._s._play(speech)
+                    await self._s._play(speech, self._started)
                 finally:
                     self._playing = None
                 if epoch not in self._dead:
@@ -306,8 +315,9 @@ class RabbitSession:
             self._spawn(self._pump())
         if self._detector is not None:
             self._spawn(self._wake_loop())
-        self._spawn(self._watch())
-        self._publish(State.IDLE)
+        reachable = self._reachable()
+        self._spawn(self._watch(reachable))
+        self._publish(State.IDLE if reachable else "offline")
 
     async def close(self) -> None:
         self._closing = True
@@ -338,9 +348,9 @@ class RabbitSession:
     # --- Événements -----------------------------------------------------------------------
 
     def on_button(self, kind: str) -> None:
-        """Bouton de la tête (`click`, `lclick_start`…), depuis le registre des lapins."""
-        interrupt = kind in ("click", "lclick_start") and self.state == State.SPEAKING
-        listen = kind == "lclick_start" and self._task is None
+        """Bouton de la tête, depuis le registre (types du contrôleur en minuscules)."""
+        interrupt = kind in CLICKS + LONG_PRESSES and self.state == State.SPEAKING
+        listen = kind in LONG_PRESSES and self._task is None
         if interrupt or listen:
             self._trigger(None)
 
@@ -352,8 +362,9 @@ class RabbitSession:
 
     async def say(self, text: str) -> None:
         """Annonce (minuteur, rappel, notification) : attend la fin de la conversation en
-        cours, dit `text`, puis ouvre la fenêtre de suite. ConnectionError si le lapin est
-        injoignable ou que l'annonce n'a pas pu être dite."""
+        cours, puis dit `text` et ouvre la fenêtre de suite. Rend la main dès que le lapin a
+        commencé à jouer l'annonce (un délai de l'appelant ne la fait donc jamais répéter).
+        ConnectionError si le lapin est injoignable ou que l'annonce n'a pas pu commencer."""
         while True:
             if not self._reachable() or self._closing:
                 raise ConnectionError(f"lapin {self.id} injoignable")
@@ -362,7 +373,15 @@ class RabbitSession:
             await self._idle.wait()
         said = asyncio.get_running_loop().create_future()
         self._begin(self._run(announce=text, announced=said))
-        await said
+        task = self._task
+        try:
+            await asyncio.shield(said)  # annuler l'appelant n'annule pas `said`
+        except asyncio.CancelledError:
+            # L'appelant (délai du minuteur) renonce avant que le lapin ne parle : l'annonce
+            # n'est pas dite, il la redira. Une fois commencée, elle n'est jamais répétée.
+            if not said.done() and self._task is task:
+                self._spawn(self._abandon(offline=not self._reachable()))
+            raise
 
     # --- Flux micro -----------------------------------------------------------------------
 
@@ -395,6 +414,9 @@ class RabbitSession:
             item = await self._wake_q.get()
             try:
                 if item is _RESET:
+                    # reset() peut rendre la clôture d'une détection restée ouverte : on
+                    # l'ignore, car elle date d'avant l'écoute ou la parole qui commence
+                    # (sa commande, s'il y en avait une, a déjà été servie).
                     await asyncio.to_thread(self._detector.reset)
                     continue
                 hits = await asyncio.to_thread(self._detector.feed, item)
@@ -431,12 +453,18 @@ class RabbitSession:
         self._grow = None
         self._trigger(None)
 
-    async def _watch(self) -> None:
+    async def _watch(self, reachable: bool) -> None:
+        """Suit la connexion du lapin (plateforme et flux micro) : une conversation en cours
+        est abandonnée à la coupure ; au repos, « hors ligne » puis « repos » au retour."""
         while True:
             await asyncio.sleep(self.deps.watch_s)
-            if self._task is not None and not self._reachable():
+            now = self._reachable()
+            if self._task is not None and not now:
                 log.info("lapin %s perdu en pleine conversation : abandon", self.id)
                 await self._abandon(offline=True)
+            elif now != reachable and self._task is None:
+                self._publish(State.IDLE if now else "offline")
+            reachable = now
 
     # --- Conversation ---------------------------------------------------------------------
 
@@ -453,14 +481,20 @@ class RabbitSession:
         self._task = asyncio.create_task(coro)
 
     async def _interrupt(self, first: str | None) -> None:
+        if not self._reachable():
+            return  # la surveillance abandonne la conversation
         old = self._task
         if old is not None:
             old.cancel()
             await asyncio.gather(old, return_exceptions=True)
         with contextlib.suppress(ConnectionError, OSError):
             await self.rabbit.stop_playback()
-        if self._closing or self._task not in (old, None):
+        if self._task not in (old, None):
             return  # une autre conversation a pris la main entre-temps
+        if self._closing or not self._reachable():
+            if old is not None and self._task is old:
+                self._finish(True, old)  # coupé pendant l'interruption : abandon
+            return
         self._begin(self._run(first))
 
     async def _abandon(self, offline: bool) -> None:
@@ -473,6 +507,11 @@ class RabbitSession:
             self._finish(offline, task)
 
     def _finish(self, offline: bool = False, task: asyncio.Task | None = None) -> None:
+        offline = offline or not self._reachable()
+        if self.deps.ha is not None:
+            # Une confirmation ne vaut que dans la conversation qui l'a demandée : un « oui »
+            # dit plus tard (« Lapinou, oui ») ne doit jamais valider une vieille action.
+            self.deps.ha.cancel_pending(self.id)
         if self._conv_id is not None:
             self._db(self.deps.log.end, self._conv_id)
         self._conv = self._conv_id = None
@@ -508,10 +547,18 @@ class RabbitSession:
     async def _converse(self, first, announce, announced) -> None:
         text, followup = first, False
         if announce is not None:
-            speaker = _Speaker(self)
+
+            def started() -> None:
+                if not announced.done():
+                    announced.set_result(None)
+
+            speaker = _Speaker(self, on_start=started)
             speaker.push(announce)
-            await speaker.close()
-            announced.set_result(None)
+            try:
+                await speaker.close()
+            except BaseException:
+                speaker.cancel()
+                raise
             self._log_turn("assistant", announce)
             followup = True
         while True:
@@ -703,11 +750,14 @@ class RabbitSession:
         """Le PCM joué sous `playback_id` (référence de l'annuleur d'écho) ; ne bloque pas."""
         return self._refs.get(playback_id)
 
-    async def _play(self, speech) -> None:
+    async def _play(self, speech, started: Callable[[], None] | None = None) -> None:
         done = asyncio.Event()
         self._playback[speech.id] = done
         try:
+            # speech.id est l'id du message `play` : celui des marques d'écho du lapin.
             await self.rabbit.play(speech.mp3_url, speech.id)
+            if started is not None:
+                started()
             try:
                 await asyncio.wait_for(done.wait(), speech.duration_s + PLAY_MARGIN_S)
             except TimeoutError:

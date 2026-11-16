@@ -85,8 +85,10 @@ class Gestures:
             return True
         except (ConnectionError, OSError, ValueError) as e:
             log.debug("lapin %s : geste impossible (%s)", self.rabbit.id, type(e).__name__)
-            self._ears = None
-            return False
+        except Exception:  # inattendu : noté, mais les gestes continuent
+            log.exception("lapin %s : geste en échec", self.rabbit.id)
+        self._ears = None
+        return False
 
     async def _ears_to(self, ears: tuple[int, int]) -> None:
         if ears != self._ears and await self._guard(self.rabbit.ears(*ears)):

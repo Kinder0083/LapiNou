@@ -39,8 +39,8 @@ def create_app(settings: Settings, *, services: Services | None = None) -> FastA
         @asynccontextmanager
         async def lifespan(app: FastAPI):
             services.voice.attach(app)
-            await services.start()
             try:
+                await services.start()  # en cas d'échec, ce qui a démarré est refermé
                 yield
             finally:
                 await services.close()

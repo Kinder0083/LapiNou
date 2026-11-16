@@ -1031,7 +1031,7 @@ async def test_echo_marks_from_a_real_controller_find_their_reference():
 
     async def controller_side():
         play = await controller.until(r"^multimedia \{\s*play")
-        pid = re.search(r'^id: "([^"]*)"', play, re.M).group(1)
+        pid = re.search(r'^id: "([^"]*)"', play, re.MULTILINE).group(1)
         feed(mark=(pid, seq[1], True))
         for _ in range(5):
             feed()
@@ -1059,3 +1059,21 @@ async def test_echo_marks_from_a_real_controller_find_their_reference():
         await orch.close()
         await controller.close()
         await registry.close()
+
+
+async def test_gestures_survive_an_unexpected_error():
+    rabbit = FakeRabbit()
+    calls = []
+
+    async def led(color, pulse=None, period_ms=None):
+        calls.append(color)
+        if len(calls) == 1:
+            raise RuntimeError("inattendu")
+
+    rabbit.led = led
+    gestures = Gestures(rabbit)
+    gestures.show("listening")
+    await until(lambda: calls == ["0000FF"])
+    gestures.show("error")
+    await until(lambda: calls == ["0000FF", "FF8000"])
+    await gestures.close()
