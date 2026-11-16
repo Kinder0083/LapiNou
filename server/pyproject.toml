@@ -27,6 +27,8 @@ dependencies = [
     "mcp==2.3.0",
     # Fuseaux horaires (zoneinfo) même sans base système (images Docker minimales)
     "tzdata>=2024.1",
+    # Configurations de scripts que ha-mcp peut renvoyer en YAML (chargeur sûr seulement)
+    "pyyaml>=6.0",
 ]
 
 [dependency-groups]

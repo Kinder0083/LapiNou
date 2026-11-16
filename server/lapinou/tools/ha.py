@@ -6,11 +6,17 @@ avec des schémas stricts : `ha_search`, `ha_get_state` et `ha_call_service`. Un
 présenté que s'il figure dans `allow` et (si la liste est connue) chez le serveur.
 
 Avant chaque appel de service, LapiNou lit l'état de l'entité (nom, device_class) et, pour un
-script ou une scène, son contenu (`ha_config_get_script` / `ha_config_get_scene`, en cache
-quelques minutes), puis applique `Policy.check`. Une action à confirmer est mise de côté avec
-la question officielle (`PendingAction.phrase`, que l'orchestrateur dit lui-même) et n'est
-exécutée que par l'orchestrateur (`confirm`), sur un « oui » ou le code PIN exact ; trois codes
-faux bloquent l'entité 10 minutes pour ce lapin. Ce que renvoie Home Assistant est filtré
+script ou une scène, son contenu (`ha_config_get_script` / `ha_config_get_scene`), puis
+applique `Policy.check`. Ce contenu est jugé par liste blanche sur la structure analysée (JSON,
+chaîne JSON ou YAML sûr) : un script n'est « sans danger » que si chaque étape est un service
+littéral de `SERVICES` sur des entity_id littéraux eux-mêmes permis sans confirmation, sans
+modèle (template), sans zone, appareil, étiquette, événement ni action inconnue ; sinon il est
+sensible. Ce jugement est gardé 30 s, et oublié à chaque (re)connexion à ha-mcp (pas d'écoute
+des rechargements de scripts : le délai court en tient lieu). Une action à confirmer est mise
+de côté avec la question officielle (`PendingAction.phrase`, que l'orchestrateur dit lui-même)
+et n'est exécutée que par l'orchestrateur (`confirm`), sur un « oui » ou le code PIN exact ;
+trois codes faux bloquent l'entité 10 minutes pour ce lapin, et cinq codes faux en 10 minutes,
+tous lapins confondus, bloquent toute confirmation par PIN. Ce que renvoie Home Assistant est filtré
 (attributs permis seulement) et présenté comme des données.
 """
 
@@ -22,10 +28,12 @@ import logging
 import re
 import secrets
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+import yaml
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 
@@ -41,9 +49,10 @@ DEFAULT_ALLOW = ["ha_search", "ha_get_state", "ha_call_service"]
 CONFIRM_TTL_S = 60.0
 MAX_DATA_CHARS = 3000
 RETRY_AFTER_S = 30.0
-LINKED_TTL_S = 300.0
+LINKED_TTL_S = 30.0  # vidé aussi à chaque (re)connexion à ha-mcp
 MAX_LINK_DEPTH = 3
-PIN_MAX_FAILURES = 3
+PIN_MAX_FAILURES = 3  # par (lapin, entité)
+PIN_MAX_GLOBAL_FAILURES = 5  # tous lapins et entités confondus, sur LOCKOUT_S
 LOCKOUT_S = 600.0
 UNAVAILABLE = "Home Assistant ne répond pas pour le moment ; dis-le en une phrase simple."
 
@@ -54,15 +63,55 @@ STATE_ATTRIBUTES = (
     "hvac_action", "hvac_modes", "current_position", "media_title", "media_artist",
     "volume_level", "is_volume_muted", "battery_level",
 )
-_REF = re.compile(r"\b([a-z_]+)\.([a-z0-9_]+)\b")
-_DEVICE_ACTION = re.compile(r'"domain"\s*:\s*"(lock|alarm_control_panel|cover|climate)"')
-_LINK_SERVICES = {
-    "cover": {"open_cover", "close_cover", "stop_cover", "toggle", "set_cover_position",
-              "open_cover_tilt", "close_cover_tilt", "stop_cover_tilt", "toggle_cover_tilt",
-              "set_cover_tilt_position"},
-    "script": {"turn_on", "turn_off", "toggle", "reload"},
-    "scene": {"turn_on", "apply", "create", "reload", "delete"},
+_TEMPLATE = re.compile(r"\{\{|\{%|\{#")
+_ENTITY_ID = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
+# Clés permises, par sorte d'étape (liste blanche : toute autre clé rend le script sensible).
+_SCRIPT_KEYS = {"alias", "sequence", "mode", "max", "max_exceeded", "icon", "description",
+                "fields", "trace", "id"}
+_SCENE_KEYS = {"id", "name", "icon", "entities", "metadata"}
+_COMMON = {"alias", "enabled", "continue_on_error"}
+_SERVICE_STEP = _COMMON | {"action", "service", "target", "data", "entity_id", "metadata"}
+_TARGET_KEYS = {"entity_id"}
+_WRAPPERS = {
+    "delay": _COMMON | {"delay"},
+    "stop": _COMMON | {"stop", "error"},
+    "wait_for_trigger": _COMMON | {"wait_for_trigger", "timeout", "continue_on_timeout"},
+    "choose": _COMMON | {"choose", "default"},
+    "if": _COMMON | {"if", "then", "else"},
+    "repeat": _COMMON | {"repeat"},
+    "parallel": _COMMON | {"parallel"},
+    "sequence": _COMMON | {"sequence"},
+    "scene": _COMMON | {"scene"},
 }
+
+
+class Sensitive(Exception):
+    """Le contenu sort de la liste blanche : la raison est le message."""
+
+
+def _parse_config(text: str) -> Any:
+    """La configuration renvoyée par ha-mcp : JSON, chaîne JSON échappée ou YAML (sûr)."""
+    value: Any = text
+    for _ in range(3):
+        if not isinstance(value, str):
+            break
+        try:
+            value = json.loads(value)
+        except ValueError:
+            try:
+                value = yaml.safe_load(value)
+            except yaml.YAMLError:
+                return None
+    if isinstance(value, dict) and "config" in value:
+        inner = value["config"]
+        return _parse_config(inner) if isinstance(inner, str) else inner
+    return value
+
+
+def _steps(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
 
 
 class HaUnavailable(Exception):
@@ -155,6 +204,7 @@ class HomeAssistantTools:
         self._linked: dict[str, tuple[float, str | None]] = {}  # entity_id → (expire, raison)
         self._failures: dict[tuple[str, str], int] = {}  # (lapin, entité) → codes faux
         self._locked: dict[tuple[str, str], float] = {}  # (lapin, entité) → fin du blocage
+        self._global_failures: deque[float] = deque()  # instants des codes faux récents
 
     def __repr__(self) -> str:
         return f"HomeAssistantTools(cmd={self._cmd!r}, connected={self._session is not None})"
@@ -206,6 +256,7 @@ class HomeAssistantTools:
                     if not cursor:
                         break
                 self.server_tools = names
+                self._linked.clear()  # la configuration a pu changer pendant la coupure
                 self._session = session
                 if not ready.done():
                     ready.set_result(None)
@@ -393,29 +444,143 @@ class HomeAssistantTools:
         return reason
 
     async def _scan_links(self, entity_id: str, text: str, depth: int) -> str | None:
-        safety = self.policy.safety
-        m = _DEVICE_ACTION.search(text)
-        if m:
-            return f"{entity_id} commande un appareil {m.group(1)}"
-        for ref_domain, obj in dict.fromkeys(_REF.findall(text)):
-            ref = f"{ref_domain}.{obj}"
-            if ref == entity_id or obj in _LINK_SERVICES.get(ref_domain, ()):
-                continue
-            if ref_domain in safety.sensitive_domains or ref_domain == "climate":
-                return f"{entity_id} commande {ref}"
-            if ref in safety.sensitive_entities or self.policy.sensitive_name(ref):
-                return f"{entity_id} commande {ref}, sensible"
-            if ref_domain == "cover":
-                facts = await self._facts(ref)
-                if facts is None or facts.device_class is None or (
-                    facts.device_class in safety.sensitive_cover_classes
-                ):
-                    return f"{entity_id} commande {ref} (porte ou portail possible)"
-            elif ref_domain in ("script", "scene"):
-                inner = await self._linked_reason(ref, depth + 1)
-                if inner is not None:
-                    return f"{entity_id} lance {ref} : {inner}"
+        """None seulement si tout le contenu est dans la liste blanche ; sinon la raison."""
+        config = _parse_config(text)
+        if not isinstance(config, dict):
+            return UNREAD
+        if _TEMPLATE.search(json.dumps(config, ensure_ascii=False)):
+            return f"{entity_id} contient un modèle (template) : contenu imprévisible"
+        try:
+            if entity_id.startswith("scene."):
+                await self._check_scene(config)
+            else:
+                unknown = set(config) - _SCRIPT_KEYS
+                if unknown:
+                    raise Sensitive(f"clé inconnue {sorted(unknown)[0]!r}")
+                await self._check_steps(config.get("sequence"), depth, require=True)
+        except Sensitive as e:
+            return f"{entity_id} : {e}"
         return None
+
+    async def _check_scene(self, config: dict[str, Any]) -> None:
+        unknown = set(config) - _SCENE_KEYS
+        if unknown:
+            raise Sensitive(f"clé inconnue {sorted(unknown)[0]!r}")
+        entities = config.get("entities")
+        if not isinstance(entities, dict) or not entities:
+            raise Sensitive("scène sans entités lisibles")
+        for ent, state in entities.items():
+            domain = str(ent).split(".", 1)[0]
+            services = SERVICES.get(domain)
+            if not services:
+                raise Sensitive(f"{ent} : domaine non permis")
+            data = state if isinstance(state, dict) else None
+            await self._require_allowed(domain, sorted(services)[0], str(ent), data, 0)
+
+    async def _check_steps(self, steps: Any, depth: int, require: bool = False) -> None:
+        items = _steps(steps)
+        if require and not items:
+            raise Sensitive("séquence vide ou illisible")
+        for step in items:
+            await self._check_step(step, depth)
+
+    async def _check_step(self, step: Any, depth: int) -> None:
+        if not isinstance(step, dict):
+            raise Sensitive("étape illisible")
+        if "action" in step or "service" in step:
+            await self._check_service_step(step, depth)
+            return
+        if "condition" in step:
+            return  # une condition ne fait que lire (modèles déjà exclus)
+        kind = next((k for k in _WRAPPERS if k in step), None)
+        if kind is None:
+            raise Sensitive(f"étape non permise ({', '.join(sorted(step))[:60]})")
+        unknown = set(step) - _WRAPPERS[kind]
+        if unknown:
+            raise Sensitive(f"clé inconnue {sorted(unknown)[0]!r}")
+        if kind == "choose":
+            for option in _steps(step["choose"]):
+                if not isinstance(option, dict) or set(option) - {"conditions", "sequence",
+                                                                  "alias"}:
+                    raise Sensitive("option de choose illisible")
+                await self._check_steps(option.get("sequence"), depth, require=True)
+            await self._check_steps(step.get("default"), depth)
+        elif kind == "if":
+            await self._check_steps(step.get("then"), depth, require=True)
+            await self._check_steps(step.get("else"), depth)
+        elif kind == "repeat":
+            repeat = step["repeat"]
+            if not isinstance(repeat, dict) or set(repeat) - {"count", "while", "until",
+                                                              "for_each", "sequence"}:
+                raise Sensitive("repeat illisible")
+            await self._check_steps(repeat.get("sequence"), depth, require=True)
+        elif kind == "parallel":
+            for branch in _steps(step["parallel"]):
+                await self._check_step(branch, depth)
+        elif kind == "sequence":
+            await self._check_steps(step["sequence"], depth, require=True)
+        elif kind == "scene":
+            target = step["scene"]
+            if not isinstance(target, str) or not target.startswith("scene."):
+                raise Sensitive("scène illisible")
+            await self._require_allowed("scene", "turn_on", target, None, depth)
+
+    async def _check_service_step(self, step: dict[str, Any], depth: int) -> None:
+        unknown = set(step) - _SERVICE_STEP
+        if unknown:
+            raise Sensitive(f"clé inconnue {sorted(unknown)[0]!r}")
+        if "action" in step and "service" in step:
+            raise Sensitive("action en double")
+        name = step.get("action", step.get("service"))
+        if not isinstance(name, str) or not _ENTITY_ID.match(name):
+            raise Sensitive("service illisible")
+        domain, service = name.split(".", 1)
+        data = step.get("data")
+        if data is not None and not isinstance(data, dict):
+            raise Sensitive("données illisibles")
+        target = step.get("target")
+        if target is not None and (not isinstance(target, dict) or set(target) - _TARGET_KEYS):
+            raise Sensitive("cible autre qu'une liste d'entités (zone, appareil, étiquette)")
+        ids: list[Any] = []
+        for source in (step, target or {}, data or {}):
+            if "entity_id" in source:
+                ids.extend(_steps(source["entity_id"]))
+        if domain == "script" and service not in SERVICES["script"]:
+            # Appel direct `script.nom` : c'est le script `script.nom` qui est lancé.
+            if ids:
+                raise Sensitive("appel de script avec cible")
+            await self._require_allowed("script", "turn_on", name, None, depth)
+            return
+        if not ids:
+            raise Sensitive(f"{name} sans entité précise")
+        values = {k: v for k, v in (data or {}).items() if k != "entity_id"}
+        for ent in ids:
+            if not isinstance(ent, str):
+                raise Sensitive("entité illisible")
+            for one in ent.split(","):
+                await self._require_allowed(domain, service, one.strip(), values or None, depth)
+
+    async def _require_allowed(
+        self, domain: str, service: str, entity_id: str, data: dict[str, Any] | None,
+        depth: int,
+    ) -> None:
+        """L'appel serait-il permis sans confirmation ? Sinon : Sensitive."""
+        malformed = self.policy.precheck(domain, service, entity_id)
+        if malformed is not None:
+            raise Sensitive(malformed.reason)
+        facts = await self._facts(entity_id)
+        if facts is None:
+            raise Sensitive(f"{entity_id} introuvable")
+        linked = None
+        if domain in ("script", "scene"):
+            linked = await self._linked_reason(entity_id, depth + 1)
+        decision = self.policy.check(
+            domain, service, entity_id, device_class=facts.device_class, data=data,
+            friendly_name=facts.friendly_name, linked_reason=linked,
+        )
+        if not isinstance(decision, Allow):
+            reason = decision.reason if isinstance(decision, Deny) else "action sensible"
+            raise Sensitive(f"{entity_id} : {reason}")
 
     async def decide(
         self, domain: str, service: str, entity_id: str, data: dict[str, Any] | None
@@ -436,7 +601,16 @@ class HomeAssistantTools:
             friendly_name=facts.friendly_name, linked_reason=linked,
         )
 
+    def _globally_locked(self) -> bool:
+        """Trop de codes faux partout ces 10 dernières minutes : plus aucune confirmation."""
+        horizon = self._clock() - LOCKOUT_S
+        while self._global_failures and self._global_failures[0] <= horizon:
+            self._global_failures.popleft()
+        return len(self._global_failures) >= PIN_MAX_GLOBAL_FAILURES
+
     def _is_locked(self, rabbit_id: str, entity_id: str) -> bool:
+        if self.policy.safety.pin and self._globally_locked():
+            return True
         key = (rabbit_id, entity_id)
         until = self._locked.get(key)
         if until is None:
@@ -549,8 +723,9 @@ class HomeAssistantTools:
             if action.needs_pin:
                 failures = self._failures.get(key, 0) + 1
                 self._failures[key] = failures
+                self._global_failures.append(self._clock())
                 log.warning("code faux pour %s (%d/%d)", what, failures, PIN_MAX_FAILURES)
-                if failures >= PIN_MAX_FAILURES:
+                if failures >= PIN_MAX_FAILURES or self._globally_locked():
                     self._locked[key] = self._clock() + LOCKOUT_S
                     return ToolResult("Action annulée : code faux. Trop d'essais, c'est bloqué "
                                       "pendant 10 minutes.")
