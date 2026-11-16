@@ -26,7 +26,7 @@ fichiers ; les SHA-256 sont vérifiés au chargement par `load_recogniser()`).
 
 Le code est `server/lapinou/voice/wake_asr.py` : `AsrWakeDetector(transcriber, names=["lapinou"],
 max_segment_s=6.0)`, un par lapin, partageant un seul `Recogniser` (`load_recogniser()`, ~0,9 Go de
-mémoire). `feed(pcm_int16)` rend une liste de `WakeHit(at_sample, text, command)` :
+mémoire). `feed(pcm_int16)` rend une liste de `WakeHit(at_sample, text, command, complete)` :
 
 - `at_sample` : début du segment de parole, en échantillons depuis la création du détecteur
   (`reset()` ne remet pas le compteur à zéro) ;
@@ -35,9 +35,16 @@ mémoire). `feed(pcm_int16)` rend une liste de `WakeHit(at_sample, text, command
 
 Une parole de plus de `max_segment_s` (6 s) est transcrite par morceaux : seul le premier est
 comparé au nom (un « lapinou » au milieu d'une longue phrase ne déclenche rien) et les
-morceaux suivants, contigus, complètent `command` et `text` du **même** objet `WakeHit`, dont
-`more` reste vrai tant qu'un morceau peut encore suivre. Les morceaux d'une parole sans nom
-ne sont pas transcrits.
+morceaux suivants, contigus, allongent la commande. Un `WakeHit` est un **instantané
+immuable** (`frozen`) : l'orchestrateur ne lit que ce que `feed()` rend, jamais un objet
+partagé avec le fil de calcul. Pour une parole courte, `feed()` rend un seul `WakeHit` avec
+`complete=True`. Pour une parole longue, il rend un instantané par morceau (même `at_sample`,
+`text` et `command` plus longs, `complete=False`), puis un dernier avec `complete=True` : quand
+le morceau final est plus court que `max_segment_s`, ou, si la parole s'arrête pile après un
+morceau plein, quand le flux a avancé de `max_segment_s + vad_silence_ms + 0,2 s` après ce
+morceau (délai au-delà duquel la suite ne peut plus arriver ; `feed()` le détecte lui-même, y
+compris avec du silence seul). `reset()` rend l'instantané complet d'une détection restée
+ouverte. Les morceaux d'une parole sans nom ne sont pas transcrits.
 
 `feed()` transcrit dans l'appel : on le lance dans un fil (`asyncio.to_thread`), un détecteur
 n'est pas partagé entre fils. Un segment n'est rendu qu'après `voice.vad_silence_ms` (700 ms) de

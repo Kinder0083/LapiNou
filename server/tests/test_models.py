@@ -85,3 +85,12 @@ def test_main_usage(capsys):
     assert models.main(["models"]) == 2
     assert models.main(["models", "fetch", "--bogus", "x"]) == 2
     assert "usage" in capsys.readouterr().err
+
+
+def test_main_reports_a_failure_without_traceback(tmp_path, monkeypatch, capsys):
+    def offline(directory=None):
+        raise OSError("réseau coupé")
+
+    monkeypatch.setattr(models, "fetch", offline)
+    assert models.main(["models", "fetch", "--dir", str(tmp_path)]) == 1
+    assert "échec du téléchargement : réseau coupé" in capsys.readouterr().err

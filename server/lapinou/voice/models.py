@@ -73,7 +73,11 @@ def fetch(directory: Path | None = None, opener: Callable = urllib.request.urlop
 def main(argv: list[str]) -> int:
     args = argv[1:]
     if args[:1] == ["fetch"] and len(args) in (1, 3) and (len(args) == 1 or args[1] == "--dir"):
-        directory = fetch(Path(args[2]) if len(args) == 3 else None)
+        try:
+            directory = fetch(Path(args[2]) if len(args) == 3 else None)
+        except (OSError, RuntimeError) as error:  # réseau coupé, SHA-256 différent, disque plein
+            print(f"échec du téléchargement : {error}", file=sys.stderr)
+            return 1
         print(f"modèles dans {directory}")
         return 0
     print("usage : python -m lapinou.voice.models fetch [--dir DOSSIER]", file=sys.stderr)

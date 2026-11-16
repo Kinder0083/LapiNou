@@ -23,7 +23,7 @@ import sys
 import unicodedata
 from collections import deque
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Protocol
@@ -54,17 +54,18 @@ PREFILTER_LEAD_S = 0.5  # le pré-filtre peut se déclencher un peu avant le dé
 _PUNCT = " \t\r\n.,;:!?…-–—'\"«»()"
 
 
-@dataclass
+@dataclass(frozen=True)
 class WakeHit:
-    """Un « Lapinou » entendu. Si la parole dépasse `max_segment_s`, elle est transcrite par
-    morceaux : `more` reste vrai tant que d'autres morceaux peuvent suivre, et `text` et
-    `command` s'allongent (même objet) à chaque morceau transcrit ; `more` passe à faux avec
-    le dernier."""
+    """Un « Lapinou » entendu : instantané immuable rendu par `feed()` (le lire depuis un autre
+    fil est sûr). Une parole de plus de `max_segment_s` est transcrite par morceaux : chaque
+    morceau qui allonge la commande produit un nouvel instantané du même `at_sample`
+    (`text` et `command` plus longs, `complete=False`) ; le dernier a `complete=True`, y compris
+    quand le silence seul a clos la parole. Une parole courte donne un seul instantané complet."""
 
     at_sample: int  # début du segment de parole, en échantillons depuis la création du détecteur
-    text: str  # transcription complète du segment
-    command: str  # ce qui suit le nom dans le segment ; vide s'il n'y a que « Lapinou »
-    more: bool = False
+    text: str  # transcription complète de la parole jusqu'ici
+    command: str  # ce qui suit le nom ; vide s'il n'y a que « Lapinou »
+    complete: bool = True  # plus aucun morceau n'est attendu
 
 
 class Transcriber(Protocol):
@@ -177,7 +178,7 @@ class AsrWakeDetector:
     `transcriber` : objet avec `transcribe(samples)` (le `Recogniser` de LapinLibre, qui
     fournit aussi le VAD). `max_segment_s` borne la durée transcrite en une fois : un
     segment plus long est découpé : seul le premier morceau est comparé au nom, les suivants
-    complètent `command` de la détection (voir WakeHit.more). `prefilter` (WakeWord, méthode « both ») : un segment n'est
+    complètent `command` par de nouveaux instantanés (voir WakeHit.complete). `prefilter` (WakeWord, méthode « both ») : un segment n'est
     transcrit que si le pré-filtre s'est déclenché pendant ce segment.
     """
 
@@ -194,6 +195,7 @@ class AsrWakeDetector:
         self.transcriber = transcriber
         self.names = list(names)
         self.max_segment_s = max_segment_s
+        self._close_after = int((max_segment_s + silence_s + CONTINUE_GAP_S) * SAMPLE_RATE)
         self.prefilter = prefilter
         self.segmenter = segmenter or SileroSegmenter(transcriber, max_segment_s, silence_s)
         self.fed = 0  # échantillons reçus depuis la création
@@ -202,66 +204,79 @@ class AsrWakeDetector:
         self.transcribed_s = 0.0  # durée audio transcrite (mesure du coût)
         self._prev_end = 0  # fin du dernier morceau transcrit ou écarté
         self._prev_cut = False  # ce morceau a été coupé : la parole peut continuer
-        self._open: WakeHit | None = None  # détection dont les morceaux suivants arrivent
+        self._open: WakeHit | None = None  # dernier instantané d'une détection non terminée
 
-    def reset(self) -> None:
-        """Oublie la parole en cours (après une conversation) ; la numérotation continue."""
+    def reset(self) -> list[WakeHit]:
+        """Oublie la parole en cours (après une conversation) ; la numérotation continue.
+        Rend l'instantané complet d'une détection restée ouverte, s'il y en a une."""
         self.segmenter.reset()
         self._origin = self.fed
         self._fires.clear()
-        self._close()
         self._prev_cut = False
         if self.prefilter is not None:
             self.prefilter.reset()
+        return self._close()
 
     def feed(self, pcm: np.ndarray) -> list[WakeHit]:
-        """Ajoute des échantillons int16 16 kHz ; rend les « Lapinou » entendus."""
+        """Ajoute des échantillons int16 16 kHz ; rend les instantanés de « Lapinou » entendus
+        (voir WakeHit : une nouvelle détection, une commande qui s'allonge, la clôture)."""
         pcm = np.asarray(pcm)
         if pcm.dtype != np.int16 or pcm.ndim != 1:
             raise ValueError(f"PCM int16 mono (1-D) attendu, reçu {pcm.dtype} de forme {pcm.shape}")
         self.fed += len(pcm)
         if self.prefilter is not None and self.prefilter.feed(pcm) is not None:
             self._fires.append(self.fed)
-        hits = []
+        hits: list[WakeHit] = []
         for start, samples in self.segmenter.feed(pcm):
             start += self._origin
             cut_size = int(self.max_segment_s * SAMPLE_RATE)
             # Un segment contigu à un morceau coupé continue la même phrase.
             continues = self._prev_cut and start - self._prev_end <= CONTINUE_GAP_S * SAMPLE_RATE
             if not continues:
-                self._close()
+                hits += self._close()
             for offset in range(0, len(samples), cut_size):
                 piece = samples[offset : offset + cut_size]
                 last = offset + cut_size >= len(samples)
                 # Coupé : pas le dernier morceau, ou un morceau plein (la parole a pu continuer).
                 cut = not last or len(piece) >= CUT_FULL * cut_size
                 if continues:
-                    self._continue(piece, cut)
+                    hits += self._continue(piece, cut)
                 else:
                     hit = self._examine(start, piece)
                     if hit is not None:
-                        hit.more = cut
+                        hit = replace(hit, complete=not cut)
                         self._open = hit if cut else None
                         hits.append(hit)
                 self._prev_end, self._prev_cut = start + offset + len(piece), cut
                 continues = True
+        # Plus de parole depuis assez longtemps : la suite d'un morceau coupé n'arrivera pas.
+        # (Elle arriverait au plus tard max_segment_s + silence_s après le morceau.)
+        if self._open is not None and self.fed - self._prev_end >= self._close_after:
+            hits += self._close()
         return hits
 
-    def _close(self) -> None:
-        if self._open is not None:
-            self._open.more = False
-            self._open = None
-
-    def _continue(self, piece: np.ndarray, cut: bool) -> None:
-        """Morceau qui poursuit une phrase : jamais comparé au nom ; il n'est transcrit que si
-        une détection est ouverte, dont il complète la commande."""
+    def _close(self) -> list[WakeHit]:
+        """Clôture la détection ouverte : son instantané complet, ou rien."""
         if self._open is None:
-            return
+            return []
+        closed, self._open = replace(self._open, complete=True), None
+        self._prev_cut = False
+        return [closed]
+
+    def _continue(self, piece: np.ndarray, cut: bool) -> list[WakeHit]:
+        """Morceau qui poursuit une phrase : jamais comparé au nom ; il n'est transcrit que si
+        une détection est ouverte, dont il complète la commande (nouvel instantané)."""
+        if self._open is None:
+            return []
         text = self._transcribe(piece)
-        self._open.text = f"{self._open.text} {text}".strip()
-        self._open.command = f"{self._open.command} {text.strip(_PUNCT)}".strip()
-        if not cut:
-            self._close()
+        grown = replace(
+            self._open,
+            text=f"{self._open.text} {text}".strip(),
+            command=f"{self._open.command} {text.strip(_PUNCT)}".strip(),
+            complete=not cut,
+        )
+        self._open = grown if cut else None
+        return [grown]
 
     def _transcribe(self, samples: np.ndarray) -> str:
         self.transcribed_s += len(samples) / SAMPLE_RATE

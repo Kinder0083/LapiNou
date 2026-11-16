@@ -11,6 +11,7 @@ asr_*.wav (train.py export-asr-tests).
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import wave
 
@@ -172,10 +173,22 @@ def test_long_sentence_is_cut_but_its_chunks_complete_the_command():
     detector = AsrWakeDetector(asr, max_segment_s=1.0, segmenter=RunSegmenter())
     hits = detector.feed(np.concatenate([speech(n), silence(5)]))
     assert asr.lengths == [SR, SR, n - 2 * SR]
-    assert len(hits) == 1  # « Lapinou » en début de 3e morceau : au milieu de la phrase, ignoré
-    assert (hits[0].at_sample, hits[0].more) == (0, False)
-    assert hits[0].command == "ajoute du lait et des oeufs Lapinou pour demain"
+    # « Lapinou » en début de 3e morceau : au milieu de la phrase, jamais une détection
+    assert [(h.at_sample, h.command, h.complete) for h in hits] == [
+        (0, "ajoute du lait", False),
+        (0, "ajoute du lait et des oeufs", False),
+        (0, "ajoute du lait et des oeufs Lapinou pour demain", True),
+    ]
     assert detector.transcribed_s == pytest.approx(2.5)
+
+
+def test_hits_are_immutable_snapshots():
+    (hit,) = AsrWakeDetector(ScriptedTranscriber("Lapinou"), segmenter=RunSegmenter()).feed(
+        np.concatenate([speech(50), silence(5)])
+    )
+    assert hit.complete
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        hit.command = "autre"
 
 
 def test_name_inside_a_long_sentence_is_not_a_wake_word():
@@ -202,13 +215,39 @@ def test_vad_cut_segments_continue_the_open_hit():
     asr = ScriptedTranscriber("Lapinou, ajoute du lait", "et des oeufs", "pour demain")
     segmenter = ScriptSegmenter([(0, 1.0)], [(SR, 1.0)], [(2 * SR, 0.4)])
     detector = AsrWakeDetector(asr, max_segment_s=1.0, segmenter=segmenter)
+    (first,) = detector.feed(silence(10))
+    assert (first.command, first.complete) == ("ajoute du lait", False)
+    (second,) = detector.feed(silence(10))  # même parole : un nouvel instantané, même at_sample
+    assert (second.at_sample, second.command, second.complete) == (0, "ajoute du lait et des oeufs", False)
+    (last,) = detector.feed(silence(10))
+    assert (last.command, last.complete) == ("ajoute du lait et des oeufs pour demain", True)
+    assert last.text == "Lapinou, ajoute du lait et des oeufs pour demain"
+    assert first.command == "ajoute du lait"  # les instantanés rendus ne changent plus
+
+
+def test_silence_alone_completes_a_cut_hit_within_the_bound():
+    """Parole coupée pile à max_segment_s puis plus rien : feed() clôt la détection quand le
+    flux a avancé de max_segment_s + silence_s + 0,2 s après la fin du morceau (la suite de la
+    parole serait arrivée avant)."""
+    asr = ScriptedTranscriber("Lapinou, ajoute du lait")
+    detector = AsrWakeDetector(asr, max_segment_s=1.0, segmenter=ScriptSegmenter([(0, 1.0)]))
     (hit,) = detector.feed(silence(10))
-    assert (hit.command, hit.more) == ("ajoute du lait", True)
-    assert detector.feed(silence(10)) == []  # pas une nouvelle détection : le même objet grandit
-    assert (hit.command, hit.more) == ("ajoute du lait et des oeufs", True)
+    assert not hit.complete
+    bound = int((1.0 + 0.7 + wake_asr.CONTINUE_GAP_S) * SR)  # après la fin du morceau (SR)
+    assert detector.feed(silence(SR + bound - 10 - 1)) == []
+    (done,) = detector.feed(silence(1))
+    assert (done.at_sample, done.command, done.complete) == (0, "ajoute du lait", True)
+    assert detector.feed(silence(SR)) == []  # une seule clôture
+
+
+def test_reset_returns_the_open_hit_complete():
+    detector = AsrWakeDetector(
+        ScriptedTranscriber("Lapinou, ajoute"), max_segment_s=1.0, segmenter=ScriptSegmenter([(0, 1.0)])
+    )
     detector.feed(silence(10))
-    assert (hit.command, hit.more) == ("ajoute du lait et des oeufs pour demain", False)
-    assert hit.text == "Lapinou, ajoute du lait et des oeufs pour demain"
+    (done,) = detector.reset()
+    assert (done.command, done.complete) == ("ajoute", True)
+    assert detector.reset() == []
 
 
 def test_vad_cut_segment_followed_by_the_name_is_not_a_wake_word():
@@ -225,7 +264,8 @@ def test_after_a_pause_the_name_is_a_new_utterance():
     detector = AsrWakeDetector(asr, max_segment_s=1.0, segmenter=segmenter)
     detector.feed(silence(10))
     hits = detector.feed(silence(10))
-    assert [(h.at_sample, h.command, h.more) for h in hits] == [(2 * SR, "allume", False)]
+    # la première parole (sans nom) n'a rien rendu ; la seconde est une nouvelle détection
+    assert [(h.at_sample, h.command, h.complete) for h in hits] == [(2 * SR, "allume", True)]
 
 
 def test_reset_drops_the_speech_in_progress_and_keeps_numbering():
