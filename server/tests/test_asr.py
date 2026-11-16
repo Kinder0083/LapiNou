@@ -69,6 +69,13 @@ async def test_no_speech_within_five_seconds_is_none_and_stops_reading(monkeypat
     assert len(read) * BLOCK < 5.5 * SR
 
 
+async def test_no_speech_delay_can_be_shortened(monkeypatch):
+    read: list[int] = []
+    t = transcriber(monkeypatch, FakeSegmenter())
+    assert await t.transcribe_utterance(blocks(30, read), no_speech_s=2) is None
+    assert 1.9 * SR < len(read) * BLOCK < 2.5 * SR
+
+
 async def test_stream_end_without_speech_is_none(monkeypatch):
     assert await transcriber(monkeypatch, FakeSegmenter()).transcribe_utterance(blocks(2)) is None
 

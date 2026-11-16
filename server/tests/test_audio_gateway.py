@@ -213,3 +213,16 @@ async def test_reconnect_keeps_stream_and_no_gap(gateway):
     chunk = (await asyncio.wait_for(take(stream, 1), 2))[0]
     assert chunk.first_sample == 50 and stream.gaps == 0
     w2.close()
+
+
+async def test_on_stream_called_once_per_new_rabbit(gateway):
+    seen = []
+    gateway.on_stream = seen.append
+    for _ in range(2):  # la reconnexion garde le même flux : pas de second appel
+        w = await connect(gateway)
+        w.write(frame("r1", 0, b"\xff", 0, hello_msg=hello("r1")))
+        await w.drain()
+        stream = await asyncio.wait_for(gateway.stream("r1"), 2)
+        await asyncio.wait_for(take(stream, 1), 2)
+        w.close()
+    assert seen == [stream]
