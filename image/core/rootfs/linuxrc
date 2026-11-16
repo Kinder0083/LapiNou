@@ -57,6 +57,10 @@ ln -s mtdblock1 /dev/kernel
 # --- /usr, from the flash ---
 mount -t yaffs /dev/mtdblock6 /usr
 mkdir -p /usr/etc/conf
+# An update's /usr that a power cut left half-done (lapinou-ota's install had written the kernel and
+# the root filesystem, this one): finished now from the checked archive it kept, before anything
+# reads /usr.
+[ -x /karotz/scripts/ota-resume.sh ] && /karotz/scripts/ota-resume.sh
 
 # --- /etc (= /usr/etc): the root's own files, so a new install's are always the ones used ---
 for name in fstab group hosts ld.so.conf profile motd shells mdev.conf busybox.conf; do

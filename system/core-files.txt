@@ -1309,6 +1309,8 @@ rootfs:karotz/scripts/udhcpc_script.sh f 0755 0:0 target:usr/share/udhcpc/defaul
 rootfs:karotz/scripts/sshd.sh f 0755 0:0 core
 rootfs:karotz/scripts/inetd.sh f 0755 0:0 core
 rootfs:karotz/scripts/web-files.sh f 0755 0:0 core  # the web user's folders and locks, for inetd.sh and S40lapinlibre
+rootfs:karotz/scripts/install-lib.sh f 0644 0:0 generated  # LapiNou: the USB key's install helpers (image/usbkey/install-lib.sh), for lapinou-ota and ota-resume.sh
+rootfs:karotz/scripts/ota-resume.sh f 0755 0:0 core  # LapiNou: linuxrc's resume of a /usr that lapinou-ota's install left unfinished
 rootfs:lib/firmware/rt73.bin f 0644 0:0 generated  # the Wi-Fi's firmware, linux-firmware 20260916
 rootfs:lib/firmware/LICENCE.ralink-firmware.txt f 0644 0:0 generated  # its licence, which must travel with it
 
@@ -1387,7 +1389,6 @@ usr:share/lapinlibre/web-tags.sh f 0644 0:0 core  # the web API's URL actions an
 usr:share/lapinou d 0755 0:0
 usr:share/lapinou/persona_fr_court.txt f 0644 0:0 core  # LapiNou: lapinou-cloud's system prompt for the language model
 usr:share/lapinou/conf.sh f 0644 0:0 core  # LapiNou's settings (lapinou.conf, lapinou.secrets) for shell programs: lapinou_get, lapinou_set, lapinou_secret_get, lapinou_secret_set
-usr:share/lapinou/install-lib.sh f 0644 0:0 generated  # LapiNou: the USB key's install helpers (image/usbkey/install-lib.sh), for lapinou-ota
 usr:share/lapinou/ota-pubkey.pub f 0644 0:0 core  # LapiNou: the public key lapinou-ota checks updates with (a placeholder until the owner's real key, R42)
 usr:sbin/mdnsd f 0755 0:0 target  # mDNS: <host name>.local, and SSH advertised
 usr:lib/libmdnsd.so.1 l libmdnsd.so.1.0.0

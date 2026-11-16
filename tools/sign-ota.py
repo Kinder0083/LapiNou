@@ -2,14 +2,14 @@
 # SPDX-License-Identifier: MIT
 """Sign a LapiNou release for lapinou-ota (R41, R42; docs/lapinou/ota.md).
 
-    sign-ota.py --key PRIVATE --dir DIR [--version TAG] [--file NAME ...]
+    sign-ota.py --key PRIVATE --dir DIR --version vX.Y.Z [--file NAME ...]
     sign-ota.py --verify --pubkey PUBLIC --dir DIR
 
 Signing writes DIR/manifest.json, {"version": TAG, "files": {NAME: {"sha256": HEX, "size": N}}},
 and DIR/manifest.json.sig, the raw 64-byte Ed25519 signature of manifest.json's exact bytes. The
 files are those named by --file, else zImage, rootfs.img.gz, usr.tar.gz and the USB key's archive
-(LapinLibre-*.zip or lapinou-key-*.zip) found in DIR. TAG is the release's tag, which must be the
-manifest's version; without --version, BUILD_VERSION from DIR/install.conf (a built key's).
+(LapinLibre-*.zip or lapinou-key-*.zip) found in DIR. --version is required: the release's tag,
+vX.Y.Z, which is the manifest's version (R44); never the build's commit (BUILD_VERSION).
 Each listed file is published as a release asset under the same name.
 
 --verify checks the signature with the public key, then every listed file's size and SHA-256.
@@ -30,6 +30,7 @@ MANIFEST = "manifest.json"
 SIG = "manifest.json.sig"
 IMAGES = ("zImage", "rootfs.img.gz", "usr.tar.gz")
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,99}")
+RELEASE = re.compile(r"v[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}")
 KEY_ZIP = re.compile(r"(?:LapinLibre|lapinou-key)-.+\.zip")
 
 
@@ -50,18 +51,9 @@ def openssl(*args):
     return r.returncode == 0, (r.stdout + r.stderr).strip()
 
 
-def build_version(d: Path) -> str:
-    conf = d / "install.conf"
-    if conf.is_file():
-        for line in conf.read_text(encoding="utf-8").splitlines():
-            if line.startswith("BUILD_VERSION="):
-                return line.split("=", 1)[1].strip()
-    raise Fail("no --version and no BUILD_VERSION in install.conf")
-
-
 def sign(key: Path, d: Path, version: str, names: list[str]):
-    if not NAME.fullmatch(version):
-        raise Fail(f"bad version {version!r}")
+    if not RELEASE.fullmatch(version):
+        raise Fail(f"--version {version!r} isn't a release tag, vX.Y.Z (R44)")
     if not names:
         names = [n for n in IMAGES if (d / n).is_file()] + sorted(p.name for p in d.iterdir()
                                                                 if p.is_file() and KEY_ZIP.fullmatch(p.name))
@@ -97,7 +89,7 @@ def verify(pubkey: Path, d: Path):
         raise Fail(f"bad signature: {out}")
     m = json.loads((d / MANIFEST).read_bytes())
     files = m.get("files")
-    if not isinstance(m.get("version"), str) or not NAME.fullmatch(m["version"]) or not isinstance(files, dict):
+    if not isinstance(m.get("version"), str) or not RELEASE.fullmatch(m["version"]) or not isinstance(files, dict):
         raise Fail("manifest.json has no valid version or files")
     bad = []
     for n, want in sorted(files.items()):
@@ -115,7 +107,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--dir", type=Path, required=True)
     p.add_argument("--key", type=Path, help="the Ed25519 private key (PEM), to sign")
-    p.add_argument("--version", help="the release's tag (default: install.conf's BUILD_VERSION)")
+    p.add_argument("--version", help="the release's tag, vX.Y.Z (required to sign)")
     p.add_argument("--file", action="append", default=[], help="a file of DIR to list (repeatable)")
     p.add_argument("--verify", action="store_true")
     p.add_argument("--pubkey", type=Path, help="the Ed25519 public key (PEM), to verify")
@@ -128,7 +120,9 @@ def main():
         else:
             if not a.key:
                 p.error("signing needs --key")
-            sign(a.key, a.dir, a.version or build_version(a.dir), a.file)
+            if not a.version:
+                p.error("signing needs --version vX.Y.Z (the release's tag)")
+            sign(a.key, a.dir, a.version, a.file)
     except (Fail, OSError, ValueError) as e:
         print(f"sign-ota: {e}", file=sys.stderr)
         return 1

@@ -59,6 +59,8 @@ while [ $# -gt 0 ]; do
 done
 [ -n "${RABBIT}" ] && [ -n "${KEY}" ] || usage
 [[ "${RABBIT}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || die 2 "--rabbit must be an address or a host name"
+WAIT_S=${LAPINOU_WAIT_S:-300}  # the wait for LapinLibre after the reboot, in seconds (step 4)
+case "${WAIT_S}" in ""|*[!0-9]*) die 2 "LAPINOU_WAIT_S must be a number of seconds" ;; esac
 
 # 1. On the PC: the key's files and their checksums.
 for f in zImage rootfs.img.gz usr.tar.gz install.conf build_id install-lib.sh applysettings.sh lapinou-conf.sh lapinlibre.txt; do
@@ -202,12 +204,14 @@ sleep 5
 
 [ ${WAIT} -eq 1 ] || exit 0
 # 4. LapinLibre back on the network: SSH with the key, and the web page.
-echo "Waiting for LapinLibre (up to 5 minutes)"
+# At most WAIT_S seconds in all (LAPINOU_WAIT_S; 5 minutes by default), however long each attempt
+# takes (30 s at most for an SSH connection).
+echo "Waiting for LapinLibre (up to ${WAIT_S} s)"
 ssh_ok= web_ok=
 NEW_OPTS=(-o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new
     -o "UserKnownHostsFile=${WORK}/known_hosts_lapinlibre")
 [ -z "${PRIVKEY}" ] || NEW_OPTS+=(-i "${PRIVKEY}" -o IdentitiesOnly=yes)
-end=$((SECONDS + 300))
+end=$((SECONDS + WAIT_S))
 while [ "${SECONDS}" -lt "${end}" ]; do
     sleep 5
     if [ -z "${ssh_ok}" ] && "${SSH}" "${NEW_OPTS[@]}" "karotz@${RABBIT}" true > /dev/null 2>&1; then

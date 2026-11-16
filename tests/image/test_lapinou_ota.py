@@ -287,6 +287,7 @@ class OtaRabbit:
         """The power goes during the unpack: tar writes one file, then everything stops."""
         busybox = arm_busybox()
         stub(self.sb / "bin/tar", f'if [ -e {self.sb}/cut-unpack ]; then rm -f {self.sb}/cut-unpack\n'
+                                  f'mkdir -p {self.sb}/usr/karotz/bin\n'
                                   f'echo partial > {self.sb}/usr/karotz/bin/controller; kill -KILL 0; fi\n'
                                   f'exec {busybox} tar "$@"')
         (self.sb / "cut-unpack").write_text("")
@@ -686,7 +687,11 @@ class OtaTest(unittest.TestCase):
         self.assertTrue((r.sb / "usr/ota/resume.conf").is_file())
         self.assertEqual((r.sb / "usr/ota/new/usr.tar.gz").read_bytes(), self.files["usr.tar.gz"])
         self.assertNotIn("reboot -f", r.actions())
-        # lapinou-ota itself won't start over it (nor remove what the resume needs).
+        # lapinou-ota, gone with the rest of /usr here, wouldn't start over it either (nor remove what
+        # the resume needs), had the cut come after its own file was unpacked.
+        self.assertFalse(r.ota.exists())
+        r.put_script(OTA, r.ota, "127.0.0.1:1")
+        r.put_script(CONF_SH, r.sb / "usr/share/lapinou/conf.sh")
         p = r.run("check")
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("interrupted", p.stderr)

@@ -3,7 +3,14 @@
 # lapinou-ota: LapiNou's signed updates on the rabbit (Task 11; docs/lapinou/ota.md).
 #
 #   lapinou-ota check       print {"installed":"...","available":"..."} (the signed manifest's version)
-#   lapinou-ota install     download, check, then write mtd1, mtd2 and /usr, and reboot
+#   lapinou-ota install [--allow-downgrade]
+#                           download, check, then write mtd1, mtd2 and /usr, and reboot
+#
+# Versions (R44): a release is vX.Y.Z (the manifest's version, the release's tag); the rabbit's
+# sys_version is the tag it was installed from, or 0.0.0-<commit> for a build that isn't a release
+# (anything else, from before R44, counts as 0.0.0). A version lower than the installed one is
+# refused unless --allow-downgrade is given; the same version, or the same build (the build id the
+# manifest's SHA-256s give equals lapinlibre_build_id), is not installed again.
 #
 # Where an update comes from (lapinou.conf):
 #   [ota] url, else http://<[server] host>:8080/ota/ when [server] enabled=1: a LapiNou server's
@@ -20,23 +27,31 @@
 # from the network and nothing installs. The rabbit takes zImage (mtd1), rootfs.img.gz (mtd2) and
 # usr.tar.gz (/usr); the other files listed (the USB key's archive) aren't its to download.
 #
-# The files go to /usr/ota/new, on the flash (not in RAM), and are removed when anything fails;
-# what an interrupted run left there is removed by the next one. Nothing is written before the
-# signature, every size and SHA-256, both archives' decompression and the partitions' and RAM
-# disk's sizes check out. Then, as the USB key's install does (install-lib.sh): LapinLibre's
-# daemons are stopped, mtd1 and mtd2 erased and written (never any other partition), /usr replaced
-# keeping its settings (/usr/etc/conf, the rabbit's own karotz.conf and voice.conf too), the apps,
-# the messages and uuid.conf, the version and build id recorded, and the rabbit reboots. The log
-# of the last install: /usr/ota/last.log.
+# The files go to /usr/ota/new, on the flash (not in RAM). Before the writing, any failure removes
+# them, and what an interrupted run left there is removed by the next one. Nothing is written before
+# the signature, the version, every size and SHA-256, both archives' decompression and the
+# partitions' and RAM disk's sizes check out. Then, as the USB key's install does (install-lib.sh,
+# in the root filesystem): LapinLibre's daemons are stopped; mtd1, then mtd2, erased, written and
+# read back (nanddump) against the checked SHA-256, written once more if it differs, and the
+# install stops there if it differs twice (never any other partition). Only then /usr: the rabbit's
+# karotz.conf and voice.conf are kept in /usr/ota/new, /usr/ota/resume.conf is written, and the root
+# filesystem's ota-resume.sh replaces /usr (keeping /usr/etc/conf, the apps, the messages and
+# uuid.conf), records the version and build id and removes the downloads; the rabbit reboots. If
+# the power goes during /usr, linuxrc runs ota-resume.sh again at the next boot (resume.conf is
+# still there). From the first erase on, the checked files are never removed by a failure. The
+# phases and what a power cut does in each: docs/lapinou/ota-lapin.md. The log of the last install:
+# /usr/ota/last.log.
 #
-# Exit status: 0 done, or nothing to do; 1 failed (nothing written, unless the log says the writing
-# had begun); 2 usage. BusyBox ash, with the image's curl and openssl.
+# Exit status: 0 done, or nothing to do; 1 failed or refused (nothing written, unless the log says
+# the writing had begun); 2 usage. BusyBox ash, with the image's curl and openssl.
 
 PATH=/bin:/sbin:/usr/bin:/usr/sbin
 export PATH
 
 OTA_DIR=/usr/ota
 NEW=/usr/ota/new
+MARK=/usr/ota/resume.conf
+RESUME=/karotz/scripts/ota-resume.sh
 CONF=/usr/etc/conf
 PUBKEY=/usr/share/lapinou/ota-pubkey.pub
 CACERT=/usr/etc/ssl/certs/ca-certificates.crt
@@ -54,17 +69,25 @@ MAX_FILE=314572800
 exec 3>&1 1>&2
 
 . /usr/share/lapinou/conf.sh
-. /usr/share/lapinou/install-lib.sh
+. /karotz/scripts/install-lib.sh
 SETUPLOG=/dev/null
 
 MODE=$1
+ALLOW_DOWNGRADE=
+case "$2" in
+'') ;;
+--allow-downgrade) [ "${MODE}" = install ] && ALLOW_DOWNGRADE=1 || MODE=usage ;;
+*) MODE=usage ;;
+esac
 WRITING=
 
-cleanup() { rm -rf "${NEW}"; }
+# The downloads go, but never once the writing has begun, nor while an interrupted install's
+# resume needs them.
+cleanup() { [ -n "${WRITING}" ] || [ -f "${MARK}" ] || rm -rf "${NEW}"; }
 die() {
     LOG "ERROR: $*"
     if [ -n "${WRITING}" ]; then
-        LOG "the writing had begun: install the USB key to repair the rabbit"
+        LOG "the writing had begun: the checked files stay in ${NEW}; install the USB key to repair the rabbit"
         nose_solid FF0000
     fi
     cleanup
@@ -82,12 +105,42 @@ sha_ok() { case "$1" in *[!0-9a-f]*) return 1 ;; esac; [ ${#1} -eq 64 ]; }
 num_ok() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; [ ${#1} -le 10 ]; }
 size_of() { wc -c < "$1" | tr -d ' '; }
 
-# A partition's size in bytes, from /proc/mtd (empty when there is no such partition).
-mtd_size() { # mtdN
-    local line
+# A partition's size and erase block in bytes, from /proc/mtd (empty when there is no such
+# partition).
+mtd_field() { # mtdN column
+    local line column=$2
     line=$(grep "^$1:" /proc/mtd 2> /dev/null)
     set -- ${line}
-    case "$2" in ''|*[!0-9a-fA-F]*) ;; *) echo $((0x$2)) ;; esac
+    eval "line=\${${column}}"
+    case "${line}" in ''|*[!0-9a-fA-F]*) ;; *) echo $((0x${line})) ;; esac
+}
+mtd_size() { mtd_field "$1" 2; }
+mtd_erase() { mtd_field "$1" 3; }
+
+# A release's version, vX.Y.Z (R44), each number at most 9 digits.
+release_ok() {
+    local v=${1#v} x y z
+    [ "${1}" != "${v}" ] || return 1
+    case "${v}" in *.*.*.*) return 1 ;; *.*.*) ;; *) return 1 ;; esac
+    x=${v%%.*}; v=${v#*.}; y=${v%%.*}; z=${v#*.}
+    for n in "${x}" "${y}" "${z}"; do
+        case "${n}" in ''|*[!0-9]*) return 1 ;; esac
+        [ ${#n} -le 9 ] || return 1
+    done
+}
+# "X Y Z" of a version: a release's numbers; 0 0 0 for a dev build (0.0.0-<commit>) or anything else.
+version_numbers() {
+    local v=${1#v}
+    if release_ok "$1"; then
+        echo "${v%%.*} $(echo "${v#*.}" | tr . ' ')"
+    else
+        echo "0 0 0"
+    fi
+}
+# Is version $1 lower than version $2?
+version_lower() {
+    set -- $(version_numbers "$1") $(version_numbers "$2")
+    [ "$1" -lt "$4" ] || { [ "$1" -eq "$4" ] && { [ "$2" -lt "$5" ] || { [ "$2" -eq "$5" ] && [ "$3" -lt "$6" ]; }; }; }
 }
 
 # --- JSON ----------------------------------------------------------------------------------------
@@ -171,11 +224,13 @@ flat_get() { # file path
 
 # --- Fetching ------------------------------------------------------------------------------------
 
-# A plain download (the LapiNou server): FILE gets URL, at most MAX bytes.
+# A download from the LapiNou server: FILE gets URL, at most MAX bytes. Over http, or https
+# checked against the rabbit's CA certificates; no other protocol, no curlrc (-q, first).
 http_get() { # url file max
     rm -f "$2"
-    "${CURL}" -fsS --connect-timeout 15 --max-time 1800 --speed-limit 1 --speed-time 60 --max-filesize "$3" \
-        -A lapinou-ota -o "$2" "$1" < /dev/null || { rm -f "$2"; return 1; }
+    "${CURL}" -q -fsS --proto =http,https --cacert "${CACERT}" --connect-timeout 15 --max-time 1800 \
+        --speed-limit 1 --speed-time 60 --max-filesize "$3" -A lapinou-ota -o "$2" "$1" < /dev/null ||
+        { rm -f "$2"; return 1; }
     [ "$(size_of "$2")" -le "$3" ] || { rm -f "$2"; return 1; }
 }
 
@@ -192,9 +247,9 @@ gh_request() { # url file accept max
     local url=$1
     shift 4
     if [ -n "${TOKEN}" ] && [ "$(authority "${url}")" = "${API_HOST}" ]; then
-        printf 'header = "Authorization: Bearer %s"\n' "${TOKEN}" | "${CURL}" -K - "$@" "${url}"
+        printf 'header = "Authorization: Bearer %s"\n' "${TOKEN}" | "${CURL}" -q -K - "$@" "${url}"
     else
-        "${CURL}" "$@" "${url}" < /dev/null
+        "${CURL}" -q "$@" "${url}" < /dev/null
     fi
 }
 
@@ -270,7 +325,7 @@ check_pubkey() {
 
 # NEW/manifest.json and its signature, checked; then VERSION and, per needed file, its size and SHA-256.
 fetch_manifest() {
-    local i url
+    local f s n
     if [ "${SOURCE}" = server ]; then
         http_get "${BASE}manifest.json" "${NEW}/manifest.json" 1048576 || die "can't read ${BASE}manifest.json"
         http_get "${BASE}manifest.json.sig" "${NEW}/manifest.json.sig" 64 || die "can't read ${BASE}manifest.json.sig"
@@ -290,6 +345,7 @@ fetch_manifest() {
     LOG "manifest.json's signature is good"
     json_flat < "${NEW}/manifest.json" > "${NEW}/manifest.flat" || die "manifest.json isn't valid JSON"
     VERSION=$(flat_get "${NEW}/manifest.flat" version) && name_ok "${VERSION}" || die "manifest.json has no valid version"
+    release_ok "${VERSION}" || die "manifest.json's version ${VERSION} isn't a release's, vX.Y.Z (R44): refused"
     if [ "${SOURCE}" = github ] && [ "${TAG}" != "${VERSION}" ]; then
         die "release ${TAG} carries the manifest of ${VERSION}: refused"
     fi
@@ -334,7 +390,10 @@ start() {
     mkdir -p "${OTA_DIR}" || die "can't make ${OTA_DIR}"
     exec 9> "${LOCK}"
     flock -n 9 || { LOG "ERROR: another lapinou-ota is running"; exit 1; }
-    # Whatever an interrupted run left.
+    # An install interrupted during /usr is linuxrc's to finish (at the next boot), with what it kept.
+    [ ! -f "${MARK}" ] ||
+        die "an interrupted install's /usr is to be finished at the next boot (${MARK}): reboot the rabbit"
+    # Whatever an interrupted download left.
     cleanup
     mkdir -p "${NEW}" || die "can't make ${NEW}"
     check_pubkey
@@ -362,26 +421,64 @@ download() { # name
     [ "$(sha256sum "${NEW}/${f}" | cut -d ' ' -f 1)" = "$(sha_of "${f}")" ] || die "${f}'s SHA-256 isn't the manifest's"
 }
 
-write_mtd() { # mtdN image (mtd1 and mtd2 only)
+# Does the partition hold the image? Read back by nanddump (no OOB, bad blocks skipped as nandwrite
+# -m skips them), whole erase blocks, and its first <image size> bytes' SHA-256 compared with the
+# checked one.
+readback_ok() { # mtdN image sha256
+    local size erase len got
+    size=$(size_of "$2")
+    erase=$(mtd_erase "$1")
+    num_ok "${erase}" && [ "${erase}" -gt 0 ] || erase=131072
+    len=$(( (size + erase - 1) / erase * erase ))
+    rm -f "${NEW}/readback"
+    /sbin/nanddump -q --bb=skipbad -l "${len}" -f "${NEW}/readback" "/dev/$1" > /dev/null 2>&1 ||
+        { rm -f "${NEW}/readback"; return 1; }
+    got=$(head -c "${size}" "${NEW}/readback" | sha256sum | cut -d ' ' -f 1)
+    rm -f "${NEW}/readback"
+    [ "${got}" = "$3" ]
+}
+
+# Erase, write and read back a partition (mtd1 and mtd2 only); once more if it reads back wrong; if
+# it still does, stop there: /usr is untouched and the checked files stay.
+write_mtd() { # mtdN image sha256
+    local try
     case "$1" in mtd1|mtd2) ;; *) die "refusing to write $1" ;; esac
-    LOG "Writing ${2##*/} to $1"
-    erase_partition "/dev/$1" > /dev/null || die "erasing $1 failed"
-    /sbin/nandwrite -pm "/dev/$1" "$2" > /dev/null || die "writing ${2##*/} to $1 failed"
+    for try in 1 2; do
+        LOG "Writing ${2##*/} to $1"
+        erase_partition "/dev/$1" > /dev/null || die "erasing $1 failed"
+        if /sbin/nandwrite -pm "/dev/$1" "$2" > /dev/null && readback_ok "$1" "$2" "$3"; then
+            LOG "$1 read back: the same as ${2##*/}"
+            return 0
+        fi
+        [ "${try}" = 2 ] || LOG "$1 reads back wrong: writing it once more"
+    done
+    die "$1 reads back wrong twice: /usr is untouched; read docs/lapinou/ota-lapin.md before rebooting the rabbit"
 }
 
 install() {
-    local installed f limit free need sectors raw id
+    local installed f limit free need sectors raw id pair
     mkdir -p "${OTA_DIR}" || die "can't make ${OTA_DIR}"
     SETUPLOG=${OTA_DIR}/last.log
     : > "${SETUPLOG}"
     start
     fetch_manifest
     installed=$(installed_version)
-    LOG "Installed ${installed:-unknown}; available ${VERSION}"
+    id=$(build_id)
+    LOG "Installed ${installed:-unknown}; available ${VERSION} (build ${id})"
+    if [ "${id}" = "$(head -n 1 "${CONF}/lapinlibre_build_id" 2> /dev/null)" ]; then
+        LOG "The rabbit already runs the same build: nothing to install"
+        cleanup
+        exit 0
+    fi
     if [ "${VERSION}" = "${installed}" ]; then
         LOG "The rabbit is up to date"
         cleanup
         exit 0
+    fi
+    if version_lower "${VERSION}" "${installed}"; then
+        [ -n "${ALLOW_DOWNGRADE}" ] ||
+            die "${VERSION} is lower than the installed ${installed}: refused (lapinou-ota install --allow-downgrade to install it anyway)"
+        LOG "${VERSION} is lower than the installed ${installed}: installed as --allow-downgrade asks"
     fi
     # Room for the files before downloading them, and each image fits its partition.
     for pair in zImage:mtd1 rootfs.img.gz:mtd2; do
@@ -405,42 +502,27 @@ install() {
         [ "${raw}" -le $((sectors * 512)) ] ||
             die "the root filesystem is ${raw} bytes uncompressed; the RAM disk holds $((sectors * 512))"
     fi
-    id=$(build_id)
+    [ -f "${RESUME}" ] || die "no ${RESUME} in this root filesystem: install with the USB key"
     LOG "Checks passed: installing ${VERSION} (build ${id})"
 
-    # From here on the rabbit is being changed.
+    # From here on the rabbit is being changed, and the checked files are kept whatever happens.
     trap '' INT TERM HUP
     WRITING=1
     /usr/etc/init.d/S40lapinlibre stop > /dev/null 2>&1
     nose_pulse FFFF00 500
-    write_mtd mtd1 "${NEW}/zImage"
-    write_mtd mtd2 "${NEW}/rootfs.img.gz"
+    write_mtd mtd1 "${NEW}/zImage" "$(sha_of zImage)"
+    write_mtd mtd2 "${NEW}/rootfs.img.gz" "$(sha_of rootfs.img.gz)"
+    # Both partitions read back right: /usr, by the root filesystem's ota-resume.sh, which the next
+    # boot runs again if the power goes before it ends (resume.conf).
     for f in karotz.conf voice.conf; do
         rm -f "${NEW}/kept-${f}"
-        [ -f "${CONF}/${f}" ] && cp -p "${CONF}/${f}" "${NEW}/kept-${f}"
-    done
-    LOG "Cleaning /usr"
-    clean_usr ota
-    rm -f "${CONF}/freerabbits_build_id"
-    LOG "Unpacking usr.tar.gz into /usr"
-    if ! unpack_into_usr "${NEW}/usr.tar.gz"; then
-        LOG "Unpacking failed: cleaning /usr and trying once more"
-        clean_usr ota
-        unpack_into_usr "${NEW}/usr.tar.gz" || die "unpacking usr.tar.gz into /usr failed twice"
-    fi
-    mkdir -p "${CONF}"
-    for f in karotz.conf voice.conf; do
-        if [ -f "${NEW}/kept-${f}" ]; then
-            cp -p "${NEW}/kept-${f}" "${CONF}/${f}" || die "can't put the rabbit's ${f} back"
+        if [ -f "${CONF}/${f}" ]; then
+            cp -p "${CONF}/${f}" "${NEW}/kept-${f}" || die "can't keep the rabbit's ${f}"
         fi
     done
-    echo "${VERSION}" > "${CONF}/sys_version"
-    echo "${id}" > "${CONF}/lapinlibre_build_id"
-    rm -rf /usr/install /usr/yaffs* /usr/.install_yaffs_start
-    # The new root filesystem's inittab is copied at the next boot.
-    rm -f /usr/etc/inittab
-    cleanup
-    sync
+    printf 'VERSION=%s\nBUILD_ID=%s\nUSR_SHA=%s\n' "${VERSION}" "${id}" "$(sha_of usr.tar.gz)" > "${MARK}.new" &&
+        sync && mv -f "${MARK}.new" "${MARK}" && sync || die "can't write ${MARK}"
+    /bin/sh "${RESUME}" || die "replacing /usr failed (the next boot tries again from ${NEW})"
     LOG "Installed ${VERSION}: rebooting"
     /sbin/reboot -f
     exit 0
@@ -449,6 +531,6 @@ install() {
 case "${MODE}" in
 check) check ;;
 install) install ;;
-*) echo "usage: lapinou-ota check|install"; exit 2 ;;
+*) echo "usage: lapinou-ota check | install [--allow-downgrade]"; exit 2 ;;
 esac
 exit 0

@@ -78,6 +78,24 @@ def git_describe():
         return "unversioned"
 
 
+def git_commit():
+    """The commit's short hash (12 digits), or "" outside git."""
+    try:
+        return subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], cwd=ROOT, capture_output=True, text=True,
+                              check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+
+
+def release_version(describe, commit):
+    """The version the build installs as the rabbit's sys_version (R44): the release tag vX.Y.Z when
+    the build is exactly that tag (git_describe() is the tag alone: no commit after it, no change),
+    else "0.0.0-<commit>", lower than every release."""
+    if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", describe):
+        return describe
+    return f"0.0.0-{commit or 'unversioned'}"
+
+
 def source_epoch():
     """The timestamp for the files the build makes: SOURCE_DATE_EPOCH, else the commit's time."""
     if os.environ.get("SOURCE_DATE_EPOCH"):
@@ -207,13 +225,15 @@ def core_generated(changes):
     for path, data in ca_certificates(changes).items():
         out[("usr", path)] = data
     # LapiNou's updates (Task 11): lapinou-ota, a shell script (nothing to compile, so not the
-    # userland stage's), and the key's install helpers it shares with the key's autorun.
-    for path, src in (("karotz/bin/lapinou-ota", ROOT / "userland/src/usr/lapinou-ota/lapinou-ota.sh"),
-                      ("share/lapinou/install-lib.sh", IMAGE / "usbkey" / "install-lib.sh")):
+    # userland stage's), in /usr; the key's install helpers it shares with the key's autorun, in the
+    # root filesystem, where the boot's resume of an interrupted /usr (karotz/scripts/ota-resume.sh)
+    # finds them whatever is left of /usr.
+    for part, path, src in (("usr", "karotz/bin/lapinou-ota", ROOT / "userland/src/usr/lapinou-ota/lapinou-ota.sh"),
+                            ("rootfs", "karotz/scripts/install-lib.sh", IMAGE / "usbkey" / "install-lib.sh")):
         data = src.read_bytes()
         if b"\r" in data:
             raise ImageError(f"{src} has CRLF line endings; the rabbit's shell can't run it")
-        out[("usr", path)] = data
+        out[(part, path)] = data
     for name, notes in SOUNDS.items():
         out[("usr", f"karotz/sounds/{name}")] = tone_wav(notes)
     for name, notes in EFFECTS.items():
@@ -363,7 +383,8 @@ def build(out):
     for name, data in images.items():
         (out / name).write_bytes(data)
     (out / "install.conf").write_bytes(install_conf({
-        "BUILD_ID": build_id, "BUILD_VERSION": version, "KERNEL_MD5": md5(images["zImage"]),
+        "BUILD_ID": build_id, "BUILD_VERSION": version, "RELEASE_VERSION": release_version(version, git_commit()),
+        "KERNEL_MD5": md5(images["zImage"]),
         "ROOTFS_MD5": md5(images["rootfs.img.gz"]), "USR_MD5": md5(images["usr.tar.gz"]),
         "INSTALL_TOOLS_MD5": md5(common["install-tools.tar"])}))
     (out / "build_id").write_text(build_id + "\n", encoding="utf-8", newline="\n")

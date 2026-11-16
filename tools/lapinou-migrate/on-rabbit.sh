@@ -12,7 +12,8 @@
 #
 # A fixed address (NETWORK=static, no network.conf yet) takes the gateway and DNS server the rabbit
 # uses now, once they answer (a ping, a DNS lookup); else the PC's (PC_GATEWAY, PC_DNS: the PC's
-# gateway only when it is on the rabbit's network), when they answer; else the check fails.
+# gateway only when it is on the rabbit's network), when they answer; else, or without ping or
+# nslookup to tell, the check fails.
 #
 # "check" writes nothing to the flash: it also reads mtd1 and mtd2 whole and compares them with the
 # backup's md5s, lists /usr/etc/conf and the processes "install" would stop. "install" checks
@@ -158,7 +159,7 @@ probe_network() {
     ping=$(first_tool /bin/ping /usr/bin/ping /sbin/ping /usr/sbin/ping)
     lookup=$(first_tool /usr/bin/nslookup /bin/nslookup /sbin/nslookup /usr/sbin/nslookup)
     if [ -z "${ping}" ]; then
-        LOG "Network: no ping on this rabbit: the gateway ${NET_GW} isn't checked"
+        ERROR "no ping on this rabbit: the gateway ${NET_GW} can't be checked before it goes in network.conf; use --dhcp"
     elif "${ping}" -c 1 -W 3 "${NET_GW}" > /dev/null 2>&1; then
         LOG "Network: the gateway ${NET_GW} answers"
     elif is_ipv4 "${PC_GATEWAY:-}" && [ "${PC_GATEWAY}" != "${NET_GW}" ] &&
@@ -170,7 +171,7 @@ probe_network() {
         ERROR "the gateway ${NET_GW} doesn't answer a ping, nor does the PC's gateway${PC_GATEWAY:+ ${PC_GATEWAY}} on the rabbit's network: use --dhcp, or check the rabbit's network"
     fi
     if [ -z "${lookup}" ]; then
-        LOG "Network: no nslookup on this rabbit: the DNS server ${NET_DNS} isn't checked"
+        ERROR "no nslookup on this rabbit: the DNS server ${NET_DNS} can't be checked before it goes in network.conf; use --dhcp"
     elif "${lookup}" github.com "${NET_DNS}" > /dev/null 2>&1; then
         LOG "Network: the DNS server ${NET_DNS} answers"
     elif is_ipv4 "${PC_DNS:-}" && [ "${PC_DNS}" != "${NET_DNS}" ] && "${lookup}" github.com "${PC_DNS}" > /dev/null 2>&1; then
@@ -299,8 +300,8 @@ check_all() { # [usr]
     local sectors raw ram free need f
     FAIL_CODE=2
     . "${STAGE}/install.conf" || ERROR "can't read install.conf"
-    [ -n "${BUILD_ID}" ] && [ -n "${KERNEL_MD5}" ] && [ -n "${ROOTFS_MD5}" ] && [ -n "${USR_MD5}" ] ||
-        ERROR "install.conf lacks a build id or a checksum"
+    [ -n "${BUILD_ID}" ] && [ -n "${RELEASE_VERSION}" ] && [ -n "${KERNEL_MD5}" ] && [ -n "${ROOTFS_MD5}" ] && [ -n "${USR_MD5}" ] ||
+        ERROR "install.conf lacks a build id, a release version or a checksum"
     LOG "LapiNou migration from Free Rabbits OS: build ${BUILD_ID} (${BUILD_VERSION}), mode ${MODE}"
     LOG "Rabbit: rootfs $(cat /karotz/etc/rootfs_version 2> /dev/null), kernel $(uname -r 2> /dev/null)"
     [ ! -f "${CONF}/lapinlibre_build_id" ] ||
@@ -454,7 +455,7 @@ install() {
         LOG "network.conf written (${NET_PLAN})"
     fi
 
-    echo "${BUILD_VERSION}" > "${CONF}/sys_version"
+    echo "${RELEASE_VERSION}" > "${CONF}/sys_version"  # R44: the release tag, as the key and lapinou-ota write it
     rm -rf /usr/install /usr/yaffs* /usr/.install_yaffs_start
     ERROR_SOUND=none bash "${STAGE}/applysettings.sh" || ERROR "the settings were not applied"
     cp "${STAGE}/build_id" "${CONF}/lapinlibre_build_id" || ERROR "can't record the build id"

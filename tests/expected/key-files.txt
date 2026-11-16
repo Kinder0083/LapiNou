@@ -1559,5 +1559,6 @@ usr:www/cgi-bin/wakeup f 0755 0:0
 usr:www/index.html f 0644 0:0
 usr:www/style.css f 0644 0:0
 usr:karotz/bin/lapinou-ota f 0755 0:0
-usr:share/lapinou/install-lib.sh f 0644 0:0
 usr:share/lapinou/ota-pubkey.pub f 0644 0:0
+rootfs:karotz/scripts/install-lib.sh f 0644 0:0
+rootfs:karotz/scripts/ota-resume.sh f 0755 0:0
