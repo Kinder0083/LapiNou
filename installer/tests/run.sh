@@ -23,6 +23,7 @@ STUBS="$HERE/stubs"
 PASSED=0
 FAILED=0
 FAILURES=()
+CASE_DIRS=()
 CASE=""
 T=""
 BROKER_PID=""
@@ -45,7 +46,8 @@ trap 'stop_broker' EXIT
 new_case() {
     stop_broker
     CASE="$1"
-    T=$(mktemp -d)
+    T=$(mktemp -d "${TMPDIR:-/tmp}/lapinou-installer-test.XXXXXX")
+    CASE_DIRS+=("$T")
     mkdir -p "$T/tmp"
     : > "$T/log"
     # Variables des commandes simulées remises à zéro.
@@ -545,4 +547,6 @@ fi
 stop_broker
 echo ""
 echo "$PASSED réussis, $FAILED en échec"
+# Dossiers des cas gardés seulement en cas d'échec (chemin indiqué à chaque ÉCHEC).
+if [ "$FAILED" = 0 ]; then rm -rf "${CASE_DIRS[@]}"; fi
 [ "$FAILED" = 0 ]
