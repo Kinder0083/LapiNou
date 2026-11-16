@@ -23,8 +23,11 @@ Le mot de passe est le secret `mqtt_password` (`lapinou.secrets`), transmis au b
 démarrage : après un changement, relancer le démon (`/usr/etc/init.d/S40lapinlibre restart`, ou
 tuer `lapinou-mqtt`, qu'`immortaldog` relance).
 
-`[audio] volume` (0-100) est appliqué au mélangeur au démarrage du démon et mis à jour par
-`cmd/volume`. `[assistant] language` (`fr`) est la langue de `cmd/say`.
+`[audio] volume` (0-100) est appliqué au démarrage du démon et mis à jour par `cmd/volume` (voir
+« Volume »). `[assistant] language` (`fr`) est la langue de `cmd/say`.
+
+L'identifiant du lapin (`/usr/karotz/uuid.conf`) n'est utilisé que s'il n'a que des lettres,
+chiffres, `_` et `-` (64 au plus) ; sinon le démon ne se connecte pas et le note au journal.
 
 ## Connexion
 
@@ -53,7 +56,7 @@ propre (SIGTERM), le démon publie `offline` puis se déconnecte.
 | `<p>/<id>/snapshot` | lapin → | l'image JPEG de `cmd/snapshot` (non retenue) |
 | `<p>/<id>/update` | lapin → | `{"installed_version":"…"}` (retenu) ; réservé à la Tâche 11 (OTA), qui y ajoutera `latest_version` |
 | `<p>/<id>/assistant` | serveur → | état de l'assistant, publié par le serveur LapiNou (Tâche 21), recopié dans l'état (64 octets au plus) |
-| `<p>/<id>/cmd/<nom>` | → lapin | commandes (ci-dessous) |
+| `<p>/<id>/cmd/<nom>` | → lapin | commandes (ci-dessous) ; un message **retenu** reçu sur `cmd/…` est ignoré (une commande se fait une fois, quand elle est envoyée, pas à chaque reconnexion) |
 
 État :
 
@@ -77,14 +80,45 @@ et booléens) :
 | `cmd/led` | `{"color":"RRGGBB"}`, `{"color":"RRGGBB","pulse":"RRGGBB","period_ms":700}`, `{"on":true}`, ou `RRGGBB` seul | `Led.light`, `Led.pulse` (pour toujours, période 25 à 10000 ms) ; `{"on":true}` rallume la dernière couleur non noire ; `000000` éteint |
 | `cmd/ears` | `{"left":0-16,"right":0-16}`, `{"preset":"…"}`, `{"reset":true}` | `Ears.move` (vitesse 100, celle de l'API web), `Ears.reset` (les deux oreilles) |
 | `cmd/say` | le texte (1 à 1024 octets) | `Voice.tts_speak` (voice-daemon, dont le `TTS_SERVER` est le serveur LapiNou, port 8081) ; en mode sans serveur (`[cloud] enabled=1`, `[server] enabled` différent de 1), `LapinouCloud.say(s)` si `com.mindscape.karotz.LapinouCloud` est sur le bus |
-| `cmd/sound` | une URL `http(s)://…`, ou le nom d'un son | `Multimedia.stop` puis `Multimedia.play` ; un nom (lettres, chiffres, `_`, `-`) est cherché comme le fait l'API web : `/mnt/usbkey/sounds` puis `/usr/karotz/sounds`, `.mp3` puis `.wav` |
-| `cmd/volume` | `0` à `100` | mélangeur OSS (`/dev/mixer`, `SOUND_MIXER_WRITE_VOLUME`, gauche = droite), gardé dans `[audio] volume` |
-| `cmd/sleep` | `on` / `off` | les programmes `sleep` et `wakeup` de l'API web, lancés comme `tag_listener` les lance (utilisateur `web`, depuis 127.0.0.1) : le lapin dort comme la page web le sait |
-| `cmd/snapshot` | quelconque | `Webcam.takeSnapshot` ; l'image (`/tmp/picture.jpg`, 1 Mio au plus) part sur `<p>/<id>/snapshot` |
+| `cmd/sound` | une URL `http(s)://…`, ou le nom d'un son | le programme `sound` de l'API web (`url=` ou `id=`) |
+| `cmd/volume` | `0` à `100` | voir « Volume » ; gardé dans `[audio] volume` |
+| `cmd/sleep` | `on` / `off` | les programmes `sleep` et `wakeup` de l'API web ; ensuite l'état dit ce qu'ils ont fait : en veille la LED éteinte et les oreilles à 4, au réveil la LED de l'API web et les oreilles à 0 (sauf si `ears_mode` a coupé les mouvements d'oreilles) |
+| `cmd/snapshot` | quelconque | le programme `snapshot` de l'API web ; l'image qu'il a rangée (`/var/run/lapinlibre-web/snapshots/…`, 1 Mio au plus) part sur `<p>/<id>/snapshot` |
 
-Comme l'API web, `cmd/led`, `cmd/ears`, `cmd/say` et `cmd/sound` sont refusées (et notées dans le
-journal) pendant qu'une application possède le lapin (états 21 et 22 du contrôleur) et pendant la
-veille. Une commande mal formée est ignorée et notée.
+`cmd/sound`, `cmd/snapshot` et `cmd/sleep` lancent les programmes de l'API web eux-mêmes, comme
+`tag_listener` (`cgi_run` : utilisateur `web`, depuis 127.0.0.1, utilisateur web `admin`) : leurs
+règles sont celles de la page web, sans copie dans le démon (vérification des URL `valid_url`, le
+verrou `web_lock`, l'état de lecture, les refus pendant la veille ou pendant une application).
+Leur réponse décide ; un refus est noté au journal avec le message de l'API web. Un programme qui
+finit avec un code différent de 0, ou tué (60 s au plus), est noté aussi.
+
+Comme l'API web (`web_hardware`), `cmd/led`, `cmd/ears` et `cmd/say` sont refusées pendant qu'une
+application possède le lapin (états 21 et 22 du contrôleur) et pendant la veille ; l'état est
+alors republié, pour que Home Assistant revienne à la vérité. Une commande mal formée est ignorée
+et notée.
+
+## Volume
+
+- Si le mélangeur du codec a une commande de volume (`SOUND_MIXER_READ_DEVMASK` contient
+  `SOUND_MASK_VOLUME`), `cmd/volume` règle `SOUND_MIXER_WRITE_VOLUME` sur `/dev/mixer` (gauche =
+  droite) : tout ce que le lapin joue (voix, sons, karotz-player, MPD) suit. Le volume logiciel de
+  MPD s'y ajoute (les deux se multiplient).
+- Sinon, le démon règle le volume de MPD (`setvol`, mélangeur logiciel de `mpd.conf`) par son
+  protocole sur 127.0.0.1:6600 avec le mot de passe de multimedia-daemon, dans un fil (la boucle
+  n'attend pas) : seule la musique jouée par MPD suit, pas la voix ni karotz-player.
+  multimedia-daemon garde ce volume quand MPD le signale (sa sortie active) et le remet avant de
+  jouer ; `lock::yes` met MPD à 100 % sortie coupée, `lock::no` remet le volume gardé : un
+  `setvol` fait pendant `lock::yes` est donc perdu au `lock::no` suivant.
+- Le volume publié est celui qui a été **appliqué** ; en cas d'échec (mélangeur ou MPD refuse, MPD
+  absent) le démon le note et republie l'état avec le volume d'avant (le curseur de Home Assistant
+  revient, sans passer à `null`). Au démarrage sans `[audio] volume`, le volume est lu (mélangeur
+  ou `status` de MPD).
+
+**À vérifier sur le vrai lapin (Tâche 3)** : que `/dev/mixer` existe et que l'UDA134X expose
+`SOUND_MASK_VOLUME` (ALSA OSS, contrôle « Master ») ; qu'un `cmd/volume 30` baisse bien la voix
+(`Voice.tts_speak`), un son (`Multimedia.play`) et la musique MPD ; sans commande de volume, que
+`setvol` de MPD 0.15 marche hors lecture et que multimedia-daemon le garde ; noter le chemin pris
+(`the volume: …` au démarrage dans le journal).
 
 Préréglages des oreilles (17 pas par tour, 0 = droites après une réinitialisation) : `debout` (0, 0),
 `endormies` (4, 4 : la position de veille), `tombantes` (8, 8), `perplexe` (0, 8),
@@ -126,7 +160,10 @@ Ces configurations ont été vérifiées avec les schémas de découverte de Hom
 
 ## Tests
 
-`tests/scenarios/lapinou_mqtt.py` avec le faux broker `tests/fakes/fake_mqtt_broker.py` et les faux
-démons `tests/fakes/fake_karotz_services.py` : connexion (testament, abonnements, découverte, mot de
-passe à caractères spéciaux transmis octet pour octet), chaque commande, les signaux, le mode sans
-serveur, la veille, la coupure de connexion et le redémarrage du broker.
+`tests/scenarios/lapinou_mqtt.py` avec le faux broker `tests/fakes/fake_mqtt_broker.py`, un faux
+MPD `tests/fakes/fake_mpd.py`, les faux démons `tests/fakes/fake_karotz_services.py` et les vrais
+programmes de l'API web dans le bac à sable de `tests/image/test_web_api.py` : connexion
+(testament, abonnements, découverte, mot de passe à caractères spéciaux transmis octet pour octet),
+chaque commande, les refus de l'API web (URL, son inconnu, photo pendant une application), le
+volume par le mélangeur puis par MPD (et son refus), une commande retenue, les signaux, le mode
+sans serveur, la veille, la coupure de connexion et le redémarrage du broker.

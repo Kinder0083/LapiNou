@@ -4,17 +4,20 @@
 The daemon's settings are the scenario's own (LAPINOU_CONF_DIR): [mqtt] enabled=1, host=127.0.0.1,
 port=1883, user=lapin, the secret mqtt_password a password with quotes, $, ;, a backslash, = and
 an accent (PASSWORD); [audio] volume=60; [server] enabled=0 and [cloud] enabled=1 (the mode without
-a server: cmd/say goes to LapinouCloud when it is on the bus). Its uuid.conf, the camera's picture,
-the web API's state directory and programs (sleep and wakeup are stubs that log their CGI
-environment and set or clear the sleep flag), /proc/net/wireless and conf.sh (the repository's)
-are moved by LAPINOU_* variables. /dev/mixer is a FIFO whose OSS mixer ioctls (type 'M') are faked.
+a server: cmd/say goes to LapinouCloud when it is on the bus). Its uuid.conf, /proc/net/wireless
+and conf.sh (the repository's) are moved by LAPINOU_* variables.
 
-The broker (tests/fakes/fake_mqtt_broker.py) runs in the daemon's network namespace on
-127.0.0.1:1883: started by sandbox_setup before the daemon, so the first connection succeeds; later
-started again through nsenter. Its log gives each CONNECT (the password checked byte for byte,
-not shown), SUBSCRIBE and PUBLISH. The daemons the bridge calls are fakes on the test bus
-(tests/fakes/fake_karotz_services.py), which log each call and emit the signals the scenario asks
-for; LapinouCloud is a second fake, started and stopped during the run.
+The web API's own programs (sound, snapshot, sleep, wakeup) and library run for real, in the
+sandbox of tests/image/test_web_api.py (paths moved in, its stand-ins on PATH: dbus-send records
+the calls and answers TRUE, the camera's stand-in writes its JPEG): LAPINOU_WEB_CGI, WEB_RUN and
+WEB_DATA point into it. The other daemons the bridge calls (Led, Ears, Voice, the controller,
+LapinouCloud) are fakes on the test bus (tests/fakes/fake_karotz_services.py), which log each call
+and emit the signals the scenario asks for.
+
+/dev/mixer is a FIFO whose OSS mixer ioctls (type 'M') are faked; SOUND_MIXER_READ_DEVMASK answers
+from the ioctl data file (a volume control, then none). The broker (tests/fakes/fake_mqtt_broker.py)
+and a fake MPD (tests/fakes/fake_mpd.py, its volume commands) run in the daemon's network
+namespace: started by sandbox_setup before the daemon, the broker later again through nsenter.
 
   1. The connection: the will (availability offline, retained), the subscriptions, then every
      discovery message (retained; each a JSON object with the device, a unique_id and the
@@ -23,25 +26,29 @@ for; LapinouCloud is a second fake, started and stopped during the run.
   3. cmd/ears: a preset (Ears.move), positions out of range (refused), a reset (Ears.reset).
   4. Button signals -> event/button; Rfid tag_in and tag_out -> event/rfid and the last tag.
   5. cmd/say: voice-daemon without LapinouCloud; LapinouCloud.say once it is on the bus; voice
-     again once it has gone.
-  6. cmd/sound: a sound's name, a URL, a name that isn't one (refused).
-  7. cmd/volume: the mixer, the state, and [audio] volume kept in lapinou.conf.
-  8. cmd/snapshot: the camera's picture published as it is.
-  9. cmd/sleep on: the web API's sleep program (as the web API's user, from 127.0.0.1); the LED
-     refused while asleep; cmd/sleep off: its wakeup program.
+     again once it has gone. A retained cmd/say: done once, when sent (and not again at step 12's
+     new subscription).
+  6. cmd/sound through the web API's sound: a sound's name, a URL with characters to escape, a
+     URL the web API refuses (its "::" rule), a name it doesn't know.
+  7. cmd/volume: with a volume control, the mixer (and [audio] volume kept); without one, MPD's
+     setvol; MPD refusing: the state published again with the volume as it was.
+  8. cmd/snapshot through the web API's snapshot: the picture it stored is published; refused while
+     an application owns the rabbit (the controller's state 21).
+  9. cmd/sleep on: the web API's sleep (the LED off, the ears at 4, its sleep flag); the LED
+     refused while asleep; cmd/sleep off: its wakeup (its LED state, the ears at 0).
  10. The server's assistant state, then Home Assistant's "online": everything published again.
  11. Payloads that aren't commands: ignored, the daemon goes on.
  12. The connection dropped (the will published by the broker): connected again, everything
-     published again. 13. The broker stopped and started again: the same.
+     published again, the retained command not done again.
+ 13. The broker stopped and started again: the same.
 """
 
 import base64
 import json
-import os
+import re
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -57,9 +64,13 @@ PASSWORD = 'mot de "passe" $HOME; \\ =é'
 BASE = f"lapinou/{UUID}"
 HERE = Path(__file__).resolve().parent
 BROKER = HERE.parent / "fakes" / "fake_mqtt_broker.py"
+MPD = HERE.parent / "fakes" / "fake_mpd.py"
 SERVICES = HERE.parent / "fakes" / "fake_karotz_services.py"
 CONF_SH = HERE.parent.parent / "image" / "core" / "usr" / "share" / "lapinou" / "conf.sh"
-PICTURE = None  # read from the fake's module
+MIXER_WITH_VOLUME = "80044dfe 01000000\n"  # SOUND_MIXER_READ_DEVMASK: SOUND_MASK_VOLUME
+MIXER_WITHOUT_VOLUME = "80044dfe 00000000\n"
+WEB = None  # the web API's sandbox (tests/image/test_web_api.py's Sandbox), made by sandbox_setup
+PICTURE = None  # the camera stand-in's JPEG (test_web_api.JPEG)
 
 
 def conf_value(text):
@@ -67,12 +78,11 @@ def conf_value(text):
     return text.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("=", "\\=")
 
 
-def write_script(path, text):
-    path.write_text(text)
-    path.chmod(0o755)
-
-
 def sandbox_setup(workdir, sysroot):
+    global WEB, PICTURE
+    sys.path.insert(0, str(HERE.parent / "image"))
+    import test_web_api
+
     w = Path(workdir)
     conf = w / "lapinou-conf"
     conf.mkdir()
@@ -82,26 +92,23 @@ def sandbox_setup(workdir, sysroot):
     (conf / "lapinou.secrets").write_text(f"[secrets]\nmqtt_password={conf_value(PASSWORD)}\n", encoding="utf-8")
     (conf / "lapinou.secrets").chmod(0o600)
     (w / "uuid.conf").write_text(UUID + "\n")
-    (w / "web-run").mkdir()
-    cgi = w / "cgi-bin"
-    cgi.mkdir()
-    env_line = ('echo "$0: REQUEST_METHOD=$REQUEST_METHOD SCRIPT_NAME=$SCRIPT_NAME REQUEST_URI=$REQUEST_URI '
-                'QUERY_STRING=$QUERY_STRING REMOTE_USER=$REMOTE_USER REMOTE_ADDR=$REMOTE_ADDR '
-                f'GATEWAY_INTERFACE=$GATEWAY_INTERFACE" >> {w}/cgi.log\n')
-    write_script(cgi / "sleep", f"#!/bin/sh\n{env_line}echo 1700000000 > {w}/web-run/sleep\n")
-    write_script(cgi / "wakeup", f"#!/bin/sh\n{env_line}/bin/rm -f {w}/web-run/sleep\n")
+    (w / "ioctl-data").write_text(MIXER_WITH_VOLUME)
+    WEB = test_web_api.Sandbox(None)
+    PICTURE = test_web_api.JPEG
     (w / "wireless").write_text(
         "Inter-| sta-|   Quality        |   Discarded packets               | Missed | WE\n"
         " face | tus | link level noise |  nwid  crypt   frag  retry   misc | beacon | 22\n"
         " wlan0: 0000   54.  -57.  -256        0      0      0      0      0        0\n")
     broker = w / "broker"
     broker.mkdir()
-    # The broker, in the daemon's namespaces, up before the daemon starts.
-    return (f"export LAPINOU_CONF_DIR={conf} LAPINOU_UUID_FILE={w}/uuid.conf LAPINOU_PICTURE={w}/picture.jpg "
-            f"LAPINOU_WEB_RUN={w}/web-run LAPINOU_WEB_CGI={cgi} LAPINOU_WIRELESS={w}/wireless "
-            f"LAPINOU_CONF_SH={CONF_SH}; "
+    sb = WEB.sb
+    return (f"export LAPINOU_CONF_DIR={conf} LAPINOU_UUID_FILE={w}/uuid.conf "
+            f"LAPINOU_WEB_RUN={sb}/var/run/lapinlibre-web LAPINOU_WEB_DATA={sb}/usr/etc/conf/web "
+            f"LAPINOU_WEB_CGI={sb}/usr/www/cgi-bin LAPINOU_WIRELESS={w}/wireless LAPINOU_CONF_SH={CONF_SH}; "
             f"{sys.executable} -I {BROKER} {broker} {PORT} > /dev/null 2> {broker}/err & "
-            f"i=0; while [ ! -e {broker}/ready ] && [ $i -lt 200 ]; do /bin/sleep 0.1; i=$((i + 1)); done; ")
+            f"{sys.executable} -I {MPD} {broker} 6600 > /dev/null 2> {broker}/mpd-err & "
+            f"i=0; while {{ [ ! -e {broker}/ready ] || [ ! -e {broker}/mpd-ready ]; }} && [ $i -lt 200 ]; do "
+            f"/bin/sleep 0.1; i=$((i + 1)); done; ")
 
 
 # --- helpers -------------------------------------------------------------------------------
@@ -222,11 +229,7 @@ class Services:
         self.workdir = Path(workdir)
 
     def start(self, cloud=False):
-        cmd = [sys.executable, "-I", str(SERVICES), self.bus.address, str(self.log)]
-        if cloud:
-            cmd.append("--cloud")
-        else:
-            cmd += ["--picture", str(self.workdir / "picture.jpg")]
+        cmd = [sys.executable, "-I", str(SERVICES), self.bus.address, str(self.log)] + (["--cloud"] if cloud else [])
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=open(self.workdir / "services.err", "a"))
         if cloud:
             self.cloud = proc
@@ -260,13 +263,27 @@ class Services:
                              f"string:{json.dumps(list(args))}")
 
 
-def drive(d, bus):
-    global PICTURE
-    from harness import introspection
+class WebCalls:
+    """What the web API's programs did since the last look: their daemons' calls (dbus-send's
+    stand-in; the request's own id, random, left out; the controller's state asked, too) and
+    their log lines."""
 
-    sys.path.insert(0, str(SERVICES.parent))
-    import fake_karotz_services
-    PICTURE = fake_karotz_services.PICTURE
+    def __init__(self, box):
+        self.box, self.calls_seen, self.log_seen = box, 0, 0
+
+    def calls(self):
+        return [(d, m, a[1:]) for d, m, a in self.box.dbus_calls()]
+
+    def new(self):
+        calls, logs = self.calls(), self.box.syslog_lines()
+        out = [f"  web API: {d}.{m}({', '.join(a)})" for d, m, a in calls[self.calls_seen:]]
+        out += [f"  web API log: {re.sub(r'^[^ ]* ', '', l)}" for l in logs[self.log_seen:]]
+        self.calls_seen, self.log_seen = len(calls), len(logs)
+        return [l.replace(str(self.box.sb), "<SB>") for l in out]
+
+
+def drive(d, bus):
+    from harness import introspection
 
     work = Path(d.workdir)
     try:
@@ -275,17 +292,27 @@ def drive(d, bus):
         stamp = ""
     broker = Broker(work / "broker", d.proc.pid)
     services = Services(bus, work)
+    web = WebCalls(WEB)
+    mpd_log = work / "broker" / "mpd.log"
+    mpd_seen = [0]
     record = [f"== registered: {bus.wait_for_name(SERVICE)}", "== introspection"]
     record.extend(introspection(bus, SERVICE, PATH))
 
+    def mpd_new():
+        lines = mpd_log.read_text().splitlines() if mpd_log.exists() else []
+        out, mpd_seen[0] = lines[mpd_seen[0]:], len(lines)
+        return [f"  MPD: {l}" for l in out]
+
     def step(title, until=None, settle=0.5, timeout=30):
-        """Wait for `until` (or 2 s, when nothing is to come), then record the broker's and the
-        fakes' new lines."""
+        """Wait for `until` (or 2 s, when nothing is to come), then record the broker's, the fakes',
+        the web API's and MPD's new lines."""
         ok = wait_until(until, timeout) if until else True
         time.sleep(settle if until else 2)
         record.append(f"== {title}" + ("" if ok else " (timed out)"))
         record.extend(describe(e, stamp) for e in broker.new())
         record.extend(f"  call {c}" for c in services.new())
+        record.extend(web.new())
+        record.extend(mpd_new())
 
     def state_has(text):
         return lambda: any(text in base64.b64decode(e["payload_b64"]).decode(errors="replace")
@@ -294,8 +321,14 @@ def drive(d, bus):
     def calls_has(text):
         return lambda: any(text in c for c in services.calls()[services.seen:])
 
-    def cmd(name, payload):
-        broker.publish(f"{BASE}/cmd/{name}", payload)
+    def web_calls(n):
+        return lambda: len(web.calls()) >= web.calls_seen + n
+
+    def web_logged(text):
+        return lambda: any(text in l for l in WEB.syslog_lines()[web.log_seen:])
+
+    def cmd(name, payload, retain=False):
+        broker.publish(f"{BASE}/cmd/{name}", payload, retain)
 
     try:
         record.append(f"fake daemons ready: {services.start()}")
@@ -345,35 +378,57 @@ def drive(d, bus):
         time.sleep(1)
         cmd("say", "Au revoir.")
         step("cmd/say once LapinouCloud has gone", calls_has("Voice.tts_speak"))
+        cmd("say", "Un message retenu.", retain=True)
+        step("a retained cmd/say: done once, when sent", calls_has("Voice.tts_speak"))
 
-        # 6. Sounds
-        cmd("sound", "notify")
-        step("6. cmd/sound by name", calls_has("Multimedia.play"))
-        cmd("sound", "https://radio.example/stream.mp3")
-        step("cmd/sound URL", calls_has("Multimedia.play"))
-        cmd("sound", "../etc/passwd")
-        step("cmd/sound neither: refused")
+        # 6. Sounds, through the web API's sound
+        cmd("sound", "test-tone")
+        step("6. cmd/sound by name", web_calls(2))
+        cmd("sound", "https://radio.example/stream.mp3?a=1&b=%C3%A9")
+        step("cmd/sound URL", web_calls(2))
+        cmd("sound", "http://radio.example::80/stream")
+        step("cmd/sound URL the web API refuses", web_logged("url"))
+        cmd("sound", "pas-un-son")
+        step("cmd/sound name the web API doesn't know", web_logged("pas-un-son"))
 
         # 7. The volume
-        cmd("volume", "42")
-        step("7. cmd/volume", state_has('"volume":42'))
         conf = work / "lapinou-conf" / "lapinou.conf"
-        wait_until(lambda: "volume=42" in conf.read_text(), 10)
-        record.append(f"lapinou.conf [audio]: {[l for l in conf.read_text().splitlines() if l.startswith('volume=')]}")
 
-        # 8. The camera
+        def kept():
+            return [l for l in conf.read_text().splitlines() if l.startswith("volume=")]
+        cmd("volume", "42")
+        step("7. cmd/volume, the mixer has a volume control", state_has('"volume":42'))
+        wait_until(lambda: kept() == ["volume=42"], 10)
+        record.append(f"lapinou.conf [audio]: {kept()}")
+        (work / "ioctl-data").write_text(MIXER_WITHOUT_VOLUME)
+        cmd("volume", "30")
+        step("cmd/volume, no volume control: MPD's", state_has('"volume":30'))
+        wait_until(lambda: kept() == ["volume=30"], 10)
+        record.append(f"lapinou.conf [audio]: {kept()}")
+        (work / "broker" / "mpd-refuse").touch()
+        cmd("volume", "20")
+        step("cmd/volume, MPD refuses: the volume as it was",
+             lambda: len(published(broker.pending(), f"{BASE}/state")) >= 1)
+        record.append(f"lapinou.conf [audio]: {kept()}")
+        (work / "broker" / "mpd-refuse").unlink()
+
+        # 8. The camera, through the web API's snapshot
         cmd("snapshot", "PRESS")
         step("8. cmd/snapshot", lambda: published(broker.pending(), f"{BASE}/snapshot"))
+        stored = sorted(p.name for p in (WEB.sb / "var/run/lapinlibre-web/snapshots").glob("*.jpg"))
+        record.append(f"the web API's snapshots: {len(stored)}")
+        WEB.write("var/run/lapinlibre-web/controller", "21\n")
+        cmd("snapshot", "PRESS")
+        step("cmd/snapshot while an application owns the rabbit: refused", web_logged("application"))
+        (WEB.sb / "var/run/lapinlibre-web/controller").unlink()
 
-        # 9. Sleep
+        # 9. Sleep, through the web API's sleep and wakeup
         cmd("sleep", "on")
         step("9. cmd/sleep on", state_has('"sleep":"on"'))
-        record.extend(f"  {l.replace(str(work), '<RUN>')}" for l in (work / "cgi.log").read_text().splitlines())
         cmd("led", '{"color":"FF0000"}')
-        step("cmd/led while asleep: refused")
+        step("cmd/led while asleep: refused (the state again)", lambda: published(broker.pending(), f"{BASE}/state"))
         cmd("sleep", "off")
         step("cmd/sleep off", state_has('"sleep":"off"'))
-        record.extend(f"  {l.replace(str(work), '<RUN>')}" for l in (work / "cgi.log").read_text().splitlines()[1:])
 
         # 10. The assistant's state, Home Assistant online
         broker.publish(f"{BASE}/assistant", "écoute", retain=True)
@@ -392,12 +447,12 @@ def drive(d, bus):
         step("11. payloads that aren't commands: ignored")
         record.append(f"still running: {d.alive()}")
 
-        # 12. The connection dropped
+        # 12. The connection dropped: the retained cmd/say comes again with the new subscription
         broker.control({"op": "drop"})
         wait_until(lambda: len([e for e in broker.pending() if e["ev"] == "connect"]) >= 1)
         wait_until(lambda: published(broker.pending(), f"{BASE}/update"))
         again = broker.pending()
-        step("12. the connection dropped", lambda: True)
+        step("12. the connection dropped (the retained cmd/say not done again)", lambda: True, settle=2)
         record.append(discovery_check(again))
 
         # 13. The broker stopped and started again
@@ -410,17 +465,28 @@ def drive(d, bus):
         record.append(discovery_check(again))
         out = bus.send(f"--dest={SERVICE}", PATH, f"{IFACE}.get_state")
         record.append(f"get_state: {out.splitlines()[-1].strip()}")
+        # The broker stopped for good: its last "disconnected" seen before the signals are recorded.
+        broker.stop()
+        broker.proc = None
+        wait_until(lambda: sum(".mqtt_state(" in s and "disconnected" in s for s in bus.signals()) >= 3, 15)
+        record.append("== the daemon's log: refusals, ignored commands, the volume")
+        log = Path(d.syslog).read_text(errors="replace").splitlines() if Path(d.syslog).exists() else []
+        record.extend("  " + l.replace(UUID, "<id>") for l in log
+                      if re.search(r"refused|ignored|retained|ended with|killed|volume|cmd/", l))
     finally:
         services.stop()
         broker.stop()
+        WEB.tmp.cleanup()
     return record
 
 
 def normalise_record(record):
-    """Attempts that failed while the broker was down (their number depends on timing) as one."""
+    """Attempts that failed while the broker was down (their number depends on timing) as one, and
+    the snapshot's name (its time)."""
     out = []
     pair = [f"{IFACE}.mqtt_state(string \"connecting\")", f"{IFACE}.mqtt_state(string \"disconnected\")"]
     for line in record:
+        line = re.sub(r"snapshot_\d{4}(_\d{2}){5}", "snapshot_<time>", line)
         out.append(line)
         if len(out) >= 4 and out[-2:] == pair and out[-4:-2] == pair:
             del out[-2:]

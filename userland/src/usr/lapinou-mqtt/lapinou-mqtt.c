@@ -21,25 +21,37 @@
  * then publishes (retained) every discovery message, availability "online", the state and the
  * update entity's state; again whenever Home Assistant says "online" on its status topic.
  *
+ * Commands that arrive retained (a retained cmd/... replayed at each new subscription) are
+ * ignored: a command is done once, when it is sent.
+ *
  * The daemons: every call is asynchronous (dbus_g_proxy_begin_call), ids "lapinou-mqtt:<n>".
- * Commands that drive the rabbit (cmd/led, ears, say, sound) are refused, as the web API refuses
- * them, while an application owns it (the controller's states 21 and 22) or while it sleeps (the
- * web API's sleep flag, or the controller's state 24). cmd/sleep runs the web API's own sleep and
- * wakeup programs (as the user web, as tag_listener runs them), so that the rabbit sleeps as the
- * web page knows it. cmd/volume sets the OSS mixer (/dev/mixer) and keeps the value in
- * [audio] volume (through /usr/share/lapinou/conf.sh), which is applied when the daemon starts.
- * cmd/say goes to voice-daemon (Voice.tts_speak, in [assistant] language), or, in the mode
- * without a server ([cloud] enabled=1, [server] enabled not 1), to LapinouCloud.say when
- * com.mindscape.karotz.LapinouCloud is on the bus (NameOwnerChanged).
+ * cmd/led, cmd/ears and cmd/say call led-daemon, ears-daemon and voice-daemon (or, in the mode
+ * without a server, [cloud] enabled=1 and [server] enabled not 1, LapinouCloud.say when
+ * com.mindscape.karotz.LapinouCloud is on the bus, NameOwnerChanged); they are refused, as the
+ * web API's web_hardware refuses them, while an application owns the rabbit (the controller's
+ * states 21 and 22) or while it sleeps (the web API's sleep flag, or the controller's state 24).
+ * cmd/sound, cmd/snapshot and cmd/sleep run the web API's own programs (sound, snapshot, sleep and
+ * wakeup), as tag_listener's cgi_run runs them (the user web, from 127.0.0.1): their rules (the
+ * URL check, the lock, the playback state, the refusals while asleep or while an application
+ * runs) are the web API's, not repeated here; their reply decides the outcome, and the snapshot
+ * they store is what is published. A program run that ends with a status other than 0, or is
+ * killed, is logged.
+ *
+ * cmd/volume: the codec's mixer (OSS /dev/mixer, SOUND_MIXER_WRITE_VOLUME) when it has a volume
+ * control (SOUND_MIXER_READ_DEVMASK), which sets everything the rabbit plays; otherwise MPD's own
+ * volume (its software mixer, mpd.conf), which sets MPD's music only, set in a thread through
+ * MPD's protocol on 127.0.0.1:6600 with multimedia-daemon's password. The value is published once
+ * applied, kept in [audio] volume (conf.sh's lapinou_set) and applied when the daemon starts; a
+ * failure is logged and the state published again with the volume as it was.
  *
  * D-Bus: com.mindscape.karotz.LapinouMqtt (/com/mindscape/karotz/LapinouMqtt, interface
  * com.mindscape.karotz.LapinouMqtt): get_state() -> "disabled", "connecting", "connected" or
  * "disconnected"; signal mqtt_state(s) when it changes.
  *
- * For the tests: LAPINOU_UUID_FILE, LAPINOU_PICTURE (webcam-daemon's /tmp/picture.jpg),
- * LAPINOU_WEB_RUN (/var/run/lapinlibre-web), LAPINOU_WEB_CGI (the web API's programs, run
- * directly instead of as web), LAPINOU_WIRELESS (/proc/net/wireless) and LAPINOU_CONF_SH move
- * what they name (LAPINOU_CONF_DIR moves lapinou.conf, lapinou_conf.h).
+ * For the tests: LAPINOU_UUID_FILE, LAPINOU_WEB_RUN (/var/run/lapinlibre-web), LAPINOU_WEB_DATA
+ * (/usr/etc/conf/web), LAPINOU_WEB_CGI (the web API's programs, run directly instead of as web),
+ * LAPINOU_WIRELESS (/proc/net/wireless) and LAPINOU_CONF_SH move what they name
+ * (LAPINOU_CONF_DIR moves lapinou.conf, lapinou_conf.h).
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -49,8 +61,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <sys/soundcard.h>
+#include <sys/time.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <dbus/dbus-glib-bindings.h>
@@ -73,8 +90,8 @@
 #define CLOUD_SERVICE  "com.mindscape.karotz.LapinouCloud"
 #define UUID_FILE      "/usr/karotz/uuid.conf"
 #define BUILD_FILE     "/karotz/etc/lapinlibre-build"
-#define PICTURE_FILE   "/tmp/picture.jpg"
 #define WEB_RUN        "/var/run/lapinlibre-web"
+#define WEB_DATA       "/usr/etc/conf/web"
 #define WEB_CGI        "/usr/www/cgi-bin"
 #define WEB_USER       "admin"  /* the web API's user, as httpd names it (web.sh WEB_USER) */
 #define WIRELESS_FILE  "/proc/net/wireless"
@@ -87,7 +104,10 @@
 #define HOLD_S         10   /* a connection that held this long resets the retry count */
 #define TICK_S         30   /* Wi-Fi signal and sleep state read again */
 #define CALL_MS        10000
-#define SNAPSHOT_MS    15000
+#define JOB_KILL_S     60   /* a program run for a command that takes longer is killed */
+#define JOB_OUT_MAX    4096
+#define MPD_PORT       6600
+#define MPD_PASSWORD   "karotz_admin"  /* multimedia-daemon's (mpd.conf) */
 #define PICTURE_MAX    (1024 * 1024)
 #define PAYLOAD_MAX    4096
 #define EAR_SPEED      100  /* the web API's speed */
@@ -121,14 +141,14 @@ static gboolean lapinou_mqtt_object_get_state(LapinouMqttObject *self, char **st
 static struct {
     LapinouMqttObject *object;
     DBusGConnection *bus;
-    DBusGProxy *bus_proxy, *led, *ears, *button, *rfid, *multimedia, *voice, *webcam, *controller, *cloud;
+    DBusGProxy *bus_proxy, *led, *ears, *button, *rfid, *voice, *controller, *cloud;
     GMainLoop *loop;
 
     /* settings */
     char *host, *user, *password, *prefix, *discovery, *uri, *language;
     int port;
     gboolean serverless;
-    const char *uuid_file, *picture_file, *web_run, *web_cgi, *wireless_file, *conf_sh;
+    const char *uuid_file, *web_run, *web_data, *web_cgi, *wireless_file, *conf_sh;
 
     /* the broker */
     MQTTAsync client;
@@ -148,6 +168,8 @@ static struct {
     gboolean web_asleep;
     gboolean cloud_present;
     gboolean snapshot_running;
+    gboolean mpd_busy;
+    int mpd_pending;      /* a volume waiting for MPD (-1: none) */
     guint call_count;
 } app;
 
@@ -215,6 +237,17 @@ static gboolean valid_host(const char *s)
         if (!g_ascii_isalnum(*p) && !strchr(".-_:[]", *p))
             return FALSE;
     return TRUE;
+}
+
+/* A rabbit id that can go into topics and Home Assistant's node id: [A-Za-z0-9_-], 1 to 64. */
+static gboolean valid_rabbit_id(const char *s)
+{
+    const char *p;
+
+    for (p = s; *p; p++)
+        if (!g_ascii_isalnum(*p) && *p != '_' && *p != '-')
+            return FALSE;
+    return p > s && p - s <= 64;
 }
 
 static char *next_id(void)
@@ -356,57 +389,199 @@ static gboolean tick(gpointer data)
     return TRUE;
 }
 
-/* --- the volume ---------------------------------------------------------------------------- */
+/* --- programs run for a command ------------------------------------------------------------ */
 
-static gboolean mixer_set(int volume)
+typedef struct Job Job;
+typedef void (*JobDone)(Job *job);
+
+struct Job {
+    char *name;      /* for the log */
+    GPid pid;
+    GString *out;    /* its standard output (at most JOB_OUT_MAX bytes), when captured */
+    gboolean eof, exited, ok;
+    int status;
+    guint kill_source, out_source;
+    JobDone done;
+    gpointer data;
+};
+
+static void job_finish(Job *j)
 {
-    int fd = open(MIXER_DEVICE, O_RDWR | O_NONBLOCK), value = volume | (volume << 8), ok;
-
-    if (fd < 0) {
-        g_log(NULL, G_LOG_LEVEL_MESSAGE, "%s: %s", MIXER_DEVICE, strerror(errno));
-        return FALSE;
-    }
-    ok = ioctl(fd, SOUND_MIXER_WRITE_VOLUME, &value) == 0;
-    if (!ok)
-        g_log(NULL, G_LOG_LEVEL_MESSAGE, "%s: the volume can't be set: %s", MIXER_DEVICE, strerror(errno));
-    close(fd);
-    return ok;
+    if (!j->eof || !j->exited)
+        return;
+    if (j->kill_source)
+        g_source_remove(j->kill_source);
+    j->ok = WIFEXITED(j->status) && WEXITSTATUS(j->status) == 0;
+    if (WIFEXITED(j->status) && WEXITSTATUS(j->status) != 0)
+        g_log(NULL, G_LOG_LEVEL_MESSAGE, "%s ended with status %d", j->name, WEXITSTATUS(j->status));
+    else if (WIFSIGNALED(j->status))
+        g_log(NULL, G_LOG_LEVEL_MESSAGE, "%s was killed by signal %d", j->name, WTERMSIG(j->status));
+    if (j->done)
+        j->done(j);
+    g_string_free(j->out, TRUE);
+    g_free(j->name);
+    g_free(j);
 }
 
-static int mixer_get(void)
+static void job_exited(GPid pid, gint status, gpointer data)
 {
-    int fd = open(MIXER_DEVICE, O_RDWR | O_NONBLOCK), value = 0, ok;
+    Job *j = data;
+
+    g_spawn_close_pid(pid);
+    j->status = status;
+    j->exited = TRUE;
+    job_finish(j);
+}
+
+static gboolean job_output(GIOChannel *channel, GIOCondition condition, gpointer data)
+{
+    Job *j = data;
+    char buf[1024];
+    gsize n = 0;
+    GIOStatus s = G_IO_STATUS_EOF;
+
+    if (condition & G_IO_IN) {
+        s = g_io_channel_read_chars(channel, buf, sizeof buf, &n, NULL);
+        if (n && j->out->len < JOB_OUT_MAX)
+            g_string_append_len(j->out, buf, (gssize)MIN(n, JOB_OUT_MAX - j->out->len));
+        if (s == G_IO_STATUS_NORMAL || s == G_IO_STATUS_AGAIN)
+            return TRUE;
+    }
+    j->eof = TRUE;
+    j->out_source = 0;
+    job_finish(j);
+    return FALSE;
+}
+
+static gboolean job_kill(gpointer data)
+{
+    Job *j = data;
+
+    j->kill_source = 0;
+    if (j->exited) {
+        /* Only its output is still open (a child of its own holds it): what came is enough. */
+        g_source_remove(j->out_source);
+        j->eof = TRUE;
+        job_finish(j);
+        return FALSE;
+    }
+    g_log(NULL, G_LOG_LEVEL_MESSAGE, "%s still runs after %d s: killed", j->name, JOB_KILL_S);
+    kill(j->pid, SIGKILL);
+    return FALSE;
+}
+
+/* Run argv (with envp, or the daemon's environment for NULL); its standard output is kept when
+ * `capture`; `done` (may be NULL) once it has ended and its output is read. */
+static void job_start(const char *name, char **argv, char **envp, gboolean capture, JobDone done, gpointer data)
+{
+    GError *error = NULL;
+    Job *j = g_new0(Job, 1);
+    int out_fd = -1;
+
+    j->name = g_strdup(name);
+    j->out = g_string_new(NULL);
+    j->done = done;
+    j->data = data;
+    if (!g_spawn_async_with_pipes(NULL, argv, envp,
+                                  G_SPAWN_DO_NOT_REAP_CHILD | G_SPAWN_STDERR_TO_DEV_NULL |
+                                      (capture ? 0 : G_SPAWN_STDOUT_TO_DEV_NULL),
+                                  NULL, NULL, &j->pid, NULL, capture ? &out_fd : NULL, NULL, &error)) {
+        g_log(NULL, G_LOG_LEVEL_MESSAGE, "%s can't be run: %s", name, error->message);
+        g_error_free(error);
+        j->eof = j->exited = TRUE;
+        j->status = 127 << 8;
+        job_finish(j);
+        return;
+    }
+    if (capture) {
+        GIOChannel *channel = g_io_channel_unix_new(out_fd);
+        g_io_channel_set_encoding(channel, NULL, NULL);
+        g_io_channel_set_buffered(channel, FALSE);
+        g_io_channel_set_flags(channel, G_IO_FLAG_NONBLOCK, NULL);
+        g_io_channel_set_close_on_unref(channel, TRUE);
+        j->out_source = g_io_add_watch(channel, G_IO_IN | G_IO_HUP | G_IO_ERR, job_output, j);
+        g_io_channel_unref(channel);
+    } else {
+        j->eof = TRUE;
+    }
+    j->kill_source = g_timeout_add_seconds(JOB_KILL_S, job_kill, j);
+    g_child_watch_add(j->pid, job_exited, j);
+}
+
+/* Run the web API's program `endpoint` with `query` (URL-encoded) as tag_listener's cgi_run does:
+ * as the user web, from 127.0.0.1, as the web API's user, with no other environment. */
+static void cgi_run(const char *endpoint, const char *query, JobDone done, gpointer data)
+{
+    char *cgi = g_build_filename(app.web_cgi, endpoint, NULL);
+    char *name = g_strdup_printf("the web API's %s", endpoint);
+    char *qs = g_strdup_printf("QUERY_STRING=%s", query);
+    char *script = g_strdup_printf("SCRIPT_NAME=/cgi-bin/%s", endpoint);
+    char *uri = g_strdup_printf("REQUEST_URI=/cgi-bin/%s", endpoint);
+    char *envp[] = { "PATH=/usr/bin:/usr/sbin:/bin:/sbin", "REQUEST_METHOD=GET", qs, script, uri,
+                     "REMOTE_USER=" WEB_USER, "REMOTE_ADDR=127.0.0.1", "GATEWAY_INTERFACE=CGI/1.1", NULL };
+    char *as_web[] = { "/bin/busybox", "setuidgid", "web", cgi, NULL };
+    char *direct[] = { cgi, NULL };
+
+    /* The tests' programs (LAPINOU_WEB_CGI) are run as they are. */
+    job_start(name, getenv("LAPINOU_WEB_CGI") ? direct : as_web, envp, TRUE, done, data);
+    g_free(cgi);
+    g_free(name);
+    g_free(qs);
+    g_free(script);
+    g_free(uri);
+}
+
+/* A web API program's reply (its body, after the CGI headers) as a flat JSON object, or NULL. On
+ * a reply that isn't {"return":"0",...}, its message is logged under `what`. */
+static GHashTable *cgi_reply(Job *j, const char *what)
+{
+    const char *body = strstr(j->out->str, "\r\n\r\n");
+    GHashTable *o;
+    const JsonValue *r, *msg;
+
+    body = body ? body + 4 : (body = strstr(j->out->str, "\n\n")) ? body + 2 : NULL;
+    o = body && g_utf8_validate(body, -1, NULL) ? json_parse_flat_object(body, strlen(body)) : NULL;
+    r = o ? json_get(o, "return", JSON_STRING) : NULL;
+    if (r && !strcmp(r->string, "0"))
+        return o;
+    msg = o ? json_get(o, "msg", JSON_STRING) : NULL;
+    g_log(NULL, G_LOG_LEVEL_MESSAGE, "%s refused by %s: %s", what, j->name, msg ? msg->string : "no answer");
+    if (o)
+        g_hash_table_destroy(o);
+    return NULL;
+}
+
+/* `s` with every byte but A-Z a-z 0-9 - . _ ~ as %XX, for a query string. */
+static char *query_escape(const char *s)
+{
+    GString *out = g_string_new(NULL);
+    const unsigned char *p;
+
+    for (p = (const unsigned char *)s; *p; p++) {
+        if (g_ascii_isalnum(*p) || strchr("-._~", *p))
+            g_string_append_c(out, (char)*p);
+        else
+            g_string_append_printf(out, "%%%02X", *p);
+    }
+    return g_string_free(out, FALSE);
+}
+
+/* --- the volume ---------------------------------------------------------------------------- */
+
+static void volume_set(int volume, gboolean keep);
+
+/* The codec's mixer, when it has a volume control: its descriptor, else -1. */
+static int mixer_open(void)
+{
+    int fd = open(MIXER_DEVICE, O_RDWR | O_NONBLOCK), mask = 0;
 
     if (fd < 0)
         return -1;
-    ok = ioctl(fd, SOUND_MIXER_READ_VOLUME, &value) == 0;
-    close(fd);
-    return ok ? CLAMP(value & 0xFF, 0, 100) : -1;
-}
-
-static void child_reaped(GPid pid, gint status, gpointer data)
-{
-    void (*then)(void) = data;
-
-    (void)status;
-    g_spawn_close_pid(pid);
-    if (then)
-        then();
-}
-
-/* Run argv (with envp, or the daemon's own environment for NULL); `then` once it has ended. */
-static void run(char **argv, char **envp, void (*then)(void))
-{
-    GError *error = NULL;
-    GPid pid;
-
-    if (!g_spawn_async(NULL, argv, envp, G_SPAWN_DO_NOT_REAP_CHILD | G_SPAWN_STDOUT_TO_DEV_NULL |
-                       G_SPAWN_STDERR_TO_DEV_NULL, NULL, NULL, &pid, &error)) {
-        g_log(NULL, G_LOG_LEVEL_MESSAGE, "%s can't be run: %s", argv[0], error->message);
-        g_error_free(error);
-        return;
+    if (ioctl(fd, SOUND_MIXER_READ_DEVMASK, &mask) != 0 || !(mask & SOUND_MASK_VOLUME)) {
+        close(fd);
+        return -1;
     }
-    g_child_watch_add(pid, child_reaped, (gpointer)then);
+    return fd;
 }
 
 static void volume_keep(int volume)
@@ -414,20 +589,179 @@ static void volume_keep(int volume)
     char value[8];
     char *argv[] = { "/bin/sh", "-c", ". \"$1\" && lapinou_set audio volume \"$2\"", "sh", (char *)app.conf_sh,
                      value, NULL };
-
     /* The daemon's environment (LAPINOU_CONF_DIR in the tests) with the system's commands. */
     char **envp = g_environ_setenv(g_get_environ(), "PATH", "/usr/bin:/usr/sbin:/bin:/sbin", TRUE);
 
     g_snprintf(value, sizeof value, "%d", volume);
-    run(argv, envp, NULL);
+    job_start("lapinou_set audio volume", argv, envp, FALSE, NULL, NULL);
     g_strfreev(envp);
+}
+
+/* A volume applied (or not): the state published either way, so Home Assistant shows the real
+ * value; kept in [audio] volume when `keep`. */
+static void volume_applied(int volume, gboolean ok, gboolean keep)
+{
+    if (ok) {
+        app.rabbit.volume = volume;
+        if (keep)
+            volume_keep(volume);
+        publish_state(FALSE);
+    } else {
+        publish_state(TRUE);
+    }
+}
+
+/* MPD's volume, through its protocol, in a thread: set (volume >= 0) or read (volume -1). */
+typedef struct {
+    int volume;
+    gboolean keep, ok;
+    char why[128];
+} MpdJob;
+
+static gboolean mpd_line(int fd, char *line, size_t size)
+{
+    size_t n = 0;
+    char c;
+
+    while (n + 1 < size) {
+        if (read(fd, &c, 1) != 1)
+            return FALSE;
+        if (c == '\n')
+            break;
+        line[n++] = c;
+    }
+    line[n] = '\0';
+    return TRUE;
+}
+
+/* Send `command`, then read lines until OK or ACK; a "volume: N" line read on the way into *volume. */
+static gboolean mpd_command(int fd, const char *command, int *volume, char *why, size_t why_size)
+{
+    char line[256];
+    size_t n = strlen(command);
+
+    if (write(fd, command, n) != (ssize_t)n) {
+        g_snprintf(why, why_size, "MPD can't be written to: %s", strerror(errno));
+        return FALSE;
+    }
+    for (;;) {
+        if (!mpd_line(fd, line, sizeof line)) {
+            g_snprintf(why, why_size, "MPD didn't answer");
+            return FALSE;
+        }
+        if (!strcmp(line, "OK"))
+            return TRUE;
+        if (g_str_has_prefix(line, "ACK")) {
+            g_snprintf(why, why_size, "MPD refused: %s", line);
+            return FALSE;
+        }
+        if (volume && g_str_has_prefix(line, "volume: "))
+            *volume = atoi(line + 8);
+    }
+}
+
+static gboolean mpd_done(gpointer data)
+{
+    MpdJob *j = data;
+
+    app.mpd_busy = FALSE;
+    if (!j->ok)
+        g_log(NULL, G_LOG_LEVEL_MESSAGE, "the volume (MPD): %s", j->why);
+    if (j->ok && j->volume >= 0 && j->volume <= 100)
+        volume_applied(j->volume, TRUE, j->keep);
+    else
+        volume_applied(-1, FALSE, FALSE);
+    g_free(j);
+    if (app.mpd_pending >= 0) {
+        int v = app.mpd_pending;
+        app.mpd_pending = -1;
+        volume_set(v, TRUE);
+    }
+    return FALSE;
+}
+
+static gpointer mpd_thread(gpointer data)
+{
+    MpdJob *j = data;
+    struct sockaddr_in a;
+    struct timeval timeout = { 3, 0 };
+    char line[256], command[32];
+    int fd = socket(AF_INET, SOCK_STREAM, 0), got = -1;
+
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_port = htons(MPD_PORT);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (fd < 0 || setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout) ||
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout) || connect(fd, (struct sockaddr *)&a, sizeof a)) {
+        g_snprintf(j->why, sizeof j->why, "no MPD on 127.0.0.1:%d: %s", MPD_PORT, strerror(errno));
+    } else if (!mpd_line(fd, line, sizeof line) || !g_str_has_prefix(line, "OK MPD")) {
+        g_snprintf(j->why, sizeof j->why, "MPD didn't greet");
+    } else if (mpd_command(fd, "password " MPD_PASSWORD "\n", NULL, j->why, sizeof j->why)) {
+        if (j->volume >= 0) {
+            g_snprintf(command, sizeof command, "setvol %d\n", j->volume);
+            j->ok = mpd_command(fd, command, NULL, j->why, sizeof j->why);
+        } else if (mpd_command(fd, "status\n", &got, j->why, sizeof j->why)) {
+            j->volume = got;
+            j->ok = got >= 0;
+            if (!j->ok)
+                g_snprintf(j->why, sizeof j->why, "MPD's status has no volume");
+        }
+        if (write(fd, "close\n", 6) < 0) {
+        }
+    }
+    if (fd >= 0)
+        close(fd);
+    g_idle_add(mpd_done, j);
+    return NULL;
+}
+
+static void mpd_start(int volume, gboolean keep)
+{
+    MpdJob *j = g_new0(MpdJob, 1);
+    GThread *t;
+
+    j->volume = volume;
+    j->keep = keep;
+    app.mpd_busy = TRUE;
+    t = g_thread_try_new("mpd-volume", mpd_thread, j, NULL);
+    if (t) {
+        g_thread_unref(t);
+    } else {
+        g_snprintf(j->why, sizeof j->why, "no thread");
+        mpd_done(j);
+    }
+}
+
+/* Apply a volume: the codec's mixer when it has a volume control, else MPD's. */
+static void volume_set(int volume, gboolean keep)
+{
+    int fd = mixer_open(), value = volume | (volume << 8);
+    gboolean ok;
+
+    if (fd >= 0) {
+        ok = ioctl(fd, SOUND_MIXER_WRITE_VOLUME, &value) == 0;
+        if (!ok)
+            g_log(NULL, G_LOG_LEVEL_MESSAGE, "the volume (%s): %s", MIXER_DEVICE, strerror(errno));
+        close(fd);
+        volume_applied(volume, ok, keep);
+        return;
+    }
+    if (app.mpd_busy) {
+        app.mpd_pending = volume;
+        return;
+    }
+    mpd_start(volume, keep);
 }
 
 static void volume_start(void)
 {
     char *text = lapinou_conf_get("audio", "volume", NULL), *end = NULL;
     long v = -1;
+    int fd;
 
+    app.rabbit.volume = -1;
+    app.mpd_pending = -1;
     if (text) {
         v = strtol(text, &end, 10);
         if (*end != '\0' || v < 0 || v > 100) {
@@ -436,10 +770,20 @@ static void volume_start(void)
         }
     }
     g_free(text);
-    if (v >= 0 && mixer_set((int)v))
-        app.rabbit.volume = (int)v;
-    else
-        app.rabbit.volume = mixer_get();
+    fd = mixer_open();
+    g_log(NULL, G_LOG_LEVEL_MESSAGE, "the volume: %s", fd >= 0 ? "the codec's mixer" : "MPD's (no volume control in the mixer)");
+    if (v >= 0) {
+        if (fd >= 0)
+            close(fd);
+        volume_set((int)v, FALSE);
+    } else if (fd >= 0) {
+        int value = 0;
+        if (ioctl(fd, SOUND_MIXER_READ_VOLUME, &value) == 0)
+            app.rabbit.volume = CLAMP(value & 0xFF, 0, 100);
+        close(fd);
+    } else {
+        mpd_start(-1, FALSE);
+    }
 }
 
 /* --- D-Bus calls --------------------------------------------------------------------------- */
@@ -593,83 +937,76 @@ static void cmd_say(const char *text)
     g_free(id);
 }
 
-/* A sound's file by its name, as the web API's sound_path finds it (the stick's sounds first). */
-static char *sound_path(const char *name)
+static void sound_done(Job *j)
 {
-    static const char *const dirs[] = { "/mnt/usbkey/sounds", "/usr/karotz/sounds" };
-    static const char *const exts[] = { "mp3", "wav" };
-    const char *p;
-    unsigned d, e;
+    GHashTable *o = cgi_reply(j, "cmd/sound");
 
-    if (*name == '\0' || strlen(name) > 64)
-        return NULL;
-    for (p = name; *p; p++)
-        if (!g_ascii_isalnum(*p) && *p != '_' && *p != '-')
-            return NULL;
-    for (d = 0; d < G_N_ELEMENTS(dirs); d++)
-        for (e = 0; e < G_N_ELEMENTS(exts); e++) {
-            char *path = g_strdup_printf("%s/%s.%s", dirs[d], name, exts[e]);
-            if (g_file_test(path, G_FILE_TEST_IS_REGULAR))
-                return path;
-            g_free(path);
-        }
-    return NULL;
+    if (o)
+        g_hash_table_destroy(o);
 }
 
+/* An http(s) URL or a sound's name: the web API's sound program checks and plays it (it stops
+ * what plays, takes the lock and keeps the playback state). */
 static void cmd_sound(const char *text)
 {
-    char *target = NULL, *id;
-    const char *p;
+    gboolean url = g_str_has_prefix(text, "http://") || g_str_has_prefix(text, "https://");
+    char *value = query_escape(text);
+    char *query = g_strdup_printf("%s=%s", url ? "url" : "id", value);
 
-    if (g_str_has_prefix(text, "http://") || g_str_has_prefix(text, "https://")) {
-        for (p = text; *p; p++)
-            if ((unsigned char)*p <= ' ' || *p == 0x7F)
-                break;
-        if (*p == '\0' && strlen(text) <= 1024)
-            target = g_strdup(text);
-    } else {
-        target = sound_path(text);
-    }
-    if (!target) {
-        g_log(NULL, G_LOG_LEVEL_MESSAGE, "cmd/sound: neither an http(s) URL nor a sound's name");
-        return;
-    }
-    id = next_id();
-    CALL(app.multimedia, "Multimedia.stop", "stop", G_TYPE_STRING, id, G_TYPE_INT, 1);
-    CALL(app.multimedia, "Multimedia.play", "play", G_TYPE_STRING, id, G_TYPE_STRING, target, G_TYPE_INT, 1);
-    g_free(id);
-    g_free(target);
+    cgi_run("sound", query, sound_done, NULL);
+    g_free(value);
+    g_free(query);
 }
 
 static void cmd_volume(const char *text)
 {
     char *end = NULL;
     double v = g_ascii_strtod(text, &end);
-    int volume;
 
     if (end == text || *end != '\0' || !(v >= 0 && v <= 100)) {
         g_log(NULL, G_LOG_LEVEL_MESSAGE, "cmd/volume: a number from 0 to 100");
+        publish_state(TRUE);
         return;
     }
-    volume = (int)floor(v + 0.5);
-    if (mixer_set(volume)) {
-        app.rabbit.volume = volume;
-        volume_keep(volume);
-    }
+    volume_set((int)floor(v + 0.5), TRUE);
 }
 
-static void slept(void)
+static gboolean ears_disabled(void)
 {
+    char *path = g_build_filename(app.web_data, "ears_disabled", NULL);
+    gboolean disabled = g_file_test(path, G_FILE_TEST_EXISTS);
+
+    g_free(path);
+    return disabled;
+}
+
+/* The web API's sleep or wakeup has answered: the LED and the ears as it left them (asleep: the
+ * LED off and the ears at 4; awake: the web API's LED state and the ears recalibrated, unless its
+ * ear moves are off). */
+static void slept(Job *j)
+{
+    gboolean on = GPOINTER_TO_INT(j->data);
+    GHashTable *o = cgi_reply(j, on ? "cmd/sleep on" : "cmd/sleep off");
+
+    if (o) {
+        if (on) {
+            memcpy(app.rabbit.led, "000000", 7);
+            if (!ears_disabled())
+                app.rabbit.ear_left = app.rabbit.ear_right = 4;
+        } else {
+            read_web_led();
+            if (!ears_disabled())
+                app.rabbit.ear_left = app.rabbit.ear_right = 0;
+        }
+        g_hash_table_destroy(o);
+    }
     read_web_sleep();
-    publish_state(FALSE);
+    publish_state(o == NULL); /* refused: published again, so Home Assistant's switch comes back */
 }
 
 static void cmd_sleep(const char *text)
 {
     gboolean on;
-    const char *name;
-    char *cgi, *script, *uri;
-    char **argv;
 
     if (!g_ascii_strcasecmp(text, "on") || !strcmp(text, "1") || !g_ascii_strcasecmp(text, "true"))
         on = TRUE;
@@ -677,70 +1014,52 @@ static void cmd_sleep(const char *text)
         on = FALSE;
     else {
         g_log(NULL, G_LOG_LEVEL_MESSAGE, "cmd/sleep: on or off");
+        publish_state(TRUE);
         return;
     }
-    name = on ? "sleep" : "wakeup";
-    cgi = g_build_filename(app.web_cgi, name, NULL);
-    script = g_strdup_printf("SCRIPT_NAME=/cgi-bin/%s", name);
-    uri = g_strdup_printf("REQUEST_URI=/cgi-bin/%s", name);
-    {
-        char *envp[] = { "PATH=/usr/bin:/usr/sbin:/bin:/sbin", "REQUEST_METHOD=GET", "QUERY_STRING=", script, uri,
-                         "REMOTE_USER=" WEB_USER, "REMOTE_ADDR=127.0.0.1", "GATEWAY_INTERFACE=CGI/1.1", NULL };
-        char *as_web[] = { "/bin/busybox", "setuidgid", "web", cgi, NULL };
-        char *direct[] = { cgi, NULL };
-
-        /* The tests' programs (LAPINOU_WEB_CGI) are run as they are. */
-        argv = getenv("LAPINOU_WEB_CGI") ? direct : as_web;
-        run(argv, envp, slept);
-    }
-    g_free(cgi);
-    g_free(script);
-    g_free(uri);
+    cgi_run(on ? "sleep" : "wakeup", "", slept, GINT_TO_POINTER(on));
 }
 
-static void snapshot_done(DBusGProxy *proxy, DBusGProxyCall *call, gpointer data)
+/* The web API's snapshot has answered: the picture it stored ($WEB_RUN/snapshots/<filename>). */
+static void snapshot_done(Job *j)
 {
-    GError *error = NULL;
-    gboolean result = FALSE;
-    char *picture = NULL;
+    GHashTable *o = cgi_reply(j, "cmd/snapshot");
+    const JsonValue *name = o ? json_get(o, "filename", JSON_STRING) : NULL;
+    char *path, *picture = NULL, *topic;
     gsize len = 0;
-    char *topic;
+    const char *p;
 
-    (void)data;
     app.snapshot_running = FALSE;
-    if (!dbus_g_proxy_end_call(proxy, call, &error, G_TYPE_BOOLEAN, &result, G_TYPE_INVALID)) {
-        g_log(NULL, G_LOG_LEVEL_MESSAGE, "Webcam.takeSnapshot failed: %s", error->message);
-        g_error_free(error);
+    if (!o)
+        return;
+    for (p = name ? name->string : ""; *p && (g_ascii_isalnum(*p) || *p == '_' || *p == '.'); p++)
+        ;
+    if (!name || *p || !*name->string || strstr(name->string, "..")) {
+        g_log(NULL, G_LOG_LEVEL_MESSAGE, "cmd/snapshot: the web API named no picture");
+        g_hash_table_destroy(o);
         return;
     }
-    if (!result) {
-        g_log(NULL, G_LOG_LEVEL_MESSAGE, "Webcam.takeSnapshot: no picture");
-        return;
+    path = g_build_filename(app.web_run, "snapshots", name->string, NULL);
+    if (!g_file_get_contents(path, &picture, &len, NULL) || len == 0 || len > PICTURE_MAX) {
+        g_log(NULL, G_LOG_LEVEL_MESSAGE, "cmd/snapshot: the picture %s can't be read", path);
+    } else {
+        topic = g_strdup_printf("%s/snapshot", app.base);
+        publish(topic, picture, (int)len, 0, 0);
+        g_free(topic);
     }
-    if (!g_file_get_contents(app.picture_file, &picture, &len, NULL) || len == 0 || len > PICTURE_MAX) {
-        g_log(NULL, G_LOG_LEVEL_MESSAGE, "the picture %s can't be read", app.picture_file);
-        g_free(picture);
-        return;
-    }
-    topic = g_strdup_printf("%s/snapshot", app.base);
-    publish(topic, picture, (int)len, 0, 0);
-    g_free(topic);
     g_free(picture);
+    g_free(path);
+    g_hash_table_destroy(o);
 }
 
 static void cmd_snapshot(void)
 {
-    char *id;
-
     if (app.snapshot_running) {
         g_log(NULL, G_LOG_LEVEL_MESSAGE, "cmd/snapshot: a picture is being taken already");
         return;
     }
     app.snapshot_running = TRUE;
-    id = next_id();
-    dbus_g_proxy_begin_call_with_timeout(app.webcam, "takeSnapshot", snapshot_done, NULL, NULL, SNAPSHOT_MS,
-                                         G_TYPE_STRING, id, G_TYPE_STRING, "file", G_TYPE_INT, 1, G_TYPE_INVALID);
-    g_free(id);
+    cgi_run("snapshot", "", snapshot_done, NULL);
 }
 
 /* A command's payload: `text` (NUL-terminated, valid UTF-8, trimmed), `o` its JSON object or NULL. */
@@ -754,24 +1073,25 @@ static void command(const char *name, const char *text, GHashTable *o)
         cmd_sleep(text);
     else if (!strcmp(name, "snapshot"))
         cmd_snapshot();
-    else if (strcmp(name, "led") && strcmp(name, "ears") && strcmp(name, "say") && strcmp(name, "sound")) {
+    else if (!strcmp(name, "sound"))
+        cmd_sound(text);
+    else if (strcmp(name, "led") && strcmp(name, "ears") && strcmp(name, "say")) {
         g_log(NULL, G_LOG_LEVEL_MESSAGE, "cmd/%s: no such command", name);
         return;
     } else if ((why = busy()) != NULL) {
         g_log(NULL, G_LOG_LEVEL_MESSAGE, "cmd/%s refused: %s", name, why);
+        publish_state(TRUE);
         return;
     } else if (!strcmp(name, "led"))
         cmd_led(o, text);
     else if (!strcmp(name, "ears"))
         cmd_ears(o);
-    else if (!strcmp(name, "say"))
-        cmd_say(text);
     else
-        cmd_sound(text);
+        cmd_say(text);
     publish_state(FALSE);
 }
 
-static void message(const char *topic, const char *payload, int len)
+static void message(const char *topic, const char *payload, int len, gboolean retained)
 {
     char *cmd_prefix = g_strdup_printf("%s/cmd/", app.base);
     char *assistant = g_strdup_printf("%s/assistant", app.base);
@@ -792,6 +1112,8 @@ static void message(const char *topic, const char *payload, int len)
             app.assistant = g_strdup(*text ? text : "hors ligne");
             publish_state(FALSE);
         }
+    } else if (g_str_has_prefix(topic, cmd_prefix) && retained) {
+        g_log(NULL, G_LOG_LEVEL_MESSAGE, "%s: a retained command, ignored (commands are done when sent)", topic);
     } else if (g_str_has_prefix(topic, cmd_prefix) && !strchr(topic + strlen(cmd_prefix), '/')) {
         GHashTable *o = text[0] == '{' ? json_parse_flat_object(text, strlen(text)) : NULL;
         if (text[0] == '{' && !o)
@@ -908,9 +1230,7 @@ static void daemons_connect(void)
     app.ears = karotz_proxy("Ears");
     app.button = karotz_proxy("Button");
     app.rfid = karotz_proxy("Rfid");
-    app.multimedia = karotz_proxy("Multimedia");
     app.voice = karotz_proxy("Voice");
-    app.webcam = karotz_proxy("Webcam");
     app.controller = karotz_proxy("Controller");
     app.cloud = dbus_g_proxy_new_for_name(app.bus, CLOUD_SERVICE, "/com/mindscape/karotz/LapinouCloud", CLOUD_SERVICE);
 
@@ -952,6 +1272,7 @@ typedef struct {
     char *topic;
     char *payload;
     int len;
+    gboolean retained;
 } Event;
 
 static gboolean handle_event(gpointer data);
@@ -991,6 +1312,7 @@ static int paho_message(void *context, char *topic, int topic_len, MQTTAsync_mes
     (void)context;
     e->kind = EV_MESSAGE;
     e->topic = topic_len > 0 ? g_strndup(topic, (gsize)topic_len) : g_strdup(topic);
+    e->retained = m->retained != 0;
     e->len = m->payloadlen > 0 ? m->payloadlen : 0;
     e->payload = g_malloc((gsize)e->len + 1);
     if (e->len)
@@ -1088,7 +1410,7 @@ static gboolean handle_event(gpointer data)
         break;
     case EV_MESSAGE:
         if (app.state == MQTT_CONNECTED)
-            message(e->topic, e->payload, e->len);
+            message(e->topic, e->payload, e->len, e->retained);
         break;
     case EV_DISCONNECTED:
         g_main_loop_quit(app.loop);
@@ -1111,6 +1433,11 @@ static void connect_now(void)
         char *id = first_line(app.uuid_file);
         if (id == NULL) {
             retry_later("no rabbit id yet", 0);
+            return;
+        }
+        if (!valid_rabbit_id(id)) {
+            g_free(id);
+            retry_later("the rabbit id (uuid.conf) has characters other than A-Z a-z 0-9 _ -", 0);
             return;
         }
         app.rabbit_id = id;
@@ -1260,7 +1587,7 @@ int main(void)
     app.loop = g_main_loop_new(NULL, FALSE);
     g_log(NULL, G_LOG_LEVEL_MESSAGE, "Starting\n");
     app.uuid_file = env_or("LAPINOU_UUID_FILE", UUID_FILE);
-    app.picture_file = env_or("LAPINOU_PICTURE", PICTURE_FILE);
+    app.web_data = env_or("LAPINOU_WEB_DATA", WEB_DATA);
     app.web_run = env_or("LAPINOU_WEB_RUN", WEB_RUN);
     app.web_cgi = env_or("LAPINOU_WEB_CGI", WEB_CGI);
     app.wireless_file = env_or("LAPINOU_WIRELESS", WIRELESS_FILE);

@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: MIT
 """Fake Karotz daemons on a test bus, for lapinou-mqtt's scenario (tests/scenarios/lapinou_mqtt.py).
 
-    fake_karotz_services.py BUS_ADDRESS LOG [--picture FILE] [--cloud]
+    fake_karotz_services.py BUS_ADDRESS LOG [--cloud]
 
-Owns com.mindscape.karotz.{Led,Ears,Button,Rfid,Multimedia,Voice,Webcam,Controller} (each at
+Owns com.mindscape.karotz.{Led,Ears,Button,Rfid,Voice,Controller} (each at
 /com/mindscape/karotz/<Name>, interface com.mindscape.karotz.KarotzInterface, with the methods of
 userland/dbus/*.xml that lapinou-mqtt calls), or, with --cloud, com.mindscape.karotz.LapinouCloud
 alone (say(s) on interface com.mindscape.karotz.LapinouCloud). Every call is logged to LOG as one
-line "Name.method(args)" and answered TRUE (Controller.get_status: 1, 0, 0). Webcam.takeSnapshot
-first writes a small JPEG to FILE. The scenario makes the fakes emit their signals through
+line "Name.method(args)" and answered TRUE (Controller.get_status: 1, 0, 0). (The sound, the
+camera and sleep go through the web API's programs, whose dbus-send is the web API test's stub.)
+The scenario makes the fakes emit their signals through
 com.lapinou.TestControl.emit(s name, s member, s json_args) on any of the objects
 (Button.click, Rfid.tag_in, Controller.karotz_status_changed). Writes "ready" to LOG's directory
 (ready or ready-cloud) once every name is owned.
@@ -26,11 +27,7 @@ from gi.repository import GLib
 IFACE = "com.mindscape.karotz.KarotzInterface"
 CLOUD_IFACE = "com.mindscape.karotz.LapinouCloud"
 CONTROL = "com.lapinou.TestControl"
-# A JPEG's start and end markers around a few bytes: enough for a "picture".
-PICTURE = bytes.fromhex("ffd8ffe000104a46494600010100000100010000") + bytes(range(256)) * 4 + bytes.fromhex("ffd9")
-
 log_file = None
-picture_path = None
 objects = {}
 
 
@@ -112,31 +109,10 @@ class Rfid(Fake):
         pass
 
 
-class Multimedia(Fake):
-    @dbus.service.method(IFACE, in_signature="ssi", out_signature="b")
-    def play(self, id_, url, behaviour):
-        self.called("play", id_, url, behaviour)
-        return True
-
-    @dbus.service.method(IFACE, in_signature="si", out_signature="b")
-    def stop(self, id_, behaviour):
-        self.called("stop", id_, behaviour)
-        return True
-
-
 class Voice(Fake):
     @dbus.service.method(IFACE, in_signature="sssi", out_signature="b")
     def tts_speak(self, id_, text, lang, behaviour):
         self.called("tts_speak", id_, text, lang, behaviour)
-        return True
-
-
-class Webcam(Fake):
-    @dbus.service.method(IFACE, in_signature="ssi", out_signature="b")
-    def takeSnapshot(self, id_, url, behaviour):
-        self.called("takeSnapshot", id_, url, behaviour)
-        with open(picture_path, "wb") as f:
-            f.write(PICTURE)
         return True
 
 
@@ -162,12 +138,10 @@ class Cloud(Fake):
 
 
 def main():
-    global log_file, picture_path
+    global log_file
     args = sys.argv[1:]
     address, log = args[0], args[1]
     cloud = "--cloud" in args
-    if "--picture" in args:
-        picture_path = args[args.index("--picture") + 1]
     DBusGMainLoop(set_as_default=True)
     bus = dbus.bus.BusConnection(address)
     log_file = open(log, "a")
@@ -176,7 +150,7 @@ def main():
         objects["LapinouCloud"] = Cloud(bus)
         names.append(dbus.service.BusName("com.mindscape.karotz.LapinouCloud", bus))
     else:
-        for cls in (Led, Ears, Button, Rfid, Multimedia, Voice, Webcam, Controller):
+        for cls in (Led, Ears, Button, Rfid, Voice, Controller):
             objects[cls.__name__] = cls(bus, cls.__name__)
             names.append(dbus.service.BusName(f"com.mindscape.karotz.{cls.__name__}", bus))
     open(os.path.join(os.path.dirname(log), "ready-cloud" if cloud else "ready"), "w").close()
