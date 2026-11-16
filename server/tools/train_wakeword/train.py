@@ -9,6 +9,7 @@
   train     classifieur (PyTorch, CPU) exporté en ONNX
   evaluate  rappel sur les voix réservées, fausses détections par heure
   export-tests  fichiers server/tests/data/{lapinou,not_lapinou}_*.wav
+  export-asr-tests  phrases server/tests/data/asr_*.wav (détection par transcription)
 
 Dépendances (environnement d'entraînement, pas celui du serveur) :
   piper-tts onnxruntime numpy scipy torch onnx
@@ -933,6 +934,38 @@ def cmd_export_tests(args: argparse.Namespace) -> None:
     print(f"fichiers de test dans {out}")
 
 
+# Phrases de test de la détection par transcription (tests/test_wake_asr.py) : nom du fichier
+# -> texte. Les attentes (commande reconnue, ou aucune détection) sont dans le test.
+ASR_PHRASES = {
+    "allume_salon": "Lapinou, allume le salon",
+    "he_heure": "Hé Lapinou, quelle heure est-il ?",
+    "dis_lumiere": "Dis Lapinou, éteins la lumière de la cuisine",
+    "milieu": "Mon lapinou est mignon",
+    "lapin": "Le lapin mange une carotte dans le jardin",
+    "pinede": "Nous nous promenons dans la pinède ce matin",
+}
+
+
+def cmd_export_asr_tests(args: argparse.Namespace) -> None:
+    """Phrases complètes (nom + commande, et pièges) avec les deux voix d'un seul locuteur."""
+    global _VOICE_DIR
+    _VOICE_DIR = Path(args.voices)
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    nrng = np.random.default_rng(78)
+    voices = [(v, speakers(v, "test")[0]) for v in TEST_VOICES[:2]]
+    for slug, text in ASR_PHRASES.items():
+        for n, (voice, speaker) in enumerate(voices, 1):
+            clip = _synth((voice, speaker, text, "sentence", f"asr-{slug}-{n}"))
+            assert clip is not None, f"synthèse impossible : {text}"
+            clip = clip / np.max(np.abs(clip)) * 10 ** (nrng.uniform(-18, -9) / 20)
+            gap = int(0.6 * SR)
+            pcm = colored_noise(2 * gap + len(clip), nrng) * 10 ** (-62 / 20)
+            pcm[gap : gap + len(clip)] += clip
+            write_wav(out / f"asr_{slug}_{n}.wav", np.clip(pcm * 32767, -32768, 32767).astype(np.int16))
+    print(f"fichiers de test dans {out}")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--work", default=str(Path.home() / "wakeword-train" / "work"))
@@ -971,9 +1004,13 @@ def main() -> None:
     x.add_argument("--voices", required=True)
     x.add_argument("--out", default=str(SERVER / "tests" / "data"))
     x.add_argument("--neg-files", type=int, default=3)
+    a = sub.add_parser("export-asr-tests")
+    a.add_argument("--voices", required=True)
+    a.add_argument("--out", default=str(SERVER / "tests" / "data"))
     args = p.parse_args()
     {"generate": cmd_generate, "features": cmd_features, "train": cmd_train,
-     "evaluate": cmd_evaluate, "export-tests": cmd_export_tests}[args.cmd](args)
+     "evaluate": cmd_evaluate, "export-tests": cmd_export_tests,
+     "export-asr-tests": cmd_export_asr_tests}[args.cmd](args)
 
 
 if __name__ == "__main__":

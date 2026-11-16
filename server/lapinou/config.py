@@ -8,7 +8,7 @@ import os
 import tempfile
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import tomli_w
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
@@ -66,6 +66,9 @@ class BudgetConfig(_Section):
 
 
 class VoiceConfig(_Section):
+    # Détection de « Lapinou » : « asr » (transcription Parakeet, principale, R23), « oww »
+    # (classifieur openWakeWord seul) ou « both » (openWakeWord garde la transcription).
+    wake_method: Literal["asr", "oww", "both"] = "asr"
     tts_engine: str = "piper"
     voice: str = "fr_FR-siwis-medium"
     wake_threshold: float = 0.9  # validé : tools/train_wakeword/README.md

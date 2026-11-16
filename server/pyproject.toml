@@ -12,6 +12,7 @@ dependencies = [
     "tomli-w>=1.0",
     "numpy>=1.26",
     "onnxruntime>=1.18",
+    "sherpa-onnx==2.0.1",  # Parakeet + Silero VAD (version de tools/app-server)
 ]
 
 [dependency-groups]
