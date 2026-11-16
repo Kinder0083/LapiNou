@@ -561,7 +561,7 @@ class UsbKeyTest(unittest.TestCase):
         r.boot()
         self.assert_flashed(r)
         sounds = sorted((ROOT / "image/core/usr/karotz/sounds").glob("*.mp3"))
-        self.assertEqual(len(sounds), 14)
+        self.assertEqual(len(sounds), 15)
         for f in sounds:
             self.assertEqual((r.sb / "usr/karotz/sounds" / f.name).read_bytes(), f.read_bytes(), f.name)
 

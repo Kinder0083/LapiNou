@@ -10,8 +10,9 @@
  * - The long press while no platform has logged the rabbit in: with [cloud] enabled=1 and
  *   com.mindscape.karotz.LapinouCloud on the bus (followed by NameHasOwner and NameOwnerChanged),
  *   LapinouCloud.start_listening(), then stop_listening() at the release. Otherwise, when LapiNou
- *   is set up ([server] or [cloud] enabled=1), the no-server sound ("Je n'arrive pas à joindre mon
- *   serveur") and the orange LED for 3 s, then the status LED again.
+ *   is set up ([server] or [cloud] enabled=1), the no-server sound ("Je n'arrive pas à me
+ *   connecter.") and the orange LED for 3 s, then the status LED again. A press that went to
+ *   LapinouCloud is released there, even once a platform has logged the rabbit in.
  *
  * Without either setting (LapinLibre's settings alone, no lapinou.conf) nothing here acts: the
  * controller does what LapinLibre's does. Once a platform has logged the rabbit in, the long press is
@@ -220,11 +221,14 @@ void lapinou_long_press_start(ControllerObject *controller)
     lapinou.led_timer = g_timeout_add_seconds(NO_SERVER_LED_S, restore_led, controller);
 }
 
-void lapinou_long_press_stop(ControllerObject *controller)
+/* The release: TRUE when the press went to LapinouCloud, which then gets stop_listening(), even if a
+ * platform logged the rabbit in meanwhile (the platform never saw that press). */
+gboolean lapinou_long_press_stop(ControllerObject *controller)
 {
     (void)controller;
-    if (lapinou.listening) {
-        dbus_g_proxy_call_no_reply(lapinou.cloud_proxy, "stop_listening", G_TYPE_INVALID);
-        lapinou.listening = FALSE;
-    }
+    if (!lapinou.listening)
+        return FALSE;
+    dbus_g_proxy_call_no_reply(lapinou.cloud_proxy, "stop_listening", G_TYPE_INVALID);
+    lapinou.listening = FALSE;
+    return TRUE;
 }

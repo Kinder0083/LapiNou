@@ -162,6 +162,9 @@ set_ini() { # file section key value
 }
 # The app server (tools/app-server: the platform on 9123, apps on 8080, speech on 8081, speech
 # recognition on 8443), read by the controller (karotz.conf) and voice-daemon (voice.conf).
+# The LapiNou server is also the rabbit's platform and speech servers, on the same ports: without
+# SERVER=, LAPINOU_SERVER= is the app server (TTS_SERVER= and ASR_SERVER= still win for speech).
+[ -n "${SERVER}" ] || SERVER=${LAPINOU_SERVER}
 if [ -n "${SERVER}" ]; then
     set_ini "${CONF}/karotz.conf" karotz ip_server "${SERVER}"
     set_ini "${CONF}/karotz.conf" karotz port_server 9123

@@ -49,6 +49,8 @@ HOSTNAME=
 # --- LapiNou (the voice assistant), all optional: remove the # in front of a line to use it.
 # Empty or commented out: the rabbit keeps what it has. Change them later on the rabbit's web page.
 # The LapiNou server on your network (host name or address); the rabbit's microphone goes there.
+# It is also the app server, speech and speech recognition (as SERVER= above) unless SERVER=,
+# TTS_SERVER= or ASR_SERVER= say otherwise.
 #LAPINOU_SERVER=192.168.1.10
 # Home Assistant's MQTT broker: its address, port (1883 if you leave it out), user and password.
 #MQTT_HOST=192.168.1.50

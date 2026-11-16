@@ -221,6 +221,6 @@ gboolean lapinou_standalone(void);
 void lapinou_standalone_online(ControllerObject *controller);
 void lapinou_watch_cloud(DBusGConnection *bus);
 void lapinou_long_press_start(ControllerObject *controller);
-void lapinou_long_press_stop(ControllerObject *controller);
+gboolean lapinou_long_press_stop(ControllerObject *controller);
 
 #endif

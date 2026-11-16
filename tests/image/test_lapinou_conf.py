@@ -215,6 +215,42 @@ class ApplySettingsTest(unittest.TestCase):
         for secret in ("sk-abc", "pa$s", "k1", "k2"):
             self.assertNotIn(secret, log, "keys and passwords must not be logged")
 
+    def test_lapinou_server_is_the_app_server(self):
+        """LAPINOU_SERVER= alone: also the platform (karotz.conf) and speech servers (voice.conf)."""
+        sb, r = self.apply("LAPINOU_SERVER=192.168.1.10\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        conf = sb / "usr/etc/conf"
+        karotz = (conf / "karotz.conf").read_text()
+        for line in ("ip_server=192.168.1.10", "port_server=9123", "url_app=http://192.168.1.10:8080",
+                     "domain_app=192.168.1.10"):
+            self.assertIn(line + "\n", karotz)
+        voice = (conf / "voice.conf").read_text()
+        for line in ("fr=http://192.168.1.10:8081/fr", "en=http://192.168.1.10:8081/en", "nbserver=1",
+                     "server0=192.168.1.10", "port=8443"):
+            self.assertIn(line + "\n", voice)
+        self.assertIn("host=192.168.1.10\nenabled=1\n", (conf / "lapinou.conf").read_text())
+
+    def test_explicit_servers_win_over_lapinou_server(self):
+        sb, r = self.apply("LAPINOU_SERVER=192.168.1.10\nSERVER=192.168.1.20\nTTS_SERVER=http://192.168.1.30:9000\n"
+                           "ASR_SERVER=192.168.1.40:9443\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        conf = sb / "usr/etc/conf"
+        self.assertIn("ip_server=192.168.1.20\n", (conf / "karotz.conf").read_text())
+        voice = (conf / "voice.conf").read_text()
+        for line in ("fr=http://192.168.1.30:9000/fr", "server0=192.168.1.40", "port=9443"):
+            self.assertIn(line + "\n", voice)
+        self.assertNotIn("192.168.1.10", (conf / "karotz.conf").read_text() + voice)
+        self.assertIn("host=192.168.1.10\n", (conf / "lapinou.conf").read_text())
+        # Only the speech server given: the platform and speech recognition are still the LapiNou server.
+        self.setUp()
+        sb, r = self.apply("LAPINOU_SERVER=192.168.1.10\nTTS_SERVER=http://192.168.1.30:9000\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        conf = sb / "usr/etc/conf"
+        self.assertIn("ip_server=192.168.1.10\n", (conf / "karotz.conf").read_text())
+        voice = (conf / "voice.conf").read_text()
+        self.assertIn("fr=http://192.168.1.30:9000/fr\n", voice)
+        self.assertIn("server0=192.168.1.10\n", voice)
+
     def test_mqtt_host_alone_lands_in_mqtt_section(self):
         sb, r = self.apply("MQTT_HOST=192.168.1.50\n")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

@@ -1417,6 +1417,7 @@ usr:karotz/sounds/de_tag_unknown.mp3 f 0644 0:0 core
 usr:karotz/sounds/de_speech_not_understood.mp3 f 0644 0:0 core
 usr:karotz/sounds/es_tag_unknown.mp3 f 0644 0:0 core
 usr:karotz/sounds/es_speech_not_understood.mp3 f 0644 0:0 core
+usr:karotz/sounds/lapinou-no-server.mp3 f 0644 0:0 core  # LapiNou's long press without a server (image/tools/piper_sounds.py, CC BY 4.0)
 usr:karotz/.ssh d 0700 0:0
 usr:karotz/.ssh/authorized_keys l /usr/etc/conf/authorized_keys  # the install writes the key from lapinlibre.txt into /usr/etc/conf, which installs keep
 usr:karotz/sounds d 0755 0:0

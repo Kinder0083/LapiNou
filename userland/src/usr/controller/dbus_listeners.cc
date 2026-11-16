@@ -163,8 +163,8 @@ static void button_lclick_stop(DBusGProxy *proxy, gpointer data)
     (void)proxy;
     (void)data;
     g_log(NULL, G_LOG_LEVEL_DEBUG, "Received ButtonLClickStop signal");
-    lapinou_long_press_stop(global_controller);
-    if (!global_controller->platform_authenticated)
+    /* A press that went to LapinouCloud ends there: no LONG_STOP without its LONG_START. */
+    if (lapinou_long_press_stop(global_controller) || !global_controller->platform_authenticated)
         return;
     pm::PlatformMessage *msg = new_callback();
     msg->mutable_buttoncallback()->set_type(pm::ButtonCallback::LONG_STOP);
