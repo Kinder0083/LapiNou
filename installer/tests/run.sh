@@ -275,7 +275,8 @@ check "lance provision.sh --update avec le dépôt d'install.conf" log_has "pct 
 check "dépôt lu dans install.conf" out_has "Installation trouvée : Kinder0083/LapiNou, branche main (/usr/local/lib/lapinou/install.conf)"
 check "clone (modifiable par lapinou) jamais lu" log_lacks "/opt/lapinou/.git/"
 check "dépôt du clone modifié sans effet" bash -c '! grep -q evil "$1" "$2"' _ "$T/log" "$T/out"
-check "jeton lu sans suivre de lien" log_has "sh -c test ! -L /etc/lapinou/git-credentials"
+check "jeton lu : fichier ordinaire, sans lien" log_has 'test -f "$f" && test ! -L "$f" && head -c 4096'
+check "lecture du jeton bornée dans le temps" log_has "timeout 15 pct exec 105 -- sh -c f=/etc/lapinou/git-credentials"
 check "pas de pct create" log_lacks "pct create"
 check "pas de pct destroy" log_lacks "pct destroy"
 check "pas de fichier de réponses poussé" log_lacks "/root/lapinou-setup/answers"

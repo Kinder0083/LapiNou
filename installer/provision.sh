@@ -129,9 +129,9 @@ check_dirs() {
         err "$DATA/update n'est pas un dossier (lien symbolique ?) : mise à jour refusée."
     fi
     if [ ! -e "$DATA/update" ]; then
-        mkdir "$DATA/update"
+        # Créé directement en 0750 (pas de chmod, qui suivrait un lien posé entre-temps).
+        mkdir -m 0750 "$DATA/update"
         chown -h lapinou:lapinou "$DATA/update"
-        chmod 0750 "$DATA/update"
     fi
 }
 

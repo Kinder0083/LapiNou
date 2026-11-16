@@ -120,10 +120,12 @@ Le script affiche l'adresse de la page de réglages, `http://<IP du conteneur>:8
 
 Le script reconnaît un conteneur LapiNou existant (étiquette ou nom `lapinou`) et propose :
 
-1. **Mettre à jour** (défaut) : `git pull`, dépendances, modèles, services ; réglages et
-   données gardés ; le jeton est repris du conteneur. Le dépôt et la branche sont ceux notés à
-   l'installation dans `/usr/local/lib/lapinou/install.conf` (fichier root), jamais ceux du
-   clone ; pour en changer, retapez-les à la question ;
+1. **Mettre à jour** (défaut) : le code est récupéré (`git fetch` de la branche, puis avance
+   rapide seulement ; si vous changez de branche, `git checkout -B` sur la nouvelle), puis
+   dépendances, modèles et services ; réglages et données gardés ; le jeton est repris du
+   conteneur. Le dépôt et la branche sont ceux notés à l'installation dans
+   `/usr/local/lib/lapinou/install.conf` (fichier root), jamais ceux du clone ; pour en
+   changer, retapez-les à la question ;
 2. **Réinstaller** : efface le conteneur et ses données (il faut retaper son ID), puis
    installation complète ;
 3. installer un autre conteneur à côté ;

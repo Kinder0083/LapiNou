@@ -334,8 +334,10 @@ update_existing() {
     if [ "$GH_REPO" != "$rec_repo" ] || [ "$GH_BRANCH" != "$rec_branch" ]; then
         warn "Nouveau dépôt ou branche : $GH_REPO ($GH_BRANCH)"
     fi
-    # Jeton : celui du conteneur (refusé si le fichier est un lien symbolique).
-    GH_TOKEN=$(pct exec "$id" -- sh -c 'test ! -L /etc/lapinou/git-credentials && cat /etc/lapinou/git-credentials' 2>/dev/null \
+    # Jeton : celui du conteneur, seulement si c'est un fichier ordinaire (pas un lien), lu en
+    # 4 Kio au plus et en 15 s au plus.
+    # shellcheck disable=SC2016  # $f : variable du sh du conteneur
+    GH_TOKEN=$(timeout 15 pct exec "$id" -- sh -c 'f=/etc/lapinou/git-credentials; test -f "$f" && test ! -L "$f" && head -c 4096 "$f"' 2>/dev/null \
         | sed -n 's#^https://x-access-token:\([A-Za-z0-9_]*\)@github.com$#\1#p' | head -n 1 || true)
     echo "  Mise à jour : conteneur $id, $GH_REPO (branche $GH_BRANCH), jeton $(shown "$GH_TOKEN")"
     ask CONFIRM "Confirmer la mise à jour ? (o/n)" o

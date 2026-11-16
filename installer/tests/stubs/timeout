@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# timeout journalisé, puis le vrai (le délai s'applique toujours).
+# shellcheck source=installer/tests/stubs/_stub.sh
+. "$(dirname "$0")/_stub.sh"
+exec /usr/bin/timeout "$@"

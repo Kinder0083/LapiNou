@@ -35,7 +35,7 @@ case "$cmd" in
             "cat /usr/local/lib/lapinou/install.conf")
                 [ "${STUB_NO_INSTALL_CONF:-0}" = 1 ] && exit 1
                 printf '# install.conf\nREPO=Kinder0083/LapiNou\nBRANCH=main\n' ;;
-            "sh -c test ! -L /etc/lapinou/git-credentials"*)
+            "sh -c f=/etc/lapinou/git-credentials; test -f"*)
                 [ -n "${STUB_CT_TOKEN:-}" ] && echo "https://x-access-token:$STUB_CT_TOKEN@github.com" ;;
             "hostname -I") echo "192.168.1.77 fd00::77" ;;
             "bash /root/lapinou-setup/provision.sh"*)
