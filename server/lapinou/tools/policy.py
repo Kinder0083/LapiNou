@@ -5,7 +5,8 @@ Seuls les services de `SERVICES` sont permis, domaine par domaine (un nom de ser
 aussi un script : `script.ouvrir_garage` ne doit pas passer pour `script.bonne_nuit`).
 
 Sensibles : `lock.*`, `alarm_control_panel.*`, `cover` de classe garage, portail ou porte (ou
-de classe inconnue), les entités marquées sensibles, `climate` réglé hors de la plage permise,
+de classe inconnue), les entités marquées sensibles, `climate` réglé hors de la plage permise
+(ou par une valeur qui n'est pas un nombre, « 35 » compris),
 toute entité dont l'identifiant ou le nom contient un radical ou un mot sensible (R33 : verrou,
 garage, chauffage, porte, four…), et les scripts ou scènes dont le contenu touche à l'un de ces
 domaines ou n'a pas pu être lu. Une action sensible est refusée, sauf si son entité figure dans
@@ -121,7 +122,12 @@ class Policy:
             low, high = s.climate_range
             for key in _CLIMATE_KEYS:
                 value = data.get(key)
-                if isinstance(value, (int, float)) and not low <= value <= high:
+                if value is None:
+                    continue  # consigne absente (ou nulle : Home Assistant ne règle rien)
+                # Home Assistant convertit « 35 » en 35 °C : seul un vrai nombre est jugé.
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    return f"le chauffage réglé par une valeur non numérique ({key}) est sensible"
+                if not low <= value <= high:
                     return f"le chauffage hors de {low:g}–{high:g} °C est sensible"
         if domain in ("script", "scene") and linked_reason is not None:
             return linked_reason

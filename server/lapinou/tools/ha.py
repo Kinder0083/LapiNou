@@ -72,11 +72,17 @@ _SCENE_KEYS = {"id", "name", "icon", "entities", "metadata"}
 _COMMON = {"alias", "enabled", "continue_on_error"}
 _SERVICE_STEP = _COMMON | {"action", "service", "target", "data", "entity_id", "metadata"}
 _TARGET_KEYS = {"entity_id"}
-# Clés de `data` permises dans un script (HA résout aussi area_id, device_id… placés dans
-# `data` : toute autre clé rend le script sensible). `entity_id` y est revérifié comme cible.
-_DATA_KEYS = {"brightness", "brightness_pct", "color_temp_kelvin", "rgb_color", "transition",
-              "position", "tilt_position", "temperature", "target_temp_low", "target_temp_high",
-              "hvac_mode", "volume_level", "is_volume_muted", "entity_id"}
+# Clés de `data` permises dans un script, par domaine du service (HA résout aussi area_id,
+# device_id… placés dans `data` : toute autre clé rend le script sensible). Un domaine absent
+# d'ici (switch, fan, script, scene…) n'accepte aucune donnée. `entity_id`, permis partout,
+# est revérifié comme cible.
+_DATA_KEYS: dict[str, set[str]] = {
+    "light": {"brightness", "brightness_pct", "brightness_step", "brightness_step_pct",
+              "color_name", "color_temp", "color_temp_kelvin", "rgb_color", "transition"},
+    "cover": {"position", "tilt_position"},
+    "climate": {"temperature", "target_temp_low", "target_temp_high", "hvac_mode"},
+    "media_player": {"volume_level", "is_volume_muted"},
+}
 MAX_CONFIG_CHARS = 256 * 1024  # avant et après analyse (alias YAML développés)
 _WRAPPERS = {
     "delay": _COMMON | {"delay"},
@@ -96,7 +102,10 @@ class Sensitive(Exception):
 
 
 class _NoAliasLoader(yaml.SafeLoader):
-    """Chargeur YAML sûr qui refuse ancres et alias (pas d'expansion explosive)."""
+    """Chargeur YAML sûr qui refuse les alias (`*nom`) : pas d'expansion explosive.
+
+    Une ancre (`&nom`) seule est sans effet et reste acceptée.
+    """
 
     def compose_node(self, parent: Any, index: Any) -> Any:
         if self.check_event(yaml.AliasEvent):
@@ -123,6 +132,15 @@ def _parse_config(text: str) -> Any:
         inner = value["config"]
         return _parse_config(inner) if isinstance(inner, str) else inner
     return value
+
+
+def _text_keys(value: Any) -> bool:
+    """Toutes les clés, à tout niveau, sont-elles du texte ? (YAML permet `1:` ou `null:`.)"""
+    if isinstance(value, dict):
+        return all(isinstance(k, str) and _text_keys(v) for k, v in value.items())
+    if isinstance(value, list):
+        return all(_text_keys(v) for v in value)
+    return True
 
 
 def _steps(value: Any) -> list[Any]:
@@ -465,6 +483,8 @@ class HomeAssistantTools:
         config = _parse_config(text)
         if not isinstance(config, dict):
             return UNREAD
+        if not _text_keys(config):
+            return f"{entity_id} : clé non textuelle (contenu illisible)"
         try:
             dumped = json.dumps(config, ensure_ascii=False)
         except (TypeError, ValueError):  # dates, ensembles… venus du YAML
@@ -561,9 +581,10 @@ class HomeAssistantTools:
         data = step.get("data")
         if data is not None and not isinstance(data, dict):
             raise Sensitive("données illisibles")
-        extra = set(data or {}) - _DATA_KEYS
+        extra = set(data or {}) - _DATA_KEYS.get(domain, set()) - {"entity_id"}
         if extra:
-            raise Sensitive(f"donnée non permise {sorted(extra)[0]!r} (cible cachée possible)")
+            raise Sensitive(f"donnée non permise {sorted(extra)[0]!r} pour {domain} "
+                            "(cible cachée possible)")
         target = step.get("target")
         if target is not None and (not isinstance(target, dict) or set(target) - _TARGET_KEYS):
             raise Sensitive("cible autre qu'une liste d'entités (zone, appareil, étiquette)")
