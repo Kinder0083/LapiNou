@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from collections.abc import AsyncIterator
 
@@ -88,7 +89,9 @@ class ExcuseBrain:
 
 
 def _key(brain: Brain) -> tuple[str, str]:
-    return (getattr(brain, "kind", type(brain).__name__), getattr(brain, "model", brain.name))
+    """Deux cerveaux sont le même s'ils ont le même fournisseur (nom ou adresse) et modèle."""
+    route = getattr(brain, "provider", "") or getattr(brain, "kind", type(brain).__name__)
+    return (route, getattr(brain, "model", brain.name))
 
 
 class BrainRouter:
@@ -205,7 +208,8 @@ class BrainRouter:
                     yield TextDelta(OOPS_FR)
                     yield Done(Usage(provider="", model=brain.name))
                     return
-                if not e.retryable and not history_reset and not awaiting_tool_results(conv):
+                if (e.history_invalid and not history_reset
+                        and not awaiting_tool_results(conv)):
                     # Historique sans doute invalide : on repart de la seule dernière phrase,
                     # une fois, plutôt que d'échouer à chaque tour.
                     log.error("%s refuse la requête : historique remis à zéro (%s)",
@@ -231,18 +235,20 @@ class BrainRouter:
             if not sep:  # identifiant Claude seul
                 name, model = "anthropic", ref
             prov = b.providers.get(name) or ProviderConfig(kind=name)
-            if (prov.kind, model) in built:
-                return built[(prov.kind, model)]
+            if (name, model) in built:
+                return built[(name, model)]
             if prov.kind == "openai":
-                paid = bool(prov.api_key) or model in settings.budget.prices
+                # Payant s'il faut une clé (réglages ou OPENAI_API_KEY) ou s'il a un prix.
+                key = prov.api_key or os.environ.get("OPENAI_API_KEY", "")
+                paid = bool(key) or model in settings.budget.prices
                 brain: Brain = OpenAIBrain(prov.base_url, model, prov.api_key, paid=paid,
-                                           persona=persona)
+                                           provider=name, persona=persona)
             elif prov.kind == "anthropic":
-                brain = AnthropicBrain(model, prov.api_key, web_search, effort=effort,
-                                       persona=persona)
+                brain = AnthropicBrain(model, prov.api_key, web_search, provider=name,
+                                       effort=effort, persona=persona)
             else:
                 raise ValueError(f"fournisseur inconnu : {ref}")
-            built[(prov.kind, model)] = brain
+            built[(name, model)] = brain
             return brain
 
         primary = build(b.primary, effort="medium", web_search=b.web_search)
@@ -255,7 +261,8 @@ class BrainRouter:
                     fallbacks.append(brain)
         assist = (
             AssistBrain(settings.ha.url, settings.ha.token,
-                        blocked_keywords=settings.safety.assist_blocked_keywords)
+                        blocked_stems=settings.safety.assist_blocked_stems,
+                        blocked_words=settings.safety.assist_blocked_words)
             if settings.ha.url
             else None
         )

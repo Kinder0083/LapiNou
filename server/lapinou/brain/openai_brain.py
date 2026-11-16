@@ -90,7 +90,8 @@ class OpenAIBrain:
         api_key: str,
         *,
         max_tokens: int = 1024,
-        paid: bool = False,
+        paid: bool | None = None,
+        provider: str = "",
         persona: str | None = None,
         client: Any = None,
         clock: Callable[[], dt.datetime] = dt.datetime.now,
@@ -98,12 +99,15 @@ class OpenAIBrain:
         self.name = model
         self.model = model
         self.max_tokens = max_tokens
-        self.paid = paid  # payant : sauté au-delà du seuil d'alerte du budget
+        self.provider = provider or base_url  # dédoublonnage : fournisseur, puis adresse
+        api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        # Payant (sauté au-delà du seuil d'alerte) : par défaut, s'il faut une clé.
+        self.paid = bool(api_key) if paid is None else paid
         self.persona = persona if persona is not None else load_persona()
         # Clé vide : OPENAI_API_KEY ; un serveur local n'en exige pas, mais le SDK en veut une.
         self._client = client or openai.AsyncOpenAI(
             base_url=base_url or None,
-            api_key=api_key or os.environ.get("OPENAI_API_KEY") or "sans-clé",
+            api_key=api_key or "sans-clé",
             max_retries=1,
         )
         self._clock = clock

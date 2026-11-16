@@ -120,15 +120,18 @@ class SafetyConfig(_Section):
     climate_range: list[float] = Field(default_factory=lambda: [16.0, 24.0])
     allowed_entities: list[str] = Field(default_factory=list)
     pin: str = ""  # secret
-    # Assist (repli) ne passe pas par la politique d'actions sensibles : toute phrase qui cite
-    # l'un de ces mots (singulier ou pluriel) lui est refusée. Dans Home Assistant, n'exposez pas
-    # à Assist les entités sensibles (serrures, alarme, portes, garage, chauffage, four...).
-    assist_blocked_keywords: list[str] = Field(
+    # Assist (repli) ne passe pas par la politique d'actions sensibles : toute phrase qui
+    # contient l'un de ces radicaux dans un mot (sans tenir compte des accents : « déverrouille »,
+    # « chauffe-eau »), ou l'un de ces mots entiers (singulier ou pluriel), lui est refusée.
+    # Dans Home Assistant, n'exposez pas à Assist les entités sensibles (serrures, alarme,
+    # portes, garage, portail, chauffage, four, plaques).
+    assist_blocked_stems: list[str] = Field(
         default_factory=lambda: [
-            "porte", "serrure", "verrou", "alarme", "garage", "portail", "chauffage",
-            "radiateur", "thermostat", "four", "plaque",
+            "verrou", "serrur", "alarm", "garag", "portail", "chauff", "radiateur", "thermostat",
         ]
     )
+    # Mots entiers seulement (« porte » mais pas « apporte », « four » mais pas « fourchette »).
+    assist_blocked_words: list[str] = Field(default_factory=lambda: ["porte", "four", "plaque"])
 
 
 class MemoryConfig(_Section):

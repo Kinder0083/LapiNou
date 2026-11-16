@@ -11,6 +11,7 @@ par la politique d'actions sensibles de LapiNou. Deux garde-fous :
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -32,6 +33,12 @@ from .base import (
 TIMEOUT_S = 15.0
 
 
+def fold(text: str) -> str:
+    """Minuscules sans accents (« Déverrouillé » → « deverrouille »)."""
+    decomposed = unicodedata.normalize("NFKD", text.lower())
+    return "".join(c for c in decomposed if not unicodedata.combining(c))
+
+
 class AssistBrain:
     name = "assist"
     kind = "homeassistant"
@@ -43,12 +50,15 @@ class AssistBrain:
         ha_url: str,
         token: str,
         *,
-        blocked_keywords: list[str] | None = None,
+        blocked_stems: list[str] | None = None,
+        blocked_words: list[str] | None = None,
         client: httpx2.AsyncClient | None = None,
     ):
-        self.blocked_keywords = list(blocked_keywords or [])
-        words = "|".join(re.escape(k.lower()) for k in self.blocked_keywords)
-        self._blocked = re.compile(rf"\b(?:{words})[sx]?\b") if words else None
+        self.blocked_stems = list(blocked_stems or [])
+        self.blocked_words = list(blocked_words or [])
+        parts = [rf"\w*{re.escape(fold(k))}\w*" for k in self.blocked_stems]
+        parts += [rf"\b{re.escape(fold(k))}[sx]?\b" for k in self.blocked_words]
+        self._blocked = re.compile("|".join(parts)) if parts else None
         self.url = ha_url.rstrip("/") + "/api/conversation/process"
         self._token = token
         self._client = client
@@ -66,7 +76,7 @@ class AssistBrain:
         self, conv: Conversation, tools: list[ToolSpec]
     ) -> AsyncIterator[BrainEvent]:
         text = last_user_text(conv)
-        if self._blocked is not None and self._blocked.search(text.lower()):
+        if self._blocked is not None and self._blocked.search(fold(text)):
             yield Refused("sensitive")
             return
         payload: dict[str, Any] = {"text": text, "language": "fr"}

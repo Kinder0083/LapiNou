@@ -310,9 +310,13 @@ async def test_assist_refuses_sensitive_requests(db):
 
     client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
     brain = AssistBrain("http://ha.local:8123", "jeton-test", client=client,
-                        blocked_keywords=Settings().safety.assist_blocked_keywords)
+                        blocked_stems=Settings().safety.assist_blocked_stems,
+                        blocked_words=Settings().safety.assist_blocked_words)
     for sentence in ("Ouvre la porte d'entrée", "Monte le CHAUFFAGE", "allume le four",
-                     "ferme les portails", "Désactive l'alarme"):
+                     "ferme les portails", "Désactive l'alarme", "déverrouille l'entrée",
+                     "verrouille tout", "allume le chauffe-eau", "Déverrouillé ?",
+                     "règle le thermostat", "ouvre le GARAGE", "coupe les radiateurs",
+                     "ouvre les portes", "eteins la plaque"):
         events = await collect(brain.respond(conv_with(sentence), []))
         assert isinstance(events[-1], Refused) and events[-1].category == "sensitive"
     assert seen == []
@@ -322,9 +326,25 @@ async def test_assist_refuses_sensitive_requests(db):
 
 
 def test_assist_keywords_default_list():
-    assert set(Settings().safety.assist_blocked_keywords) == {
-        "porte", "serrure", "verrou", "alarme", "garage", "portail", "chauffage",
-        "radiateur", "thermostat", "four", "plaque"}
+    safety = Settings().safety
+    assert set(safety.assist_blocked_stems) == {
+        "verrou", "serrur", "alarm", "garag", "portail", "chauff", "radiateur", "thermostat"}
+    assert set(safety.assist_blocked_words) == {"porte", "four", "plaque"}
+
+
+async def test_assist_lets_harmless_sentences_through():
+    def handler(request):
+        return httpx2.Response(200, json={
+            "response": {"speech": {"plain": {"speech": "D'accord."}}}})
+
+    client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+    safety = Settings().safety
+    brain = AssistBrain("http://ha.local:8123", "jeton-test", client=client,
+                        blocked_stems=safety.assist_blocked_stems,
+                        blocked_words=safety.assist_blocked_words)
+    for sentence in ("allume la lumière du salon", "mets la fourchette", "apporte la radio"):
+        events = await collect(brain.respond(conv_with(sentence), []))
+        assert spoken(events) == "D'accord.", sentence
 
 
 async def test_haiku_gets_no_server_fallback():
@@ -462,7 +482,8 @@ async def test_anthropic_bad_request_is_logged_and_not_retryable(caplog):
 
 
 async def test_router_resets_poisoned_history_once(db):
-    primary = FakeBrain("principal", error=BrainError("400", retryable=False))
+    primary = FakeBrain("principal",
+                        error=BrainError("400", retryable=False, history_invalid=True))
     primary.error_once = True
     conv = conv_with("Avant")
     conv.messages.append({"role": "assistant", "content": [{"type": "text", "text": "x"}]})
@@ -473,6 +494,94 @@ async def test_router_resets_poisoned_history_once(db):
     # L'historique fautif est remplacé par la seule dernière question.
     assert conv.messages[0] == conv_with("Pourquoi le ciel est bleu ?").messages[0]
     assert len(conv.messages) == 2
+
+
+async def test_router_400_again_after_reset_goes_to_next_brain(db):
+    primary = FakeBrain("principal",
+                        error=BrainError("400", retryable=False, history_invalid=True))
+    router = make_router(primary=primary, fallbacks=[FakeBrain("secours")])
+    events = await collect(router.respond(conv_with("Pourquoi ?"), [], budget_at(db, 0.0)))
+    assert spoken(events) == "réponse de secours"
+    assert len(primary.calls) == 2
+
+
+async def test_router_other_400_goes_straight_to_next_brain(db):
+    primary = FakeBrain("principal", error=BrainError("400 outils", retryable=False))
+    router = make_router(primary=primary, fallbacks=[FakeBrain("secours")])
+    conv = conv_with("Avant")
+    add_user_text(conv, "Pourquoi ?")
+    events = await collect(router.respond(conv, [], budget_at(db, 0.0)))
+    assert spoken(events) == "réponse de secours"
+    assert len(primary.calls) == 1
+    assert len(conv.messages) == 3  # historique intact
+
+
+async def test_anthropic_400_history_classification():
+    client = FakeAnthropicClient(error=bad_request())
+    with pytest.raises(BrainError) as err:
+        await collect(make_anthropic(client).respond(conv_with("Salut"), []))
+    assert err.value.history_invalid is True
+    client = FakeAnthropicClient(error=bad_request("tools.0.input_schema: invalid schema"))
+    with pytest.raises(BrainError) as err:
+        await collect(make_anthropic(client).respond(conv_with("Salut"), []))
+    assert err.value.retryable is False and err.value.history_invalid is False
+
+
+async def test_fallback_blocks_not_sent_without_the_beta():
+    conv = conv_with("Une question")
+    conv.messages.append({"role": "assistant", "content": [
+        {"type": "text", "text": "Hmm."},
+        {"type": "fallback", "from": {"model": "claude-opus-5-5"},
+         "to": {"model": "claude-opus-5"}, "trigger": {"type": "refusal"}},
+        {"type": "text", "text": "Voilà."}]})
+    add_user_text(conv, "Allume le salon")
+    stored = [dict(m) for m in conv.messages]
+    client = FakeAnthropicClient(deltas=["Ok"])
+    haiku = AnthropicBrain("claude-haiku-5-5", "test-key", False, effort="low", client=client,
+                           clock=lambda: NOW)
+    await collect(haiku.respond(conv, []))
+    (req,) = client.requests
+    sent = [b["type"] for m in req["messages"] for b in m["content"]]
+    assert "fallback" not in sent and sent.count("text") == 4
+    assert conv.messages[:3] == stored  # l'historique gardé n'est pas modifié
+    # Opus (avec la bêta) reçoit l'historique tel quel.
+    client = FakeAnthropicClient(deltas=["Ok"])
+    await collect(make_anthropic(client).respond(conv, []))
+    assert any(b["type"] == "fallback" for m in client.requests[0]["messages"]
+               for b in m["content"])
+
+
+async def test_pause_turn_exhausted_drops_unpaired_server_tool_use(caplog):
+    paused = anthropic_message(
+        [{"type": "text", "text": "Je cherche."},
+         {"type": "server_tool_use", "id": "s9", "name": "web_search", "input": {"query": "x"}}],
+        stop_reason="pause_turn")
+    client = FakeAnthropicClient(deltas=[], finals=[paused])
+    conv = conv_with("Quel temps ?")
+    await collect(make_anthropic(client).respond(conv, []))
+    blocks = conv.messages[-1]["content"]
+    assert "server_tool_use" not in [b["type"] for b in blocks]
+    assert [b["type"] for b in blocks] == ["text"] * len(blocks) and blocks
+    assert any("pause_turn" in r.getMessage() for r in caplog.records)
+
+
+def test_dedupe_key_uses_provider_not_kind():
+    s = Settings()
+    s.brain.providers["a"] = ProviderConfig(kind="openai", base_url="http://a.local/v1")
+    s.brain.providers["b"] = ProviderConfig(kind="openai", base_url="http://b.local/v1")
+    s.brain.fallback_chain = ["a:meme-modele", "b:meme-modele"]
+    router = BrainRouter.from_settings(s)
+    assert len(router.fallbacks) == 2
+
+
+def test_openai_paid_counts_the_environment_key(monkeypatch):
+    s = Settings()
+    s.brain.providers["distant"] = ProviderConfig(kind="openai", base_url="http://x.local/v1")
+    s.brain.fallback_chain = ["distant:modele-x"]
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert BrainRouter.from_settings(s).fallbacks[0].paid is False
+    monkeypatch.setenv("OPENAI_API_KEY", "cle-de-test-env")
+    assert BrainRouter.from_settings(s).fallbacks[0].paid is True
 
 
 async def test_anthropic_usage_iterations():
@@ -610,7 +719,8 @@ def test_router_from_settings():
     (local,) = router.fallbacks  # « homeassistant » est l'assistant de dernier recours
     assert isinstance(local, OpenAIBrain) and local.model == "petit-modele"
     assert isinstance(router.assist, AssistBrain)
-    assert router.assist.blocked_keywords == s.safety.assist_blocked_keywords
+    assert router.assist.blocked_stems == s.safety.assist_blocked_stems
+    assert router.assist.blocked_words == s.safety.assist_blocked_words
     # Un modèle déjà présent n'est pas construit deux fois.
     s.brain.fallback_chain = ["claude-haiku-5-5", "homeassistant"]
     router = BrainRouter.from_settings(s)

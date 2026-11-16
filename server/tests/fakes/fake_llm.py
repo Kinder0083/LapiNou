@@ -133,12 +133,15 @@ def connection_error() -> anthropic.APIConnectionError:
     )
 
 
-def bad_request() -> anthropic.BadRequestError:
+def bad_request(
+    message: str = "messages.1.content.0: thinking blocks cannot be modified",
+) -> anthropic.BadRequestError:
     request = httpx2.Request("POST", "https://api.anthropic.invalid/v1/messages")
+    body = {"type": "error", "error": {"type": "invalid_request_error", "message": message}}
     return anthropic.BadRequestError(
-        "messages: thinking blocks cannot be modified",
+        f"Error code: 400 - {body}",
         response=httpx2.Response(400, request=request),
-        body=None,
+        body=body,
     )
 
 

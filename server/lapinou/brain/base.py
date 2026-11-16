@@ -99,7 +99,11 @@ class Refused:
 
 @dataclass
 class Retract:
-    """Oublier tout ce qui a été émis pour ce tour (émis par le routeur avant un refus)."""
+    """Oublier tout ce qui a été émis pour ce tour (émis par le routeur avant un refus).
+
+    Portée : uniquement les événements émis depuis le début de l'appel `respond()` en cours ;
+    les tours précédents (avant un appel d'outil, par exemple) restent dits.
+    """
 
 
 BrainEvent = TextDelta | ToolCall | Done | Refused | Retract
@@ -108,13 +112,17 @@ BrainEvent = TextDelta | ToolCall | Done | Refused | Retract
 class BrainError(Exception):
     """Le fournisseur n'a pas pu répondre (réseau, quota, erreur HTTP) : on passe au suivant.
 
-    `retryable=False` : la requête elle-même est refusée (400), par exemple un historique
-    invalide ; la réessayer telle quelle échouera encore.
+    `retryable=False` : la requête elle-même est refusée (400) ; la réessayer telle quelle
+    échouera encore. `history_invalid` : ce refus vise l'historique (messages, réflexion,
+    tool_use) ; repartir d'un historique vide peut suffire.
     """
 
-    def __init__(self, message: str, *, retryable: bool = True) -> None:
+    def __init__(
+        self, message: str, *, retryable: bool = True, history_invalid: bool = False
+    ) -> None:
         super().__init__(message)
         self.retryable = retryable
+        self.history_invalid = history_invalid
 
 
 class Brain(Protocol):

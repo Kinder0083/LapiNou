@@ -53,6 +53,34 @@ def tool_param(spec: ToolSpec) -> dict[str, Any]:
     return tool
 
 
+def without_fallback_blocks(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copie de l'historique sans blocs `fallback` (pour un modèle sans la bêta de repli)."""
+    out = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "fallback" for b in content
+        ):
+            message = {**message, "content": [b for b in content if b.get("type") != "fallback"]}
+        out.append(message)
+    return out
+
+
+def _history_invalid(error: anthropic.BadRequestError) -> bool:
+    """Vrai si la 400 vise l'historique (invalid_request sur messages, réflexion, tool_use)."""
+    text = f"{error} {getattr(error, 'body', '')}".lower()
+    return "invalid_request" in text and any(
+        word in text for word in ("messages", "thinking", "tool_use")
+    )
+
+
+def _drop_unpaired_server_tools(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Retire les server_tool_use sans résultat (boucle coupée après trop de pauses)."""
+    answered = {b.get("tool_use_id") for b in content if b.get("type", "").endswith("_result")}
+    return [b for b in content
+            if not (b.get("type") == "server_tool_use" and b.get("id") not in answered)]
+
+
 def _dump(block: Any) -> dict[str, Any]:
     """Un bloc tel que rendu par l'API (alias JSON : `from` du bloc `fallback`)."""
     if isinstance(block, dict):
@@ -69,6 +97,7 @@ class AnthropicBrain:
         api_key: str,
         web_search: bool,
         *,
+        provider: str = "anthropic",
         effort: str = "medium",
         max_tokens: int = 1024,
         persona: str | None = None,
@@ -81,6 +110,7 @@ class AnthropicBrain:
         self.effort = effort
         self.max_tokens = max_tokens
         self.persona = persona if persona is not None else load_persona()
+        self.provider = provider  # nom du fournisseur dans les réglages (dédoublonnage)
         self.server_fallback = supports_server_fallback(model)
         # Clé vide : le SDK lit ANTHROPIC_API_KEY.
         self._client = client or anthropic.AsyncAnthropic(api_key=api_key or None, max_retries=1)
@@ -96,7 +126,9 @@ class AnthropicBrain:
                 {"type": "text", "text": self.persona, "cache_control": {"type": "ephemeral"}},
                 {"type": "text", "text": context_text(conv, self._clock())},
             ],
-            "messages": conv.messages,
+            # Sans la bêta de repli, un bloc `fallback` de l'historique serait refusé.
+            "messages": conv.messages if self.server_fallback
+            else without_fallback_blocks(conv.messages),
             "output_config": {"effort": self.effort},
         }
         if self.server_fallback:
@@ -120,7 +152,7 @@ class AnthropicBrain:
         for _ in range(MAX_PAUSES + 1):
             req = self._request(conv, tools)
             if content:
-                req["messages"] = conv.messages + [{"role": "assistant", "content": content}]
+                req["messages"] = req["messages"] + [{"role": "assistant", "content": content}]
             try:
                 async with self._client.beta.messages.stream(**req) as stream:
                     async for text in stream.text_stream:
@@ -130,7 +162,8 @@ class AnthropicBrain:
             except anthropic.BadRequestError as e:
                 # Requête refusée telle quelle (historique ou outils invalides) : visible.
                 log.error("%s : requête refusée (400) : %s", self.model, e)
-                raise BrainError(f"{self.model} : 400 {e}", retryable=False) from e
+                raise BrainError(f"{self.model} : 400 {e}", retryable=False,
+                                 history_invalid=_history_invalid(e)) from e
             except (
                 anthropic.RateLimitError,
                 anthropic.APIStatusError,
@@ -145,6 +178,11 @@ class AnthropicBrain:
             content += [_dump(b) for b in message.content]
             if message.stop_reason != "pause_turn":
                 break
+
+        if message.stop_reason == "pause_turn":
+            log.warning("%s : encore en pause_turn après %d reprises ; tour coupé",
+                        self.model, MAX_PAUSES)
+            content = _drop_unpaired_server_tools(content)
 
         calls: list[ToolCall] = []
         for block in message.content:
