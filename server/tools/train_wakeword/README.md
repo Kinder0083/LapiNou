@@ -45,7 +45,8 @@ Licence de chaque voix = celle de son jeu de données (fichier `MODEL_CARD` de l
 voix ne servent qu'à fabriquer des exemples ; aucune n'est distribuée. Seuls sont dans le
 dépôt le code (MIT) et `server/tests/data/*.wav`, des extraits de synthèse produits par
 `train.py export-tests` avec les voix gilles (CC0), mls_1840 et mls (CC BY 4.0 :
-attribution ci-dessus).
+attribution ci-dessus), et `asr_*.wav` (`train.py export-asr-tests`, tests de la détection par
+transcription) avec les voix siwis-medium (CC BY 4.0, attribution ci-dessus) et gilles (CC0).
 
 **Entraîner sans données NC ni SA** (modèle utilisable sous des conditions CC BY
 seulement) : ne pas passer `--acav` à `train` (les négatifs sont alors seulement les

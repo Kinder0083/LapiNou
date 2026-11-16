@@ -936,7 +936,9 @@ def cmd_export_tests(args: argparse.Namespace) -> None:
 
 # Phrases de test de la détection par transcription (tests/test_wake_asr.py) : nom du fichier
 # -> texte. Les attentes (commande reconnue, ou aucune détection) sont dans le test.
+ASR_VOICES = [("fr_FR-siwis-medium", None), ("fr_FR-gilles-low", None)]  # CC BY 4.0, CC0 (README)
 ASR_PHRASES = {
+    "seul": "Lapinou.",
     "allume_salon": "Lapinou, allume le salon",
     "he_heure": "Hé Lapinou, quelle heure est-il ?",
     "dis_lumiere": "Dis Lapinou, éteins la lumière de la cuisine",
@@ -947,17 +949,21 @@ ASR_PHRASES = {
 
 
 def cmd_export_asr_tests(args: argparse.Namespace) -> None:
-    """Phrases complètes (nom + commande, et pièges) avec les deux voix d'un seul locuteur."""
+    """Phrases complètes (nom + commande, et pièges) avec deux voix (un locuteur chacune)."""
     global _VOICE_DIR
     _VOICE_DIR = Path(args.voices)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     nrng = np.random.default_rng(78)
-    voices = [(v, speakers(v, "test")[0]) for v in TEST_VOICES[:2]]
+    voices = ASR_VOICES
     for slug, text in ASR_PHRASES.items():
         for n, (voice, speaker) in enumerate(voices, 1):
-            clip = _synth((voice, speaker, text, "sentence", f"asr-{slug}-{n}"))
-            assert clip is not None, f"synthèse impossible : {text}"
+            from piper import SynthesisConfig
+
+            piper_voice = _voice(voice)  # sans alignements : certains phonèmes nasaux n'en ont pas
+            config = SynthesisConfig(speaker_id=speaker, length_scale=1.1)
+            audio = np.concatenate([c.audio_float_array for c in piper_voice.synthesize(text, config)])
+            clip = trim(to_16k(audio.astype(np.float64), piper_voice.config.sample_rate)).astype(np.float32)
             clip = clip / np.max(np.abs(clip)) * 10 ** (nrng.uniform(-18, -9) / 20)
             gap = int(0.6 * SR)
             pcm = colored_noise(2 * gap + len(clip), nrng) * 10 ** (-62 / 20)

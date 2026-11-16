@@ -43,8 +43,10 @@ SAMPLE_RATE = 16000
 VAD_THRESHOLD = asr_server.VAD_THRESHOLD
 MIN_SPEECH_S = 0.25
 # Mots courts qui peuvent précéder le nom (« hé Lapinou »).
-LEAD_WORDS = frozenset({"he", "hey", "eh", "ah", "oh", "ho", "dis", "ok", "okay", "salut", "coucou"})
+# « et », « dit » : Parakeet entend « Et la Pinot » pour « Hé Lapinou », « dit » pour « dis ».
+LEAD_WORDS = frozenset({"he", "hey", "eh", "et", "ah", "oh", "ho", "dis", "dit", "ok", "okay", "salut", "coucou"})
 MAX_NAME_WORDS = 3  # « la pi nou » : le nom peut être coupé en 3 mots
+PAD_S = 0.3  # silence ajouté de chaque côté d'un segment : Parakeet entend mieux un mot isolé
 PREFILTER_LEAD_S = 0.5  # le pré-filtre peut se déclencher un peu avant le début du segment
 _PUNCT = " \t\r\n.,;:!?…-–—'\"«»()"
 
@@ -81,7 +83,7 @@ class SileroSegmenter:
         config.silero_vad.min_speech_duration = MIN_SPEECH_S
         config.silero_vad.max_speech_duration = max_segment_s
         config.sample_rate = SAMPLE_RATE
-        self._vad = sherpa.VoiceActivityDetector(config, buffer_size_in_seconds=max_segment_s + 5)
+        self._vad = sherpa.VoiceActivityDetector(config, buffer_size_in_seconds=max_segment_s + 30)
         self._window = config.silero_vad.window_size
         self._pending = np.zeros(0, np.float32)
         self._fed = 0  # échantillons donnés au VAD (depuis son dernier reset)
@@ -221,7 +223,8 @@ class AsrWakeDetector:
             if not any(start - lead <= fire <= end + SAMPLE_RATE for fire in self._fires):
                 return None
         self.transcribed_s += len(samples) / SAMPLE_RATE
-        text = self.transcriber.transcribe(samples).strip()
+        pad = np.zeros(int(PAD_S * SAMPLE_RATE), np.float32)
+        text = self.transcriber.transcribe(np.concatenate((pad, samples, pad))).strip()
         found = match_wake_word(text, self.names)
         if found is None:
             return None
