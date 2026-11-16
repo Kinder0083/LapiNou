@@ -132,6 +132,7 @@ def make_key(key: Path):
     key.mkdir(parents=True)
     for name in ("autorun", "install-lib.sh", "applysettings.sh", "lapinlibre.txt"):
         shutil.copy(ROOT / "image" / "usbkey" / name, key / name)
+    shutil.copy(ROOT / "image/core/usr/share/lapinou/conf.sh", key / "lapinou-conf.sh")
     zimage = bytes(range(256)) * 4000 + b"kernel tail"  # not a whole number of pages
     rootfs = gzip.compress(b"root filesystem " * 20000, mtime=0)
     buf = io.BytesIO()

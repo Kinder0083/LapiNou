@@ -13,6 +13,7 @@
 # quote its values. Never logs the Wi-Fi password or the web password.
 
 source /mnt/usbkey/install-lib.sh
+source /mnt/usbkey/lapinou-conf.sh
 
 FILE=/mnt/usbkey/lapinlibre.txt
 CONF=/usr/etc/conf
@@ -139,7 +140,7 @@ fi
 if [ -n "${WEB_PASSWORD}" ]; then
     rm -f "${CONF}/web_password.new"
     (umask 077 && printf '%s\n' "${WEB_PASSWORD}" > "${CONF}/web_password.new") &&
-        chmod 600 "${CONF}/web_password.new" && mv -f "${CONF}/web_password.new" "${CONF}/web_password" ||\
+        chmod 600 "${CONF}/web_password.new" && mv -f "${CONF}/web_password.new" "${CONF}/web_password" ||
         ERROR "can't write the web password"
     LOG "Settings: web password set"
 else
@@ -197,90 +198,8 @@ if [ -n "${LANGUAGE}" ]; then
 fi
 
 # LapiNou's settings, in /usr/etc/conf/lapinou.conf; the passwords and keys in lapinou.secrets (0600).
-# The same functions as image/core/usr/share/lapinou/conf.sh, which this system may not have yet.
+# The library is the key's lapinou-conf.sh (image/core/usr/share/lapinou/conf.sh), which the rabbit has once installed.
 LAPINOU_CONF_DIR=${CONF}
-_lapinou_dir() { printf '%s' "${LAPINOU_CONF_DIR:-/usr/etc/conf}"; }
-
-# Is $1 a name this format allows for a section or a key?
-_lapinou_name_ok() {
-    case "$1" in
-    ''|*[!A-Za-z0-9_.-]*) return 1 ;;
-    esac
-    return 0
-}
-
-# _lapinou_read FILE SECTION KEY: print the stored value, decoded, or return 1 when there is none.
-_lapinou_read() {
-    [ -f "$1" ] || return 1
-    LAPINOU_S="$2" LAPINOU_K="$3" awk '
-        BEGIN { s = "[" ENVIRON["LAPINOU_S"] "]"; k = ENVIRON["LAPINOU_K"]; kl = length(k) + 1 }
-        /^\[/ { in_s = ($0 == s); next }
-        in_s && substr($0, 1, kl) == k "=" { v = substr($0, kl + 1); found = 1 }
-        END {
-            if (!found) exit 1
-            out = ""; n = length(v)
-            for (i = 1; i <= n; i++) {
-                c = substr(v, i, 1)
-                if (c == "\\" && i < n) {
-                    i++; c = substr(v, i, 1)
-                    if (c == "n") c = "\n"; else if (c == "r") c = "\r"
-                    else if (c != "\\" && c != "=") c = "\\" c
-                }
-                out = out c
-            }
-            printf "%s\n", out
-        }' "$1"
-}
-
-# _lapinou_write FILE MODE SECTION KEY VALUE: replace the key's line (and drop repeats), or add it
-# (and the section), through a temporary file in the same directory.
-_lapinou_write() {
-    local file="$1" mode="$2" tmp
-    tmp="${file}.$$.new"
-    [ -f "${file}" ] || { (umask 077; : > "${file}") || return 1; }
-    (
-        umask 077
-        LAPINOU_S="$3" LAPINOU_K="$4" LAPINOU_V="$5" awk '
-            BEGIN {
-                s = "[" ENVIRON["LAPINOU_S"] "]"; k = ENVIRON["LAPINOU_K"]; kl = length(k) + 1
-                v = ENVIRON["LAPINOU_V"]; enc = ""; n = length(v)
-                for (i = 1; i <= n; i++) {
-                    c = substr(v, i, 1)
-                    if (c == "\\") c = "\\\\"; else if (c == "\n") c = "\\n"
-                    else if (c == "\r") c = "\\r"; else if (c == "=") c = "\\="
-                    enc = enc c
-                }
-                line = k "=" enc
-            }
-            /^\[/ { if (in_s && !done) { print line; done = 1 } in_s = ($0 == s) }
-            in_s && substr($0, 1, kl) == k "=" { if (!done) { print line; done = 1 } next }
-            { print }
-            END { if (!done) { if (!in_s) print s; print line } }' "${file}" > "${tmp}"
-    ) && chmod "${mode}" "${tmp}" && mv -f "${tmp}" "${file}" || { rm -f "${tmp}"; return 1; }
-}
-
-lapinou_get() { # section key [default]
-    _lapinou_name_ok "$1" && _lapinou_name_ok "$2" || { printf '%s\n' "${3-}"; return 2; }
-    local v
-    v=$(_lapinou_read "$(_lapinou_dir)/lapinou.conf" "$1" "$2") && [ -n "${v}" ] && { printf '%s\n' "${v}"; return 0; }
-    printf '%s\n' "${3-}"
-}
-
-lapinou_set() { # section key value
-    _lapinou_name_ok "$1" && _lapinou_name_ok "$2" || { echo "lapinou_set: bad section or key" >&2; return 2; }
-    mkdir -p "$(_lapinou_dir)" && _lapinou_write "$(_lapinou_dir)/lapinou.conf" 644 "$1" "$2" "$3"
-}
-
-lapinou_secret_get() { # key
-    _lapinou_name_ok "$1" || return 2
-    _lapinou_read "$(_lapinou_dir)/lapinou.secrets" secrets "$1" || echo ""
-}
-
-lapinou_secret_set() { # key value
-    _lapinou_name_ok "$1" || { echo "lapinou_secret_set: bad key" >&2; return 2; }
-    mkdir -p "$(_lapinou_dir)" && _lapinou_write "$(_lapinou_dir)/lapinou.secrets" 600 secrets "$1" "$2"
-}
-# <<< the functions conf.sh has
 # A value left empty keeps what the rabbit has. Never logs a password or key.
 ln_set() { lapinou_set "$1" "$2" "$3" || ERROR "can't write ${CONF}/lapinou.conf"; }
 ln_secret() { lapinou_secret_set "$1" "$2" || ERROR "can't write ${CONF}/lapinou.secrets"; }

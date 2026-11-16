@@ -542,10 +542,10 @@ class UsbKeyTest(unittest.TestCase):
         self.assertIn("MD5 checksum error: install-tools.tar", r.setuplog())
 
     def test_key_layout(self):
-        # The key carries our own install (autorun, install-lib.sh, applysettings.sh)
+        # The key carries our own install (autorun, install-lib.sh, applysettings.sh, lapinou-conf.sh)
         # and a generated install.conf of plain assignments, and nothing else at its top.
         files = ["applysettings.sh", "autorun", "autorun.sig", "build_id", "install-lib.sh", "install-tools.tar",
-                 "install.conf", "lapinlibre.txt", "rootfs.img.gz", "usr.tar.gz", "zImage"]
+                 "install.conf", "lapinlibre.txt", "lapinou-conf.sh", "rootfs.img.gz", "usr.tar.gz", "zImage"]
         for name in files:
             self.assertTrue((self.key / name).is_file(), name)
         self.assertEqual(sorted(p.name for p in self.key.iterdir()), sorted(files + ["sound"]))

@@ -60,7 +60,7 @@ done
 [[ "${RABBIT}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || die 2 "--rabbit must be an address or a host name"
 
 # 1. On the PC: the key's files and their checksums.
-for f in zImage rootfs.img.gz usr.tar.gz install.conf build_id install-lib.sh applysettings.sh lapinlibre.txt; do
+for f in zImage rootfs.img.gz usr.tar.gz install.conf build_id install-lib.sh applysettings.sh lapinou-conf.sh lapinlibre.txt; do
     [ -f "${KEY}/${f}" ] || die 2 "${KEY}/${f} is missing: is ${KEY} a built USB key?"
 done
 conf() { sed -n "s/^$1=//p" "${KEY}/install.conf" | tr -d '\r'; }
@@ -128,7 +128,7 @@ need=$(( ($(size_of "${KEY}/zImage") + 2 * $(size_of "${KEY}/rootfs.img.gz")) / 
 
 echo "Sending the install files to ${STAGE}"
 send "${HERE}/on-rabbit.sh" "${STAGE}/on-rabbit.sh"
-for f in install-lib.sh applysettings.sh; do
+for f in install-lib.sh applysettings.sh lapinou-conf.sh; do
     sed "s#/mnt/usbkey#${STAGE}#g" "${KEY}/${f}" > "${WORK}/${f}"
     send "${WORK}/${f}" "${STAGE}/${f}"
 done

@@ -21,7 +21,6 @@
 #
 # Runs in BusyBox ash and in bash: POSIX shell and awk only. Sourcing defines functions only.
 
-# >>> the functions image/usbkey/applysettings.sh carries a copy of (tests/image/test_lapinou_conf.py checks they match)
 _lapinou_dir() { printf '%s' "${LAPINOU_CONF_DIR:-/usr/etc/conf}"; }
 
 # Is $1 a name this format allows for a section or a key?
@@ -103,4 +102,3 @@ lapinou_secret_set() { # key value
     _lapinou_name_ok "$1" || { echo "lapinou_secret_set: bad key" >&2; return 2; }
     mkdir -p "$(_lapinou_dir)" && _lapinou_write "$(_lapinou_dir)/lapinou.secrets" 600 secrets "$1" "$2"
 }
-# <<< the functions applysettings.sh copies

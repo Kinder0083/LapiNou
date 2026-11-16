@@ -573,6 +573,7 @@ A larger image stops the build. The gzip time stamps are `SOURCE_DATE_EPOCH`, or
 | `install.conf` | `BUILD_ID`, `BUILD_VERSION`, `KERNEL_MD5`, `ROOTFS_MD5`, `USR_MD5`, `INSTALL_TOOLS_MD5`, one `NAME=value` line each. `autorun` reads it. |
 | `build_id` | The build id. |
 | `autorun`, `install-lib.sh`, `applysettings.sh`, `lapinlibre.txt` | Copied from `image/usbkey`. A file with CRLF stops the build. `autorun` and the `.sh` files get mode 0755. |
+| `lapinou-conf.sh` | LapiNou's settings library, copied from `image/core/usr/share/lapinou/conf.sh`; `applysettings.sh` sources it, because the rabbit being installed may not have it yet. |
 | `autorun.sig` | Copied from `image/usbkey` without change. Its MD5 must agree with `config.toml` `[key.md5]`, because the rabbit's factory system runs a key's `autorun` only when `gpg --verify autorun.sig` passes. |
 | `install-tools.tar` | From `out/install-tools/`. |
 | `sound/key-found.mp3`, `sound/install-busy.mp3`, `sound/error.mp3` | Tones (`INSTALL_SOUNDS`; `error.mp3` is the same as `/usr`'s), encoded to MP3. |

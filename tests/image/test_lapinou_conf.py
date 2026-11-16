@@ -172,10 +172,10 @@ class ApplySettingsTest(unittest.TestCase):
         sb = Path(self._tmp.name) / "sb"
         for d in ("mnt/usbkey", "usr/etc/conf", "tmp"):
             (sb / d).mkdir(parents=True, exist_ok=True)
-        for src in (APPLYSETTINGS, INSTALL_LIB):
+        for src in (APPLYSETTINGS, INSTALL_LIB, CONF_SH):
             text = src.read_text(encoding="utf-8")
             text = re.sub(rf"(?<![\w.$/])/({TOP_DIRS})(?=[/\s\"');$]|$)", lambda m: str(sb) + m.group(0), text, flags=re.M)
-            (sb / "mnt/usbkey" / src.name).write_text(text, encoding="utf-8", newline="\n")
+            (sb / "mnt/usbkey" / ("lapinou-conf.sh" if src == CONF_SH else src.name)).write_text(text, encoding="utf-8", newline="\n")
         (sb / "mnt/usbkey/lapinlibre.txt").write_bytes(settings.encode("utf-8"))
         return sb
 
@@ -244,13 +244,6 @@ class ApplySettingsTest(unittest.TestCase):
         sb, r = self.apply("MQTT_HOST=192.168.1.50\n", "--check")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertFalse((sb / "usr/etc/conf/lapinou.conf").exists())
-
-    def test_embedded_functions_match_conf_sh(self):
-        # applysettings.sh runs on systems that don't have conf.sh yet, so it carries a copy.
-        def block(path):
-            text = path.read_text(encoding="utf-8")
-            return text[text.index("_lapinou_dir() {"):text.index("\n# <<<")]
-        self.assertEqual(block(APPLYSETTINGS), block(CONF_SH))
 
 
 @unittest.skipUnless(shutil.which("gcc") and shutil.which("pkg-config") and

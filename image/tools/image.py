@@ -45,7 +45,10 @@ SIGNED = "autorun.sig"
 # The key's own files, copied as they are: the install (autorun and its helpers), the settings the
 # user fills in, and their installer. The install's tools are LapinLibre's install-tools.tar
 # (system/install-tools.sh).
-KEY_FILES = ["autorun", "install-lib.sh", "applysettings.sh", "lapinlibre.txt"]
+KEY_FILES = ["autorun", "install-lib.sh", "applysettings.sh", "lapinou-conf.sh", "lapinlibre.txt"]
+# Key files that are the image's own files (applysettings.sh sources LapiNou's settings library
+# from the key, since the rabbit being installed may not have it yet), not image/usbkey's.
+KEY_SOURCES = {"lapinou-conf.sh": IMAGE / "core" / "usr" / "share" / "lapinou" / "conf.sh"}
 
 
 class ImageError(Exception):
@@ -249,9 +252,9 @@ def stick_files(config, names):
     image/usbkey (CRLF refused), autorun.sig, the install tools and the install sounds."""
     files = {}
     for name in names:
-        files[name] = (IMAGE / "usbkey" / name).read_bytes()
+        files[name] = KEY_SOURCES.get(name, IMAGE / "usbkey" / name).read_bytes()
         if b"\r" in files[name]:
-            raise ImageError(f"image/usbkey/{name} has CRLF line endings; the rabbit's shell can't run it")
+            raise ImageError(f"{name} has CRLF line endings; the rabbit's shell can't run it")
     signed = (IMAGE / "usbkey" / SIGNED).read_bytes()
     if md5(signed) != config["key"]["md5"][SIGNED]:
         raise ImageError(f"image/usbkey/{SIGNED} has md5 {md5(signed)}, not config.toml's: it must stay as it is")
