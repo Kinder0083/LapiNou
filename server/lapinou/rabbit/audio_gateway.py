@@ -30,6 +30,9 @@ SAMPLE_RATE = 16000
 MAX_FRAME = 64 * 1024
 MAX_RABBIT_ID = 128
 QUEUE_MAX = 1000  # blocs de ~2048 échantillons : plus de 2 minutes d'audio
+MARK_KEEP = 10 * SAMPLE_RATE  # une marque finie est oubliée 10 s (axe du micro) après sa fin
+OPEN_MARK_KEEP = 3600 * SAMPLE_RATE  # une lecture sans fin reçue est oubliée après 1 h
+REWIND = SAMPLE_RATE  # first_sample qui recule de plus de 1 s : lapinou-mic a redémarré
 
 
 def _build_mulaw_table() -> np.ndarray:
@@ -127,8 +130,11 @@ class RabbitStream:
         self.rabbit_id = rabbit_id
         self.firmware_version: str | None = None
         self.connected = False
-        # playback_id -> (échantillon de début, échantillon de fin ou None si en cours)
+        # playback_id -> (échantillon de début, échantillon de fin ou None si en cours).
+        # Borné : une marque finie depuis MARK_KEEP est retirée. Une marque de début (nouvelle
+        # lecture ou reprise après pause) place sa clé en dernier (ordre d'insertion).
         self.playback_marks: dict[str, tuple[int, int | None]] = {}
+        self._fresh_marks: set[str] = set()  # marques reçues depuis le dernier bloc audio
         self.gaps = 0  # sauts de seq
         self.lost_frames = 0  # trames manquantes au total
         self._queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue(QUEUE_MAX)
@@ -147,18 +153,39 @@ class RabbitStream:
         if frame.mark is not None:
             playback_id, at_sample, start = frame.mark
             if start:
+                self.playback_marks.pop(playback_id, None)
                 self.playback_marks[playback_id] = (at_sample, None)
             else:
                 began = self.playback_marks.get(playback_id, (at_sample, None))[0]
                 self.playback_marks[playback_id] = (began, at_sample)
+            self._fresh_marks.add(playback_id)
         if frame.mulaw:
             first = frame.first_sample if frame.first_sample is not None else self._next_sample
             pcm = mulaw_decode(frame.mulaw)
+            if first < self._next_sample - REWIND:
+                # nouvel axe (lapinou-mic redémarré) : les anciennes marques n'y ont plus de sens
+                for playback_id in [k for k in self.playback_marks if k not in self._fresh_marks]:
+                    del self.playback_marks[playback_id]
+            self._fresh_marks.clear()
             self._next_sample = first + len(pcm)
+            self._prune_marks()
             if self._queue.full():  # consommateur trop lent : on perd le plus ancien
                 self._queue.get_nowait()
                 log.warning("%s : file audio pleine, bloc le plus ancien perdu", self.rabbit_id)
             self._queue.put_nowait(AudioChunk(pcm, first))
+
+    def _prune_marks(self) -> None:
+        if not self.playback_marks:
+            return
+        now = self._next_sample
+        stale = [
+            k
+            for k, (start, end) in self.playback_marks.items()
+            if (end is not None and end < now - MARK_KEEP)
+            or (end is None and start < now - OPEN_MARK_KEEP)
+        ]
+        for playback_id in stale:
+            del self.playback_marks[playback_id]
 
     async def frames(self) -> AsyncIterator[AudioChunk]:
         """Les blocs audio, dans l'ordre. Ne s'arrête qu'à la fermeture de la passerelle."""

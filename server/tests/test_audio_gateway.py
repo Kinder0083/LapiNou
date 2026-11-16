@@ -122,6 +122,45 @@ async def test_playback_marks(gateway):
     w.close()
 
 
+def _drain(stream) -> None:
+    while not stream._queue.empty():
+        stream._queue.get_nowait()
+
+
+def test_playback_marks_bounded_over_10000_playbacks():
+    """Les marques finies sont oubliées 10 s après leur fin : le dict reste petit."""
+    stream = audio_gateway.RabbitStream("r1")
+    block, seq, pos = 2048, 0, 0
+    largest = 0
+    for n in range(10_000):
+        for start in (True, False):
+            stream._feed(audio_gateway.Frame("r1", seq, mark=(f"tts-{n}", pos, start)))
+            stream._feed(
+                audio_gateway.Frame("r1", seq + 1, mulaw=b"\xff" * block, first_sample=pos)
+            )
+            seq, pos = seq + 2, pos + block
+            _drain(stream)
+        largest = max(largest, len(stream.playback_marks))
+    assert largest <= (audio_gateway.MARK_KEEP + 2 * block) // (2 * block) + 2
+    assert "tts-9999" in stream.playback_marks and "tts-0" not in stream.playback_marks
+
+
+def test_resume_moves_mark_last_and_rewind_forgets_old_axis():
+    stream = audio_gateway.RabbitStream("r1")
+    feed = stream._feed
+    feed(audio_gateway.Frame("r1", 0, mark=("a", 100, True)))
+    feed(audio_gateway.Frame("r1", 1, mark=("b", 200, True)))
+    feed(audio_gateway.Frame("r1", 2, mark=("a", 300, False)))
+    feed(audio_gateway.Frame("r1", 3, mark=("a", 400, True)))  # reprise après pause
+    assert list(stream.playback_marks) == ["b", "a"]
+    assert stream.playback_marks["a"] == (400, None)
+    feed(audio_gateway.Frame("r1", 4, mulaw=b"\xff" * 50_000, first_sample=0))
+    # lapinou-mic redémarré : l'axe repart de 0 ; la marque reçue juste avant reste
+    feed(audio_gateway.Frame("r1", 0, mark=("c", 10, True)))
+    feed(audio_gateway.Frame("r1", 1, mulaw=b"\xff" * 100, first_sample=0))
+    assert stream.playback_marks == {"c": (10, None)}
+
+
 async def test_two_rabbits_separate(gateway):
     a, b = await connect(gateway), await connect(gateway)
     a.write(frame("A", 0, b"\xff", 0, hello_msg=hello("A")))
