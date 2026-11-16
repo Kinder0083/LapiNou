@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import ipaddress
+import re
 import shutil
 import socket
 import tempfile
@@ -45,7 +47,8 @@ CSRF_HEADER = "x-lapinou"
 CSP = ("default-src 'self'; img-src 'self' data:; media-src 'self' blob:; "
        "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
 # (section, clé) que la page ne change pas (None : toute la section).
-READ_ONLY = (("admin", None), ("update", None), ("ha", "mcp_command"), ("ota", "dir"))
+READ_ONLY = (("admin", None), ("update", None), ("ha", "mcp_command"), ("ota", "dir"),
+             ("ota", "repo"), ("ota", "pubkey_path"))
 PAGE_SECRETS = [f"{s}.{k}" for s, k in SECRET_FIELDS if s != "admin"]
 
 
@@ -108,10 +111,13 @@ def secrets_status(s: Settings) -> dict[str, bool]:
 
 
 def public_view(s: Settings) -> dict[str, Any]:
+    from ..app import base_url
+
     public, _ = _split_secrets(s.model_dump(mode="json"))
     public.pop("admin", None)
     return {
         "settings": public,
+        "base_url": base_url(s),  # l'adresse effective donnée aux lapins
         "secrets": secrets_status(s),
         "choices": {"wake_method": ["asr", "both"], "tts_engine": ["kokoro", "piper"],
                     "provider_kind": ["anthropic", "openai"]},
@@ -520,8 +526,13 @@ async def restart(request: Request) -> dict[str, bool]:
 async def usb_key(body: UsbKeyBody, request: Request) -> FileResponse:
     from ..usbkey import UsbKeyError, WifiInput, build_usb_key
 
+    from ..ota import OtaError
+
     ctx = _ctx(request)
-    release = ctx.ota.key_zip() if ctx.ota is not None else None
+    try:
+        release = ctx.ota.key_zip() if ctx.ota is not None else None
+    except OtaError as e:  # clé publique absente ou provisoire, signature fausse (R42)
+        raise HTTPException(409, str(e)) from None
     if release is None:
         raise HTTPException(409, "aucune clé de version téléchargée : cherchez d'abord une "
                                  "mise à jour (page « Mises à jour »)")
@@ -566,13 +577,22 @@ def own_addresses() -> frozenset[str]:
     return _own[1]
 
 
+_PORT = re.compile(r"(?::[0-9]{1,5})?")
+
+
 def _host_name(header: str) -> str:
+    """Le nom d'un en-tête Host (« nom », « nom:port », « [IPv6] », « [IPv6]:port »), en
+    minuscules ; "" s'il est mal formé."""
     header = header.strip().lower()
-    if header.startswith("["):  # [IPv6]:port
-        return header[1:header.find("]")] if "]" in header else ""
-    if header.count(":") == 1:
-        header = header.split(":", 1)[0]
-    return header.rstrip(".")
+    if header.startswith("["):
+        end = header.find("]")
+        if end < 0 or not _PORT.fullmatch(header[end + 1:]):
+            return ""
+        return header[1:end]
+    name, colon, port = header.partition(":")
+    if colon and not re.fullmatch(r"[0-9]{1,5}", port):
+        return ""  # « nom:abc », ou une IPv6 sans crochets
+    return name.rstrip(".")
 
 
 def host_allowed(header: str, settings: Settings) -> bool:
@@ -587,10 +607,36 @@ def host_allowed(header: str, settings: Settings) -> bool:
     return host in _LOCAL_HOSTS | own_addresses() | {n.lower() for n in named if n} | extra
 
 
+# Seuls ces chemins (pour les lapins, et la santé du service) échappent au contrôle de Host ;
+# tout le reste du port 8080 y passe, y compris une route ajoutée plus tard.
+RABBIT_PREFIXES = ("/ota/", "/tts/")
+RABBIT_PATHS = frozenset({"/api/health"})
+
+
 def _guarded(path: str) -> bool:
-    """La page et l'API (pas /ota ni /tts, servis aux lapins, ni /api/health)."""
-    return path == "/" or path.startswith("/static/") or (
-        path.startswith("/api/") and path != "/api/health")
+    return not (path in RABBIT_PATHS or path.startswith(RABBIT_PREFIXES))
+
+
+def _ip_literal(name: str) -> bool:
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    return True
+
+
+def request_allowed(request: Request, settings: Settings) -> bool:
+    """L'en-tête Host est un nom connu, et l'adresse locale de la connexion (`server` d'ASGI,
+    qui porte aussi l'hôte d'une requête en forme absolue « GET http://hôte/… » dans le
+    client de test) est une adresse IP ou un nom connu."""
+    if not host_allowed(request.headers.get("host", ""), settings):
+        return False
+    server = request.scope.get("server")
+    if server:
+        name = str(server[0]).lower()
+        if not (_ip_literal(name) or host_allowed(name, settings)):
+            return False
+    return True
 
 
 def install(app: FastAPI) -> None:
@@ -605,8 +651,7 @@ def install(app: FastAPI) -> None:
     @app.middleware("http")
     async def guard(request: Request, call_next):
         path = request.url.path
-        if _guarded(path) and not host_allowed(request.headers.get("host", ""),
-                                               _ctx(request).store.get()):
+        if _guarded(path) and not request_allowed(request, _ctx(request).store.get()):
             return JSONResponse({"detail": "nom d'hôte non autorisé (server.allowed_hosts)"},
                                 status_code=400)
         if (path.startswith("/api/") and request.method not in ("GET", "HEAD", "OPTIONS")

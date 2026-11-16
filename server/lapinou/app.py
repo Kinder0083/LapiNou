@@ -53,7 +53,9 @@ def create_app(
             finally:
                 await services.close()
 
-    app = FastAPI(title="LapiNou", version=__version__, lifespan=lifespan)
+    # Ni /docs, ni /redoc, ni /openapi.json : rien d'autre que la page et l'API sur 8080.
+    app = FastAPI(title="LapiNou", version=__version__, lifespan=lifespan, docs_url=None,
+                  redoc_url=None, openapi_url=None)
     app.state.settings = settings
     app.state.tts_store = tts.Mp3Store()  # MP3 des phrases, GET /tts/<id>.mp3
     app.state.services = services

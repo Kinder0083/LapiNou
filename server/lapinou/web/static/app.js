@@ -191,7 +191,7 @@
         const body = {};
         for (const c of this.collectors) c(body);
         const data = await api("PUT", "/api/settings", body);
-        Object.assign(state, { settings: data.settings, secrets: data.secrets });
+        Object.assign(state, { settings: data.settings, secrets: data.secrets, base_url: data.base_url });
         if (data.cleared && data.cleared.length) {
           // Destination changée : son secret a été effacé, il faut le saisir de nouveau.
           const names = data.cleared.map((n) => label(n.startsWith("brain.providers.") ? "provider.api_key" : n)[0]);
@@ -241,7 +241,7 @@
 
   // Les lapins joignent les applications sur le port 8080 (url_app de la clé USB).
   function portWarning() {
-    const url = (state.settings.server || {}).public_url || "";
+    const url = (state.settings.server || {}).public_url || state.base_url || "";  // adresse effective
     if (!url) return null;
     let port;
     try {
@@ -581,7 +581,8 @@
           !ota.version ? el("p", { class: "notice warn", text: t("updates.no_release") }) : null,
           ota.error ? el("p", { class: "notice error", text: ota.error }) : null,
           el("div", { class: "actions" }, check),
-          f.text("ota.repo"), f.saveButton(), secret("ota.token", "ota.token")));
+          el("p", { class: "meta", text: `${label("ota.repo")[0]} : ${state.settings.ota.repo} (${t("updates.repo_readonly")})` }),
+          secret("ota.token", "ota.token")));
       }
 
       const old = el("input", { id: "pw-old", type: "password", autocomplete: "current-password" });

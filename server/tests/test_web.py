@@ -290,6 +290,7 @@ INVALID = [
     {"server": {"timezone": "../../etc/passwd"}},
     {"server": {"timezone": "Europe"}},
     {"budget": {"warn_pct": 150}},
+    {"budget": {"warn_pct": 90, "stop_pct": 80}},
     {"server": {"http_port": 70000}},
     {"server": {"tts_port": 0}},
     {"mqtt": {"port": -1}},
@@ -601,6 +602,7 @@ def test_failures_table_is_bounded(tmp_path):
     clock = Clock()
     auth = _auth_with_password(tmp_path, clock)
     for i in range(auth_mod.MAX_CLIENTS + 200):
+        clock.t += 2.1  # sous le plafond global (30 essais par minute)
         auth._attempt(f"10.0.{i // 256}.{i % 256}")
     assert len(auth._clients) <= auth_mod.MAX_CLIENTS
     clock.t += auth_mod.FORGET_S + 1
@@ -760,3 +762,104 @@ def test_settings_json_is_valid_for_the_page(env):
     json.dumps(body)
     assert body["choices"]["wake_method"] == ["asr", "both"]
     assert body["choices"]["tts_engine"] == ["kokoro", "piper"]
+
+
+def test_blocked_addresses_are_never_evicted(tmp_path):
+    """Inonder la table d'adresses nouvelles n'efface pas le blocage d'une adresse ; table
+    pleine d'adresses bloquées : une adresse nouvelle est refusée."""
+    from lapinou.web import auth as auth_mod
+
+    clock = Clock()
+    auth = _auth_with_password(tmp_path, clock)
+    for _ in range(5):
+        auth.login("faux", "attaquant")
+    clock.t += 1
+    # Table remplie d'adresses libres plus récentes que lui : c'est elles qui partent.
+    for i in range(auth_mod.MAX_CLIENTS):
+        auth._clients[f"c{i}"] = auth_mod._Client(last=clock.t)
+    clock.t += 1
+    auth._attempt("nouvelle")
+    assert len(auth._clients) <= auth_mod.MAX_CLIENTS and "nouvelle" in auth._clients
+    assert auth.locked_for("attaquant") > 0
+    with pytest.raises(auth_mod.Locked):
+        auth.login(PASSWORD, "attaquant")
+    # Table pleine de blocages : on refuse plutôt que d'oublier.
+    full = _auth_with_password(tmp_path, clock)
+    for i in range(auth_mod.MAX_CLIENTS):
+        full._clients[f"c{i}"] = auth_mod._Client(locked_until=clock.t + 600, last=clock.t)
+    with pytest.raises(auth_mod.Locked):
+        full._attempt("nouvelle")
+    assert "c0" in full._clients and "nouvelle" not in full._clients
+
+
+def test_global_attempt_ceiling(tmp_path):
+    """Beaucoup d'adresses, un essai chacune : au-delà de 30 par minute, tout attend."""
+    from lapinou.web import auth as auth_mod
+
+    clock = Clock()
+    auth = _auth_with_password(tmp_path, clock)
+    for i in range(auth_mod.GLOBAL_MAX_ATTEMPTS):
+        auth._attempt(f"10.2.0.{i}")
+    with pytest.raises(auth_mod.Locked):
+        auth._attempt("10.2.1.1")
+    clock.t += auth_mod.GLOBAL_WINDOW_S + 1
+    auth._attempt("10.2.1.1")
+
+
+# --- Contrôle de Host : tout est gardé sauf les chemins des lapins ---------------------------
+
+
+@pytest.mark.parametrize("host", ["[::1]junk", "[::1]:", "[::1]:80:80", "localhost:abc",
+                                  "::1", "localhost:8080:1", "[evil.example]"])
+def test_malformed_host_headers_are_refused(env, host):
+    client, _, _ = env
+    assert client.get("/api/session", headers={"Host": host}).status_code == 400
+
+
+def test_absolute_form_request_does_not_reach_guarded_handlers(env):
+    client, _, _ = env
+    r = client.get("http://evil.example/api/session", headers={"Host": "localhost"})
+    assert r.status_code == 400
+    r = client.get("http://evil.example/", headers={"Host": "localhost"})
+    assert r.status_code == 400
+
+
+def test_everything_but_rabbit_paths_is_guarded(env):
+    client, _, _ = env
+    for path in ("/docs", "/redoc", "/openapi.json", "/autre", "/static/fr.json", "/api/x"):
+        assert client.get(path, headers={"Host": "evil.example"}).status_code == 400, path
+    # Sans documentation d'API sur 8080, même pour un nom connu.
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert client.get(path).status_code == 404, path
+
+
+def test_ota_settings_are_read_only_from_the_page(env):
+    client, _, tmp_path = env
+    _login(client)
+    r = client.put("/api/settings", headers=H, json={
+        "ota": {"repo": "attaquant/faux", "pubkey_path": "/tmp/cle.pem", "check_hours": 6}})
+    assert r.status_code == 200, r.text
+    saved = load_settings(tmp_path / "config.toml")
+    assert saved.ota.repo == "Kinder0083/LapiNou" and saved.ota.pubkey_path == ""
+    assert saved.ota.check_hours == 6
+
+
+def test_settings_give_the_effective_base_url(env):
+    client, _, _ = env
+    _login(client)
+    assert client.get("/api/settings").json()["base_url"] == "http://192.168.1.10:8080"
+
+
+def test_usb_key_refused_without_a_valid_ota_public_key(env):
+    from lapinou.ota import OtaError
+
+    client, ctx, _ = env
+    _login(client)
+
+    class Placeholder(FakeOta):
+        def key_zip(self):
+            raise OtaError("clé publique OTA provisoire (PLACEHOLDER) : mises à jour refusées")
+
+    ctx.ota = Placeholder()
+    r = client.post("/api/usbkey", headers=H, json={"ssid": "Maison", "password": "motdepasse"})
+    assert r.status_code == 409 and "PLACEHOLDER" in r.json()["detail"]

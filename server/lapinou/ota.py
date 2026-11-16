@@ -4,19 +4,25 @@
 Le serveur lit les Releases du dépôt réglé (`[ota] repo`, Kinder0083/LapiNou par défaut), avec
 le jeton de `secrets.toml` pour un dépôt privé (à grain fin, lecture seule de « Contents ») ; le
 jeton ne part que vers api.github.com, jamais vers l'hôte de stockage où GitHub redirige les
-téléchargements. Une version comprend `manifest.json` (signé, format de `lapinou-ota`, Tâche 11)
-et les fichiers qu'il liste ; chacun est vérifié (taille, SHA-256) avant que la version ne
-remplace la précédente, d'un bloc. La signature, elle, est vérifiée par le lapin : le manifeste
-lui est servi **octet pour octet** tel que publié. L'archive de la clé USB de la version
-(`LapinLibre-<v>.zip` ou `lapinou-key-<v>.zip`) est l'un des fichiers listés par ce manifeste
-signé, vérifiée comme les autres (R41) : une somme `.sha256` publiée à part ne fait pas foi.
-Toutes les adresses GitHub sont en https, redirections comprises : le jeton ne passe jamais en
-clair.
+téléchargements. Toutes les adresses GitHub sont en https, redirections comprises.
 
-Disposition : `<dir>/releases/<version>/` et `<dir>/current` (le nom de la version servie).
-L'ancienne version reste sur le disque au moins 10 minutes après le changement (un lapin peut
-être en train de la télécharger), puis est effacée.
-Les lapins lisent `GET /ota/manifest.json` puis `GET /ota/<fichier>` (port 8080).
+Signature (R42) : Ed25519 sur les octets exacts de `manifest.json`, signature brute de 64
+octets publiée à part (`manifest.json.sig`). La clé publique est le fichier PEM de
+`[ota] pubkey_path` (par défaut `ota-pubkey.pem` livré avec le serveur). Le serveur vérifie la
+signature **avant** de télécharger les fichiers et d'installer la version, donc avant toute
+clé USB construite à partir d'elle ; clé absente ou provisoire (PLACEHOLDER) : refus.
+Chaque fichier listé est ensuite vérifié (taille, SHA-256), l'archive de la clé USB comprise
+(R41). Le champ `version` du manifeste doit être le nom de la version (étiquette GitHub).
+
+Disposition : `<dir>/releases/<version>/` (manifest.json, manifest.json.sig, fichiers) et
+`<dir>/current`. Une version remplacée reste servie au moins 10 minutes (GRACE_S).
+
+Adresses pour les lapins (port 8080, docs/lapinou/ota.md) :
+- `GET /ota/manifest.json` et `GET /ota/manifest.json.sig` : la version en service ;
+- `GET /ota/<version>/<fichier>` : un fichier (ou manifest.json[.sig]) d'une version encore
+  servie, la courante ou celle en sursis ; le lapin prend `<version>` dans le manifeste qu'il a
+  vérifié, et reçoit donc toujours les fichiers de ce manifeste-là ;
+- `GET /ota/<fichier>` : un fichier de la version en service (forme courte).
 """
 
 from __future__ import annotations
@@ -38,6 +44,9 @@ from pathlib import Path
 from typing import Any
 
 import httpx2
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 
@@ -47,8 +56,10 @@ log = logging.getLogger(__name__)
 
 API = "https://api.github.com"
 MANIFEST = "manifest.json"
+SIGNATURE = "manifest.json.sig"
+PACKAGED_PUBKEY = Path(__file__).with_name("ota-pubkey.pem")
 MAX_FILE = 300 * 1024 * 1024
-GRACE_S = 600  # l'ancienne version reste servie-able 10 minutes après le changement
+GRACE_S = 600  # une version remplacée reste servie 10 minutes
 FIRST_CHECK_S = 60  # première vérification périodique une minute après le démarrage
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,99}")
 _KEY_ZIP = re.compile(r"(?:LapinLibre|lapinou-key)-.+\.zip")
@@ -80,23 +91,51 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def parse_manifest(data: bytes) -> dict[str, dict[str, Any]]:
-    """Les fichiers d'un manifeste (nom → sha256, size) ; OtaError s'il est invalide."""
+def parse_manifest(data: bytes) -> tuple[str, dict[str, dict[str, Any]]]:
+    """(version, fichiers : nom → sha256, size) d'un manifeste ; OtaError s'il est invalide."""
     try:
         m = json.loads(data)
         files = m["files"]
-        ok = (isinstance(m.get("version"), str) and isinstance(m.get("signature"), str)
-              and isinstance(files, dict) and files)
+        version = m["version"]
+        ok = (isinstance(version, str) and _NAME.fullmatch(version) is not None
+              and isinstance(files, dict) and bool(files))
     except (ValueError, KeyError, TypeError):
         ok = False
     if not ok:
         raise OtaError("manifest.json invalide")
     for name, f in files.items():
-        if (name == MANIFEST or not _NAME.fullmatch(name) or not isinstance(f, dict)
+        if (name in (MANIFEST, SIGNATURE) or not _NAME.fullmatch(name) or not isinstance(f, dict)
                 or not _SHA.fullmatch(str(f.get("sha256", "")))
                 or not isinstance(f.get("size"), int) or not 0 <= f["size"] <= MAX_FILE):
             raise OtaError(f"manifest.json invalide (fichier {name!r})")
-    return files
+    return version, files
+
+
+def load_pubkey(path: Path) -> Ed25519PublicKey:
+    """La clé publique OTA ; OtaError si elle manque, est provisoire ou n'est pas Ed25519."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        raise OtaError(f"clé publique OTA absente ({path}) : mises à jour refusées") from None
+    if b"PLACEHOLDER" in data:
+        raise OtaError("clé publique OTA provisoire (PLACEHOLDER) : mises à jour refusées tant "
+                       "que la vraie clé n'est pas installée")
+    try:
+        key = load_pem_public_key(data)
+    except ValueError:
+        raise OtaError(f"clé publique OTA illisible ({path})") from None
+    if not isinstance(key, Ed25519PublicKey):
+        raise OtaError("la clé publique OTA doit être une clé Ed25519")
+    return key
+
+
+def verify_signature(key: Ed25519PublicKey, manifest: bytes, signature: bytes) -> None:
+    if len(signature) != 64:
+        raise OtaError("signature du manifeste invalide (64 octets attendus)")
+    try:
+        key.verify(signature, manifest)
+    except InvalidSignature:
+        raise OtaError("signature du manifeste fausse : version refusée") from None
 
 
 class OtaRelay:
@@ -106,6 +145,7 @@ class OtaRelay:
         token: str,
         directory: Path | str,
         *,
+        pubkey_path: Path | str | None = None,
         client: httpx2.AsyncClient | None = None,
         api: str = API,
         check_hours: float = 0.0,
@@ -114,6 +154,7 @@ class OtaRelay:
         if not api.startswith("https://"):
             raise ValueError("l'API GitHub doit être en https")
         self.repo, self.token, self.dir = repo, token, Path(directory)
+        self.pubkey_path = Path(pubkey_path) if pubkey_path else PACKAGED_PUBKEY
         self.api = api.rstrip("/")
         self.check_hours = check_hours
         self._clock = clock
@@ -126,25 +167,32 @@ class OtaRelay:
     @classmethod
     def from_settings(cls, settings: Settings, **kwargs) -> OtaRelay:
         o = settings.ota
-        return cls(o.repo, o.token, o.dir, check_hours=o.check_hours, **kwargs)
+        return cls(o.repo, o.token, o.dir, pubkey_path=o.pubkey_path or None,
+                   check_hours=o.check_hours, **kwargs)
 
     # --- État --------------------------------------------------------------------------
+
+    def _release(self, version: str) -> Path | None:
+        """Le dossier d'une version encore servie (courante ou en sursis), ou None."""
+        if not _NAME.fullmatch(version):
+            return None
+        d = self.dir / "releases" / version
+        return d if (d / MANIFEST).is_file() and (d / SIGNATURE).is_file() else None
 
     def _current(self) -> str | None:
         try:
             version = (self.dir / "current").read_text(encoding="utf-8").strip()
         except OSError:
             return None
-        if _NAME.fullmatch(version) and (self.dir / "releases" / version / MANIFEST).is_file():
-            return version
-        return None
+        return version if self._release(version) is not None else None
 
     def _key_name(self, version: str) -> str:
         """L'archive de la clé USB listée par le manifeste signé de cette version, ou ""."""
-        if not version:
+        d = self._release(version) if version else None
+        if d is None:
             return ""
         try:
-            files = parse_manifest((self.dir / "releases" / version / MANIFEST).read_bytes())
+            _, files = parse_manifest((d / MANIFEST).read_bytes())
         except (OSError, OtaError):
             return ""
         return next((n for n in sorted(files) if _KEY_ZIP.fullmatch(n)), "")
@@ -154,28 +202,40 @@ class OtaRelay:
 
     def manifest_bytes(self) -> bytes | None:
         version = self._current()
-        if version is None:
-            return None
-        return (self.dir / "releases" / version / MANIFEST).read_bytes()
+        return None if version is None else (self.dir / "releases" / version / MANIFEST).read_bytes()
 
-    def file_path(self, name: str) -> Path | None:
-        """Un fichier listé par le manifeste servi, ou None."""
-        data = self.manifest_bytes()
-        if data is None:
+    def version_file(self, version: str, name: str) -> Path | None:
+        """`name` (manifest.json, sa signature ou un fichier listé) d'une version encore
+        servie, ou None."""
+        d = self._release(version)
+        if d is None or not _NAME.fullmatch(name):
             return None
-        try:
-            files = parse_manifest(data)
-        except OtaError:
-            return None
-        if name not in files:
-            return None
-        path = self.dir / "releases" / self._current() / name  # type: ignore[operator]
+        if name not in (MANIFEST, SIGNATURE):
+            try:
+                _, files = parse_manifest((d / MANIFEST).read_bytes())
+            except (OSError, OtaError):
+                return None
+            if name not in files:
+                return None
+        path = d / name
         return path if path.is_file() else None
 
+    def file_path(self, name: str) -> Path | None:
+        """Un fichier de la version en service, ou None."""
+        version = self._current()
+        return None if version is None else self.version_file(version, name)
+
     def key_zip(self) -> Path | None:
+        """L'archive de la clé USB de la version en service, sa signature revérifiée avec la clé
+        publique actuelle ; None sinon (OtaError si la clé publique est absente ou provisoire)."""
         version = self._current()
         name = self._key_name(version or "")
-        return self.dir / "releases" / version / name if version and name else None
+        if not version or not name:
+            return None
+        d = self.dir / "releases" / version
+        verify_signature(load_pubkey(self.pubkey_path), (d / MANIFEST).read_bytes(),
+                         (d / SIGNATURE).read_bytes())
+        return d / name
 
     # --- GitHub ------------------------------------------------------------------------
 
@@ -251,14 +311,16 @@ class OtaRelay:
             self._prune()
             if version == self._current():
                 return
+            key = load_pubkey(self.pubkey_path)  # sans clé valable : rien n'est téléchargé
             assets = {a["name"]: a for a in release.get("assets", [])
                       if isinstance(a, dict) and isinstance(a.get("name"), str)}
-            if MANIFEST not in assets:
-                raise OtaError(f"la version {version} n'a pas de manifest.json")
+            for needed in (MANIFEST, SIGNATURE):
+                if needed not in assets:
+                    raise OtaError(f"la version {version} n'a pas de {needed}")
             self.dir.mkdir(parents=True, exist_ok=True)
             staging = Path(tempfile.mkdtemp(dir=self.dir, prefix=".staging-"))
             try:
-                await self._fetch(client, version, assets, staging)
+                await self._fetch(client, key, version, assets, staging)
                 self._install(version, staging)
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
@@ -266,10 +328,15 @@ class OtaRelay:
             if own:
                 await client.aclose()
 
-    async def _fetch(self, client: httpx2.AsyncClient, version: str,
+    async def _fetch(self, client: httpx2.AsyncClient, key: Ed25519PublicKey, version: str,
                      assets: dict[str, dict[str, Any]], staging: Path) -> None:
         await self._download(client, assets[MANIFEST], staging / MANIFEST, limit=1 << 20)
-        files = parse_manifest((staging / MANIFEST).read_bytes())
+        await self._download(client, assets[SIGNATURE], staging / SIGNATURE, limit=1024)
+        manifest = (staging / MANIFEST).read_bytes()
+        verify_signature(key, manifest, (staging / SIGNATURE).read_bytes())  # avant tout le reste
+        listed_version, files = parse_manifest(manifest)
+        if listed_version != version:
+            raise OtaError(f"le manifeste dit {listed_version!r}, la version est {version!r}")
         for name, want in files.items():  # la clé USB comprise (R41)
             if name not in assets:
                 raise OtaError(f"{name} manque dans la version {version}")
@@ -289,7 +356,7 @@ class OtaRelay:
         tmp = self.dir / ".current.new"
         tmp.write_text(version + "\n", encoding="utf-8")
         os.replace(tmp, self.dir / "current")
-        if previous is not None:  # retirée maintenant : gardée GRACE_S à partir d'ici
+        if previous is not None:  # remplacée maintenant : servie encore GRACE_S
             now = self._clock()
             os.utime(releases / previous, (now, now))
         self._prune()
@@ -298,7 +365,7 @@ class OtaRelay:
         log.info("relais OTA : version %s servie aux lapins", version)
 
     def _prune(self) -> None:
-        """Efface les versions retirées depuis plus de GRACE_S (jamais la version servie)."""
+        """Efface les versions remplacées depuis plus de GRACE_S (jamais la version servie)."""
         releases = self.dir / "releases"
         if not releases.is_dir():
             return
@@ -338,18 +405,23 @@ def _relay(request: Request) -> OtaRelay:
     return relay
 
 
-@router.get("/ota/manifest.json")
-def get_manifest(request: Request) -> Response:
-    data = _relay(request).manifest_bytes()
-    if data is None:
-        raise HTTPException(404, "aucune version téléchargée")
-    return Response(data, media_type="application/json",
-                    headers={"Cache-Control": "no-cache"})
+def _serve(path: Path | None, name: str) -> Response:
+    if path is None:
+        raise HTTPException(404)
+    if name == MANIFEST:
+        return Response(path.read_bytes(), media_type="application/json",
+                        headers={"Cache-Control": "no-cache"})
+    return FileResponse(path, media_type="application/octet-stream",
+                        headers={"Cache-Control": "no-cache" if name == SIGNATURE else "max-age=600"})
 
 
 @router.get("/ota/{name}")
-def get_file(name: str, request: Request) -> FileResponse:
-    path = _relay(request).file_path(name) if _NAME.fullmatch(name) else None
-    if path is None:
-        raise HTTPException(404)
-    return FileResponse(path, media_type="application/octet-stream")
+def get_current(name: str, request: Request) -> Response:
+    """manifest.json, sa signature ou un fichier de la version en service."""
+    return _serve(_relay(request).file_path(name), name)
+
+
+@router.get("/ota/{version}/{name}")
+def get_versioned(version: str, name: str, request: Request) -> Response:
+    """Un fichier d'une version encore servie (la courante, ou la précédente en sursis)."""
+    return _serve(_relay(request).version_file(version, name), name)

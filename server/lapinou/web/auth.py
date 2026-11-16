@@ -12,7 +12,8 @@ n'accepte de créer le mot de passe qu'avec ce code, puis efface le fichier. Vé
 enregistrer se font sous un verrou : deux créations simultanées ne peuvent pas réussir toutes
 les deux.
 
-Essais limités par adresse : chaque essai est compté sous verrou **avant** le calcul argon2 ;
+Essais limités par adresse, et au plus 30 par minute en tout : chaque essai est compté sous
+verrou **avant** le calcul argon2 ;
 5 essais ratés en 5 minutes bloquent l'adresse 1 minute, puis 2, 4, 8… jusqu'à 15 minutes
 (la série retombe à zéro après une connexion réussie ou une heure sans essai). Les ratés de la
 connexion, du changement de mot de passe et du code d'installation comptent ensemble.
@@ -21,6 +22,7 @@ connexion, du changement de mot de passe et du code d'installation comptent ense
 from __future__ import annotations
 
 import argparse
+import collections
 import logging
 import os
 import secrets
@@ -48,6 +50,10 @@ LOCKOUT_S = 60
 MAX_LOCKOUT_S = 900
 FORGET_S = 3600  # une adresse sans essai depuis une heure est oubliée (série remise à zéro)
 MAX_CLIENTS = 1024
+# Plafond global, toutes adresses confondues : au plus 30 essais par minute (contre un essai
+# réparti sur beaucoup d'adresses).
+GLOBAL_MAX_ATTEMPTS = 30
+GLOBAL_WINDOW_S = 60
 SETUP_TOKEN_NAME = "setup-token"
 
 _hasher = PasswordHasher()
@@ -110,6 +116,7 @@ class Auth:
         self._clock = clock
         self._sessions: dict[str, float] = {}  # jeton → expiration
         self._clients: dict[str, _Client] = {}
+        self._recent: collections.deque[float] = collections.deque()  # essais, toutes adresses
         self._lock = threading.Lock()  # sessions et essais
         self._setup_lock = threading.Lock()
         self._setup_token: str | None = None
@@ -141,16 +148,28 @@ class Auth:
                  if c.locked_until <= now and c.last < now - FORGET_S]
         for k in stale:
             del self._clients[k]
-        if len(self._clients) >= MAX_CLIENTS:  # garde-fou mémoire : les plus anciennes partent
-            for k in sorted(self._clients, key=lambda k: self._clients[k].last)[
-                    : len(self._clients) - MAX_CLIENTS + 1]:
+        if len(self._clients) >= MAX_CLIENTS:
+            # Garde-fou mémoire : les plus anciennes partent, jamais une adresse bloquée (sinon
+            # en inonder la table effacerait son blocage).
+            free = sorted((k for k, c in self._clients.items() if c.locked_until <= now),
+                          key=lambda k: self._clients[k].last)
+            for k in free[: len(self._clients) - MAX_CLIENTS + 1]:
                 del self._clients[k]
 
     def _attempt(self, client: str) -> None:
-        """Compte un essai (avant toute vérification) ; Locked si l'adresse est bloquée."""
+        """Compte un essai (avant toute vérification) ; Locked si l'adresse est bloquée, si
+        trop d'essais arrivent de partout à la fois, ou si la table est pleine d'adresses
+        bloquées (on refuse plutôt que d'oublier un blocage)."""
         with self._lock:
             now = self._clock()
+            while self._recent and self._recent[0] <= now - GLOBAL_WINDOW_S:
+                self._recent.popleft()
+            if len(self._recent) >= GLOBAL_MAX_ATTEMPTS:
+                raise Locked(int(self._recent[0] + GLOBAL_WINDOW_S - now) + 1)
             self._prune(now)
+            if client not in self._clients and len(self._clients) >= MAX_CLIENTS:
+                raise Locked(LOCKOUT_S)
+            self._recent.append(now)
             c = self._clients.setdefault(client, _Client())
             if c.locked_until > now:
                 raise Locked(int(c.locked_until - now) + 1)

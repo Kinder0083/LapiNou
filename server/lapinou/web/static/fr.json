@@ -193,6 +193,7 @@
     "latest": "Dernière version sur GitHub",
     "checked": "Dernière vérification",
     "check": "Chercher une nouvelle version",
+    "repo_readonly": "se change dans config.toml, avec la clé publique des versions",
     "checking": "Recherche…",
     "no_release": "Aucune version téléchargée pour le moment.",
     "admin": "Mot de passe administrateur",

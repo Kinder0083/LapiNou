@@ -6,13 +6,22 @@ import json
 
 import httpx2
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from fastapi.testclient import TestClient
 
 from lapinou.config import OtaConfig, Settings
-from lapinou.ota import OtaError, OtaRelay
+from lapinou.ota import PACKAGED_PUBKEY, OtaError, OtaRelay
 
 API = "https://api.github.com"
 REPO = "Kinder0083/LapiNou"
+# Paire jetable, créée au lancement des tests (R42) : jamais de vraie clé dans le dépôt.
+SIGNER = Ed25519PrivateKey.generate()
+OTHER = Ed25519PrivateKey.generate()
+
+
+def _pem(private: Ed25519PrivateKey) -> bytes:
+    return private.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
 
 
 def _sha(data: bytes) -> str:
@@ -42,7 +51,8 @@ class FakeGitHub:
             '{"signature": "c2lnbmF0dXJl",\n  "version":"%s", "files": %s }\n'
             % (version, json.dumps(listed, indent=3))
         ).encode()
-        self.assets = {"manifest.json": self.manifest, **files}
+        self.assets = {"manifest.json": self.manifest,
+                       "manifest.json.sig": SIGNER.sign(self.manifest), **files}
         if key:  # somme publiée à part, comme release.yml : elle ne fait plus foi
             zip_name = f"LapinLibre-{version}.zip"
             self.assets[zip_name + ".sha256"] = (
@@ -79,9 +89,13 @@ class FakeGitHub:
         return httpx2.AsyncClient(transport=httpx2.MockTransport(self.handler))
 
 
-def _relay(gh, tmp_path, token="", clock=None):
+def _relay(gh, tmp_path, token="", clock=None, pubkey=None):
     kwargs = {"clock": clock} if clock else {}
-    return OtaRelay(REPO, token, tmp_path / "ota", client=gh.client(), **kwargs)
+    if pubkey is None:
+        pubkey = tmp_path / "ota-pubkey.pem"
+        pubkey.write_bytes(_pem(SIGNER))
+    return OtaRelay(REPO, token, tmp_path / "ota", client=gh.client(), pubkey_path=pubkey,
+                    **kwargs)
 
 
 def _app(relay):
@@ -168,6 +182,106 @@ async def test_new_release_replaces_old_one(tmp_path):
     client = _app(relay)
     assert client.get("/ota/manifest.json").content == gh.manifest
     assert client.get("/ota/zImage").content == b"k2"
+
+
+async def test_rabbit_with_the_old_manifest_still_gets_the_old_files(tmp_path):
+    """Le lapin lit le manifeste (et sa signature), la version change, puis il télécharge :
+    par /ota/<version>/<fichier>, il reçoit les fichiers du manifeste qu'il a vérifié."""
+    now = [1_000_000.0]
+    gh = FakeGitHub()
+    relay = _relay(gh, tmp_path, clock=lambda: now[0])
+    await relay.refresh()
+    client = _app(relay)
+    old_manifest = client.get("/ota/manifest.json").content
+    old_sig = client.get("/ota/manifest.json.sig").content
+    SIGNER.public_key().verify(old_sig, old_manifest)
+    version = json.loads(old_manifest)["version"]
+    gh.set_release("v1.3.0", {"zImage": b"k2", "rootfs.img.gz": b"r2", "usr.tar.gz": b"u2"})
+    await relay.refresh()
+    now[0] += 300
+    r = client.get(f"/ota/{version}/zImage")
+    assert r.status_code == 200 and r.content == b"K" * 1000
+    assert client.get(f"/ota/{version}/manifest.json").content == old_manifest
+    assert client.get(f"/ota/{version}/manifest.json.sig").content == old_sig
+    assert client.get("/ota/v1.3.0/zImage").content == b"k2"
+    assert client.get("/ota/zImage").content == b"k2"  # forme courte : la version en service
+    for path in (f"/ota/{version}/autre", "/ota/v9.9.9/zImage", "/ota/..%2F/zImage"):
+        assert client.get(path).status_code == 404
+    now[0] += 301
+    await relay.refresh()  # sursis écoulé : l'ancienne n'est plus servie
+    assert client.get(f"/ota/{version}/zImage").status_code == 404
+
+
+async def test_good_signature_is_served_with_the_manifest(tmp_path):
+    gh = FakeGitHub()
+    relay = _relay(gh, tmp_path)
+    await relay.refresh()
+    sig = _app(relay).get("/ota/manifest.json.sig")
+    assert sig.status_code == 200 and sig.content == gh.assets["manifest.json.sig"]
+
+
+@pytest.mark.parametrize("case", ["autre clé", "tronquée", "absente", "manifeste modifié"])
+async def test_bad_or_missing_signature_is_refused(tmp_path, case):
+    gh = FakeGitHub()
+    relay = _relay(gh, tmp_path)
+    await relay.refresh()
+    gh.set_release("v1.3.0", {"zImage": b"k2"})
+    if case == "autre clé":
+        gh.assets["manifest.json.sig"] = OTHER.sign(gh.manifest)
+    elif case == "tronquée":
+        gh.assets["manifest.json.sig"] = gh.assets["manifest.json.sig"][:63]
+    elif case == "absente":
+        del gh.assets["manifest.json.sig"]
+    else:
+        gh.assets["manifest.json"] = gh.manifest.replace(b"v1.3.0", b"v1.3.0", 1) + b" "
+    gh.requests.clear()
+    with pytest.raises(OtaError, match="signature|manifest.json.sig"):
+        await relay.refresh()
+    assert relay.status().version == "v1.2.3"
+    assert "signature" in relay.status().error or "sig" in relay.status().error
+    # Aucun fichier de la version refusée n'a été téléchargé.
+    blobs = [str(r.url) for r in gh.requests if "/blob/" in str(r.url)]
+    names = list(gh.assets)
+    assert all(names[int(u.split("/blob/")[1].split("?")[0])].startswith("manifest.json")
+               for u in blobs)
+    assert _app(relay).get("/ota/zImage").content == b"K" * 1000
+
+
+async def test_placeholder_or_missing_public_key_refuses_everything(tmp_path):
+    assert b"PLACEHOLDER" in PACKAGED_PUBKEY.read_bytes()
+    gh = FakeGitHub()
+    for pubkey in (PACKAGED_PUBKEY, tmp_path / "absente.pem"):
+        relay = _relay(gh, tmp_path, pubkey=pubkey)
+        gh.requests.clear()
+        with pytest.raises(OtaError, match="clé publique OTA"):
+            await relay.refresh()
+        assert [str(r.url) for r in gh.requests] == [f"{API}/repos/{REPO}/releases/latest"]
+        assert relay.status().version == ""
+    # Par défaut, le relais prend la clé livrée (provisoire) : il refuse.
+    assert OtaRelay(REPO, "", tmp_path / "x").pubkey_path == PACKAGED_PUBKEY
+
+
+async def test_usb_key_needs_a_valid_public_key_now(tmp_path):
+    """La clé USB est construite depuis une version installée : sa signature est revérifiée
+    avec la clé publique du moment (provisoire ou changée : refus)."""
+    gh = FakeGitHub()
+    relay = _relay(gh, tmp_path)
+    await relay.refresh()
+    assert relay.key_zip() is not None
+    (tmp_path / "ota-pubkey.pem").write_bytes(_pem(OTHER))
+    with pytest.raises(OtaError, match="signature"):
+        relay.key_zip()
+    relay.pubkey_path = PACKAGED_PUBKEY
+    with pytest.raises(OtaError, match="PLACEHOLDER"):
+        relay.key_zip()
+
+
+async def test_manifest_version_must_match_the_release(tmp_path):
+    gh = FakeGitHub()
+    gh.set_release("v1.2.3")
+    gh.version = "v1.2.4"  # étiquette différente du champ « version » signé
+    with pytest.raises(OtaError, match="v1.2.4"):
+        await _relay(gh, tmp_path).refresh()
 
 
 async def test_previous_release_kept_for_a_grace_period(tmp_path):
@@ -277,6 +391,9 @@ async def test_release_survives_restart(tmp_path):
 
 
 def test_from_settings():
-    s = Settings(ota=OtaConfig(repo="moi/fork", token="t", dir="/tmp/x"))
+    s = Settings(ota=OtaConfig(repo="moi/fork", token="t", dir="/tmp/x",
+                               pubkey_path="/etc/lapinou/ota.pem"))
     relay = OtaRelay.from_settings(s)
     assert (relay.repo, relay.token, str(relay.dir)) == ("moi/fork", "t", "/tmp/x")
+    assert str(relay.pubkey_path) == "/etc/lapinou/ota.pem"
+    assert OtaRelay.from_settings(Settings()).pubkey_path == PACKAGED_PUBKEY

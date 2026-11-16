@@ -33,6 +33,8 @@ dependencies = [
     "paho-mqtt==2.1.0",
     # Mot de passe admin de la page de réglages (haché argon2id)
     "argon2-cffi>=23.1",
+    # Signature Ed25519 des versions OTA (R42), vérifiée par le relais
+    "cryptography>=42",
 ]
 
 [dependency-groups]

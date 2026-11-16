@@ -14,7 +14,8 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import tomli_w
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+from pydantic import (AfterValidator, BaseModel, ConfigDict, Field, PrivateAttr, field_validator,
+                      model_validator)
 
 DEFAULT_CONFIG_PATH = Path("/etc/lapinou/config.toml")
 SECRETS_NAME = "secrets.toml"
@@ -148,6 +149,12 @@ class BudgetConfig(_Section):
     prices: dict[str, ModelPrice] = Field(default_factory=_default_prices)
     web_search_per_1k: float = Field(default=10.0, ge=0)
 
+    @model_validator(mode="after")
+    def _warn_before_stop(self) -> BudgetConfig:
+        if self.warn_pct > self.stop_pct:
+            raise ValueError("l'alerte (warn_pct) doit venir avant le plafond (stop_pct)")
+        return self
+
 
 class VoiceConfig(_Section):
     # Détection de « Lapinou » : « asr » (transcription Parakeet, principale, R23), « oww »
@@ -227,6 +234,9 @@ class OtaConfig(_Section):
     # Jeton GitHub à grain fin, lecture seule de « Contents », pour un dépôt privé.
     token: str = ""  # secret
     dir: str = "/var/lib/lapinou/ota"
+    # Clé publique Ed25519 (PEM) des versions (R42) ; vide : ota-pubkey.pem livré avec le
+    # serveur. Ni elle ni `repo` ne se changent par la page (config.toml seulement).
+    pubkey_path: str = ""
     check_hours: float = Field(default=12.0, ge=0)  # 0 : seulement à la demande
 
 

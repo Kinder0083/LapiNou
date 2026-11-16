@@ -640,6 +640,7 @@ source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
     { name = "argon2-cffi" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "httpx2" },
     { name = "kokoro-onnx" },
@@ -669,6 +670,7 @@ dev = [
 requires-dist = [
     { name = "anthropic", specifier = "==2.8.0" },
     { name = "argon2-cffi", specifier = ">=23.1" },
+    { name = "cryptography", specifier = ">=42" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx2", specifier = ">=2.16" },
     { name = "kokoro-onnx", specifier = "==0.6.1" },
