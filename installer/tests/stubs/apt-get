@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# apt-get simulé : journalisé seulement.
+# shellcheck source=installer/tests/stubs/_stub.sh
+. "$(dirname "$0")/_stub.sh"
+exit 0

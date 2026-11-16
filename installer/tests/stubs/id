@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# id simulé : « id -u » rend STUB_UID (défaut 0) ; « id lapinou » réussit si STUB_USER_EXISTS=1.
+# shellcheck source=installer/tests/stubs/_stub.sh
+. "$(dirname "$0")/_stub.sh"
+if [ "$1" = "-u" ]; then echo "${STUB_UID:-0}"; exit 0; fi
+[ "${STUB_USER_EXISTS:-0}" = 1 ]

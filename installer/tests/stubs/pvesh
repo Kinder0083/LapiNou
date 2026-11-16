@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# pvesh simulé : prochain ID libre STUB_NEXTID (défaut 105).
+# shellcheck source=installer/tests/stubs/_stub.sh
+. "$(dirname "$0")/_stub.sh"
+[ "$*" = "get /cluster/nextid" ] && echo "${STUB_NEXTID:-105}"
+exit 0

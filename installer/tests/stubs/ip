@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# ip simulé : ponts STUB_BRIDGES (défaut vmbr0), réseau 192.168.1.10/24, passerelle .1.
+# shellcheck source=installer/tests/stubs/_stub.sh
+. "$(dirname "$0")/_stub.sh"
+case "$*" in
+    "-o link show type bridge")
+        n=4; for b in ${STUB_BRIDGES:-vmbr0}; do echo "$n: $b: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP"; n=$((n + 1)); done ;;
+    "-o -4 addr show dev "*)
+        echo "4: ${*: -1}    inet 192.168.1.10/24 brd 192.168.1.255 scope global ${*: -1}" ;;
+    "route show default") echo "default via 192.168.1.1 dev vmbr0 proto kernel onlink" ;;
+esac
+exit 0

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# pveam simulé : modèles locaux STUB_LOCAL_TPL, en ligne STUB_AVAILABLE (un par ligne).
+# shellcheck source=installer/tests/stubs/_stub.sh
+. "$(dirname "$0")/_stub.sh"
+case "$1" in
+    list)
+        echo "NAME                                                         SIZE"
+        while read -r t; do [ -n "$t" ] && echo "$t   120.00MB"; done <<<"${STUB_LOCAL_TPL:-}"
+        ;;
+    available)
+        while read -r t; do [ -n "$t" ] && echo "system          $t"; done <<<"${STUB_AVAILABLE-debian-12-standard_12.7-1_amd64.tar.zst
+debian-13-standard_13.1-2_amd64.tar.zst
+ubuntu-24.04-standard_24.04-2_amd64.tar.zst}"
+        ;;
+esac
+exit 0

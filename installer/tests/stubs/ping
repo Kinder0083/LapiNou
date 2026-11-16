@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# ping simulé : seules les adresses de STUB_PING_UP répondent.
+# shellcheck source=installer/tests/stubs/_stub.sh
+. "$(dirname "$0")/_stub.sh"
+for ip in ${STUB_PING_UP:-}; do [ "${*: -1}" = "$ip" ] && exit 0; done
+exit 1

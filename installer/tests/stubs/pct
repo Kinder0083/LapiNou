@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# pct simulé : conteneurs décrits par STUB_EXISTING (ID d'un conteneur LapiNou) et
+# STUB_USED_IDS ; les fichiers poussés sont copiés dans $STUB_DIR/pushed.
+# shellcheck source=installer/tests/stubs/_stub.sh
+. "$(dirname "$0")/_stub.sh"
+cmd="$1"; shift
+in_list() { local x; for x in $2; do [ "$x" = "$1" ] && return 0; done; return 1; }
+case "$cmd" in
+    list)
+        echo "VMID       Status     Lock         Name"
+        if [ -n "${STUB_EXISTING:-}" ]; then echo "$STUB_EXISTING        running                 lapinou"; fi
+        ;;
+    config)
+        if [ "$1" = "${STUB_EXISTING:-}" ]; then printf 'arch: amd64\nhostname: lapinou\ntags: lapinou\n'; fi
+        ;;
+    status)
+        if in_list "$1" "${STUB_EXISTING:-} ${STUB_USED_IDS:-}"; then echo "status: ${STUB_STATUS:-running}"; exit 0; fi
+        echo "Configuration file 'nodes/pve/lxc/$1.conf' does not exist" >&2; exit 2
+        ;;
+    push)
+        mkdir -p "$STUB_DIR/pushed"
+        cp "$2" "$STUB_DIR/pushed/$(basename "$3")"
+        echo "$(basename "$3") $(stat -c %a "$2") ${5:-}" >> "$STUB_DIR/pushed/perms"
+        ;;
+    exec)
+        shift 2  # ID --
+        case "$*" in
+            "getent hosts"*) exit "${STUB_DNS_RC:-0}" ;;
+            "test -d /opt/lapinou/.git") exit "${STUB_CT_HAS_OPT:-0}" ;;
+            "git config --file /opt/lapinou/.git/config --get remote.origin.url")
+                echo "https://github.com/Kinder0083/LapiNou.git" ;;
+            "cat /opt/lapinou/.git/HEAD") echo "ref: refs/heads/main" ;;
+            "cat /etc/lapinou/git-credentials")
+                [ -n "${STUB_CT_TOKEN:-}" ] && echo "https://x-access-token:$STUB_CT_TOKEN@github.com" ;;
+            "hostname -I") echo "192.168.1.77 fd00::77" ;;
+            "bash /root/lapinou-setup/provision.sh"*)
+                ls "$STUB_DIR/pushed" > "$STUB_DIR/pushed-at-provision" 2>/dev/null || true
+                exit "${STUB_PROVISION_RC:-0}" ;;
+        esac
+        ;;
+    create) exit "${STUB_CREATE_RC:-0}" ;;
+    *) ;;
+esac
+exit 0

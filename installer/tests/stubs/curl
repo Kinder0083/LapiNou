@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# curl simulé : code HTTP choisi selon l'adresse (STUB_*_CODE, défaut 200) ; ce que curl
+# reçoit sur son entrée standard (-K -) est gardé à part dans $STUB_DIR/curl-stdin.
+# shellcheck source=installer/tests/stubs/_stub.sh
+. "$(dirname "$0")/_stub.sh"
+url="" write="" config=0 prev=""
+for a in "$@"; do
+    case "$prev" in -w) write="$a" ;; -K) [ "$a" = "-" ] && config=1 ;; esac
+    case "$a" in http://*|https://*) url="$a" ;; esac
+    prev="$a"
+done
+if [ "$config" = 1 ]; then { echo "== $url"; cat; } >> "$STUB_DIR/curl-stdin"; fi
+case "$url" in
+    */health) exit "${STUB_HEALTH_RC:-0}" ;;
+    https://api.github.com/repos/*/branches/*) code="${STUB_GH_BRANCH_CODE:-200}" ;;
+    https://api.github.com/repos/*) code="${STUB_GH_CODE:-200}" ;;
+    */jsonrpc.js) code="${STUB_LMS_CODE:-200}" ;;
+    https://api.anthropic.com/*) code="${STUB_ANTHROPIC_CODE:-200}" ;;
+    */models) code="${STUB_OAI_CODE:-200}" ;;
+    */api/) code="${STUB_HA_CODE:-200}" ;;
+    *) code=200 ;;
+esac
+[ -n "$write" ] && printf '%s' "$code"
+exit 0

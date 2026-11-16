@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# pvesm simulé : stockages STUB_STORAGES (défaut : local et local-lvm).
+# shellcheck source=installer/tests/stubs/_stub.sh
+. "$(dirname "$0")/_stub.sh"
+echo "Name             Type     Status           Total            Used       Available        %"
+if [ "$*" = "status -content vztmpl" ]; then
+    echo "local             dir     active        98497780        12345678        81085816   12.53%"
+else
+    for s in ${STUB_STORAGES:-local local-lvm}; do
+        echo "$s             dir     active        98497780        12345678        81085816   12.53%"
+    done
+fi

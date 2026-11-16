@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# git simulé : « clone » crée le dossier .git de la destination ; rev-parse rend abc1234.
+# shellcheck source=installer/tests/stubs/_stub.sh
+. "$(dirname "$0")/_stub.sh"
+case " $* " in
+    *" clone "*) mkdir -p "${*: -1}/.git" ;;
+    *" rev-parse "*) echo "abc1234" ;;
+esac
+exit 0
