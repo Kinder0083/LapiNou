@@ -39,6 +39,12 @@ class MqttConfig(_Section):
 class HaConfig(_Section):
     url: str = ""
     token: str = ""  # secret
+    # Commande qui lance ha-mcp en stdio (reçoit HOMEASSISTANT_URL et HOMEASSISTANT_TOKEN).
+    mcp_command: list[str] = Field(default_factory=lambda: ["ha-mcp"])
+    # Outils de ha-mcp que LapiNou peut présenter au cerveau (enveloppés, voir tools/ha.py).
+    mcp_tools: list[str] = Field(
+        default_factory=lambda: ["ha_search", "ha_get_state", "ha_call_service"]
+    )
 
 
 class LmsConfig(_Section):
@@ -111,6 +117,13 @@ class VoiceConfig(_Section):
 
 
 class SafetyConfig(_Section):
+    # Domaines où le cerveau peut appeler un service (les domaines sensibles en plus, mais
+    # seulement pour les entités de `allowed_entities`, avec confirmation).
+    allowed_domains: list[str] = Field(
+        default_factory=lambda: [
+            "light", "switch", "fan", "media_player", "scene", "script", "cover", "climate",
+        ]
+    )
     sensitive_domains: list[str] = Field(
         default_factory=lambda: ["lock", "alarm_control_panel"]
     )
@@ -118,6 +131,10 @@ class SafetyConfig(_Section):
     sensitive_cover_classes: list[str] = Field(default_factory=lambda: ["garage", "gate"])
     # `climate` hors de cette plage (°C) est sensible.
     climate_range: list[float] = Field(default_factory=lambda: [16.0, 24.0])
+    # Entités marquées « sensible » par le propriétaire (four, chauffe-eau…).
+    sensitive_entities: list[str] = Field(default_factory=list)
+    # Entités sensibles activées : permises après confirmation vocale (et PIN s'il est réglé).
+    # Une entité d'un domaine hors `allowed_domains` listée ici devient aussi pilotable.
     allowed_entities: list[str] = Field(default_factory=list)
     pin: str = ""  # secret
     # Assist (repli) ne passe pas par la politique d'actions sensibles : toute phrase qui
