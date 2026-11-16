@@ -176,6 +176,8 @@ class ApplySettingsTest(unittest.TestCase):
             text = src.read_text(encoding="utf-8")
             text = re.sub(rf"(?<![\w.$/])/({TOP_DIRS})(?=[/\s\"');$]|$)", lambda m: str(sb) + m.group(0), text, flags=re.M)
             (sb / "mnt/usbkey" / ("lapinou-conf.sh" if src == CONF_SH else src.name)).write_text(text, encoding="utf-8", newline="\n")
+        (sb / "dev").mkdir(exist_ok=True)  # the paths are rewritten into the sandbox, /dev/null too
+        (sb / "dev/null").touch()
         (sb / "mnt/usbkey/lapinlibre.txt").write_bytes(settings.encode("utf-8"))
         return sb
 
