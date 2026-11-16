@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: MIT
+# Service du serveur LapiNou (docs/lapinou/service.md).
+#
+# Chemins attendus (créés par l'installateur, Tâche 25) :
+#   /opt/lapinou      clone du dépôt (code : server/, tools/app-server/, userland/proto/) et
+#                     venv server/.venv ; à lapinou (bouton « Mettre à jour » : git pull, uv sync)
+#   /etc/lapinou      config.toml et secrets.toml (0600) ; à lapinou (la page les enregistre)
+#   /var/lib/lapinou  base lapinou.db, apps/, uploads/, ota/, setup-token, et HOME du service
+#                     (modèles : .cache/lapinlibre/asr et kokoro, .cache/lapinou/piper ;
+#                     outils : .local/bin, dont ha-mcp)
+# Utilisateur système dédié `lapinou` (pas root), HOME /var/lib/lapinou.
+# Ports : 9123 plateforme, 9300 micro, 8080 HTTP, 8081 TTS, 8443 ASR (tous > 1024).
+
+[Unit]
+Description=LapiNou, serveur vocal des lapins Karotz
+Documentation=https://github.com/Kinder0083/LapiNou/blob/main/docs/lapinou/service.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+User=lapinou
+Group=lapinou
+WorkingDirectory=/opt/lapinou/server
+Environment=HOME=/var/lib/lapinou
+Environment=PATH=/var/lib/lapinou/.local/bin:/opt/lapinou/server/.venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/lapinou/server/.venv/bin/python -m lapinou --config /etc/lapinou/config.toml --db /var/lib/lapinou/lapinou.db
+# SIGTERM : arrêt propre (services refermés), le journal le note « serveur LapiNou arrêté ».
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lapinou
+
+# Durcissement (compatible avec un conteneur LXC non privilégié).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/lapinou /etc/lapinou /opt/lapinou
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
