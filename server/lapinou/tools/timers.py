@@ -3,8 +3,15 @@
 
 Ils survivent au redémarrage : au démarrage, la base est relue ; un minuteur manqué de moins de
 10 minutes est annoncé tout de suite, au-delà il est abandonné (journalisé), sauf un rappel
-récurrent, reporté à sa prochaine occurrence. `due_at` est stocké en UTC ISO 8601, et la
-colonne `text` contient la phrase à annoncer.
+récurrent, reporté à sa prochaine occurrence. Un minuteur n'est supprimé (ou reporté) qu'une
+fois annoncé ; si l'annonce échoue (lapin en train de se reconnecter), elle est retentée
+jusqu'à 10 minutes de retard. Chaque annonce a son délai et sa tâche : une annonce bloquée ne
+retient pas les autres.
+
+`due_at` est stocké en UTC ISO 8601 ; les heures dites et les récurrences suivent le fuseau
+réglé (Europe/Paris par défaut), pas celui du système. Une récurrence garde son heure murale
+(`daily@02:30`) : une heure qui n'existe pas (passage à l'heure d'été) est décalée ce jour-là
+seulement. La colonne `text` contient la phrase à annoncer.
 """
 
 from __future__ import annotations
@@ -15,6 +22,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ..brain.base import ToolResult
 from ..db import Database
@@ -27,7 +35,10 @@ MAX_TIMER_S = 24 * 3600
 MAX_REMINDER_AHEAD = dt.timedelta(days=366)
 MAX_PER_RABBIT = 30
 MAX_WAIT_S = 60.0  # le planificateur revérifie au moins chaque minute
+ANNOUNCE_TIMEOUT_S = 15.0
+RETRY_S = 15.0
 RECURRENCES = ("daily", "weekdays", "weekly")
+DEFAULT_TZ = "Europe/Paris"
 
 
 @dataclass(frozen=True)
@@ -36,7 +47,7 @@ class Timer:
     rabbit_id: str
     due_at: dt.datetime
     text: str
-    recurrence: str | None
+    recurrence: str | None  # « daily@08:00 » (ou « daily » : heure de due_at)
 
 
 def _utc_now() -> dt.datetime:
@@ -47,20 +58,28 @@ def _store(when: dt.datetime) -> str:
     return when.astimezone(dt.UTC).isoformat(timespec="seconds")
 
 
-def next_occurrence(due: dt.datetime, recurrence: str) -> dt.datetime:
-    """L'occurrence suivante, à la même heure locale (changements d'heure compris)."""
-    local = due.astimezone().replace(tzinfo=None)
-    step = dt.timedelta(days=7 if recurrence == "weekly" else 1)
-    local += step
-    if recurrence == "weekdays":
-        while local.weekday() >= 5:
-            local += step
-    return local.astimezone().astimezone(dt.UTC)
+def next_occurrence(due: dt.datetime, recurrence: str, tz: ZoneInfo) -> dt.datetime:
+    """L'occurrence suivante, à la même heure murale dans `tz` (changements d'heure compris).
+
+    Une heure inexistante ce jour-là (02:30 au passage à l'heure d'été) devient l'instant
+    correspondant juste après le saut (03:30) ; une heure en double prend la première.
+    """
+    kind, _, wall = recurrence.partition("@")
+    local = due.astimezone(tz)
+    if wall:
+        hour, minute = (int(x) for x in wall.split(":"))
+        at = dt.time(hour, minute)
+    else:
+        at = local.time().replace(microsecond=0)
+    day = local.date() + dt.timedelta(days=7 if kind == "weekly" else 1)
+    if kind == "weekdays":
+        while day.weekday() >= 5:
+            day += dt.timedelta(days=1)
+    return dt.datetime.combine(day, at, tzinfo=tz).astimezone(dt.UTC)
 
 
-def _spoken_time(when: dt.datetime) -> str:
-    local = when.astimezone()
-    return f"{local.day:02d}/{local.month:02d} à {local.hour} h {local.minute:02d}"
+def _kind(recurrence: str | None) -> str | None:
+    return recurrence.partition("@")[0] if recurrence else None
 
 
 class TimerTools:
@@ -70,13 +89,31 @@ class TimerTools:
         announcer: Announcer,
         *,
         clock: Callable[[], dt.datetime] = _utc_now,
+        tz: ZoneInfo | str = DEFAULT_TZ,
+        announce_timeout_s: float = ANNOUNCE_TIMEOUT_S,
+        retry_s: float = RETRY_S,
     ) -> None:
         self.db = db
         self.announcer = announcer
         self._now = clock
+        self.tz = tz if isinstance(tz, ZoneInfo) else ZoneInfo(tz)
+        self.announce_timeout_s = announce_timeout_s
+        self.retry_s = retry_s
         self._wake = asyncio.Event()
         self._task: asyncio.Task | None = None
-        self._lock = asyncio.Lock()
+        self._inflight: dict[int, asyncio.Task] = {}
+        self._retry_at: dict[int, float] = {}  # id → loop.time() de la prochaine tentative
+
+    def _spoken_time(self, when: dt.datetime) -> str:
+        local = when.astimezone(self.tz)
+        return f"{local.day:02d}/{local.month:02d} à {local.hour} h {local.minute:02d}"
+
+    def _advance(self, timer: Timer, now: dt.datetime) -> dt.datetime:
+        assert timer.recurrence
+        due = timer.due_at
+        while due <= now:
+            due = next_occurrence(due, timer.recurrence, self.tz)
+        return due
 
     # --- Planificateur ------------------------------------------------------------------
 
@@ -84,71 +121,108 @@ class TimerTools:
         """Relit la base, règle le sort des minuteurs manqués, puis lance le planificateur."""
         now = self._now()
         for timer in self._rows("SELECT * FROM timers WHERE due_at <= ?", (_store(now),)):
-            late = now - timer.due_at
-            if late <= MISSED_GRACE:
-                continue  # annoncé par le premier passage du planificateur
-            if timer.recurrence:
-                due = timer.due_at
-                while due <= now:
-                    due = next_occurrence(due, timer.recurrence)
-                self._update(timer.id, due)
-                log.info("rappel %d manqué de %s, reporté au %s", timer.id, late, _store(due))
-            else:
-                self._delete(timer.id)
-                log.warning("minuteur %d manqué de %s (serveur arrêté), abandonné : %s",
-                            timer.id, late, timer.text)
+            if now - timer.due_at > MISSED_GRACE:
+                self._give_up(timer, now, "serveur arrêté")
         if self._task is None:
             self._task = asyncio.create_task(self._loop())
 
     async def close(self) -> None:
-        if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
+        tasks = [t for t in (self._task, *self._inflight.values()) if t is not None]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._task = None
+        self._inflight.clear()
 
     def poke(self) -> None:
-        """Réveille le planificateur (nouveau minuteur, ou horloge déplacée en test)."""
+        """Réveille le planificateur (nouveau minuteur, annonce finie, horloge déplacée)."""
         self._wake.set()
 
     async def _loop(self) -> None:
         while True:
+            self._wake.clear()
             try:
                 await self.fire_due()
+                wait = self._next_wait()
             except Exception:
                 log.exception("planificateur des minuteurs")
-            row = self.db.conn.execute("SELECT MIN(due_at) FROM timers").fetchone()
-            wait = MAX_WAIT_S
-            if row[0]:
-                delay = (dt.datetime.fromisoformat(row[0]) - self._now()).total_seconds()
-                wait = max(0.0, min(wait, delay))
+                wait = 5.0  # jamais de boucle folle
             try:
                 await asyncio.wait_for(self._wake.wait(), timeout=wait)
             except TimeoutError:
                 pass
-            self._wake.clear()
+
+    def _next_wait(self) -> float:
+        now, mono = self._now(), asyncio.get_running_loop().time()
+        wait = MAX_WAIT_S
+        for timer in self._rows("SELECT * FROM timers"):
+            if timer.id in self._inflight:
+                continue  # sa fin réveillera le planificateur
+            delay = (timer.due_at - now).total_seconds()
+            if delay <= 0:
+                delay = self._retry_at.get(timer.id, mono) - mono
+            wait = min(wait, delay)
+        return max(0.01, wait)
 
     async def fire_due(self) -> int:
-        """Annonce les minuteurs échus ; supprime ou reporte chacun. Retourne leur nombre."""
-        async with self._lock:
-            now = self._now()
-            due = self._rows("SELECT * FROM timers WHERE due_at <= ? ORDER BY due_at",
-                             (_store(now),))
-            for timer in due:
-                if timer.recurrence:
-                    when = timer.due_at
-                    while when <= now:
-                        when = next_occurrence(when, timer.recurrence)
-                    self._update(timer.id, when)
-                else:
-                    self._delete(timer.id)
-                try:
-                    await self.announcer.say(timer.rabbit_id, timer.text)
-                except Exception:
-                    log.exception("annonce du minuteur %d à %s", timer.id, timer.rabbit_id)
-            return len(due)
+        """Lance l'annonce des minuteurs échus (une tâche chacun). Retourne leur nombre."""
+        now, mono = self._now(), asyncio.get_running_loop().time()
+        launched = 0
+        for timer in self._rows("SELECT * FROM timers WHERE due_at <= ? ORDER BY due_at",
+                                (_store(now),)):
+            if timer.id in self._inflight:
+                continue
+            if now - timer.due_at > MISSED_GRACE:
+                self._give_up(timer, now, "annonce impossible")
+                continue
+            if mono < self._retry_at.get(timer.id, mono):
+                continue
+            self._inflight[timer.id] = asyncio.create_task(self._announce(timer))
+            launched += 1
+        return launched
+
+    async def _announce(self, timer: Timer) -> None:
+        try:
+            try:
+                await asyncio.wait_for(self.announcer.say(timer.rabbit_id, timer.text),
+                                       self.announce_timeout_s)
+            except Exception as e:  # noqa: BLE001 - le lapin peut se reconnecter : on retente
+                log.warning("annonce du minuteur %d à %s en échec (%s), nouvel essai dans %g s",
+                            timer.id, timer.rabbit_id, type(e).__name__, self.retry_s)
+                self._retry_at[timer.id] = asyncio.get_running_loop().time() + self.retry_s
+                return
+            self._retry_at.pop(timer.id, None)
+            self._done(timer)
+        finally:
+            self._inflight.pop(timer.id, None)
+            self.poke()
+
+    def _still_there(self, timer: Timer) -> bool:
+        row = self.db.conn.execute("SELECT due_at FROM timers WHERE id = ?",
+                                   (timer.id,)).fetchone()
+        return row is not None and row[0] == _store(timer.due_at)
+
+    def _done(self, timer: Timer) -> None:
+        """Après l'annonce : supprimé, ou reporté s'il est récurrent (sauf s'il a changé)."""
+        if not self._still_there(timer):
+            return  # annulé pendant l'annonce
+        if timer.recurrence:
+            self._update(timer.id, self._advance(timer, self._now()))
+        else:
+            self._delete(timer.id)
+
+    def _give_up(self, timer: Timer, now: dt.datetime, why: str) -> None:
+        self._retry_at.pop(timer.id, None)
+        late = now - timer.due_at
+        if timer.recurrence:
+            due = self._advance(timer, now)
+            self._update(timer.id, due)
+            log.warning("rappel %d manqué de %s (%s), reporté au %s", timer.id, late, why,
+                        _store(due))
+        else:
+            self._delete(timer.id)
+            log.warning("minuteur %d manqué de %s (%s), abandonné : %s", timer.id, late, why,
+                        timer.text)
 
     # --- Base ---------------------------------------------------------------------------
 
@@ -195,24 +269,29 @@ class TimerTools:
     async def set_reminder(
         self, rabbit_id: str, at: dt.datetime, text: str, recurrence: str | None
     ) -> int:
+        """`at` sans fuseau : heure murale dans le fuseau réglé."""
         if recurrence is not None and recurrence not in RECURRENCES:
             raise ValueError(f"récurrence inconnue : {recurrence}")
         now = self._now()
+        # L'heure murale demandée, même si elle n'existe pas ce jour-là (02:30 en mars).
+        local = at if at.tzinfo is None else at.astimezone(self.tz)
         if at.tzinfo is None:
-            at = at.astimezone()  # heure locale du serveur
-        if at <= now:
-            if recurrence is None:
+            at = at.replace(tzinfo=self.tz)
+        stored = f"{recurrence}@{local.hour:02d}:{local.minute:02d}" if recurrence else None
+        due = at.astimezone(dt.UTC)
+        if due <= now:
+            if stored is None:
                 raise ValueError("cette heure est déjà passée")
-            while at <= now:
-                at = next_occurrence(at, recurrence)
-        if at - now > MAX_REMINDER_AHEAD:
+            while due <= now:
+                due = next_occurrence(due, stored, self.tz)
+        if due - now > MAX_REMINDER_AHEAD:
             raise ValueError("un rappel se règle au plus un an à l'avance")
         if self._count(rabbit_id) >= MAX_PER_RABBIT:
             raise ValueError("trop de rappels en cours")
         text = text.strip()[:200]
         if not text:
             raise ValueError("de quoi faut-il se souvenir ?")
-        return self._insert(rabbit_id, at, f"C'est l'heure : {text}", recurrence)
+        return self._insert(rabbit_id, due, f"C'est l'heure : {text}", stored)
 
     def list(self, rabbit_id: str) -> list[Timer]:
         return self._rows("SELECT * FROM timers WHERE rabbit_id = ? ORDER BY due_at",
@@ -287,15 +366,16 @@ class TimerTools:
         except ValueError as e:
             return error(str(e))
         [timer] = [t for t in self.list(ctx.rabbit_id) if t.id == timer_id]
-        return ToolResult(f"Rappel n°{timer_id} programmé le {_spoken_time(timer.due_at)}.")
+        when = self._spoken_time(timer.due_at)
+        return ToolResult(f"Rappel n°{timer_id} programmé le {when}.")
 
     async def _tool_list(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         timers = self.list(ctx.rabbit_id)
         if not timers:
             return ToolResult("Aucun minuteur ni rappel en cours.")
         lines = [
-            f"n°{t.id} le {_spoken_time(t.due_at)} : {t.text}"
-            + (f" (répété : {t.recurrence})" if t.recurrence else "")
+            f"n°{t.id} le {self._spoken_time(t.due_at)} : {t.text}"
+            + (f" (répété : {_kind(t.recurrence)})" if t.recurrence else "")
             for t in timers
         ]
         return ToolResult("\n".join(lines))

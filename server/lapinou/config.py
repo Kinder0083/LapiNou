@@ -27,6 +27,8 @@ class ServerConfig(_Section):
     http_port: int = 8080
     tts_port: int = 8081
     asr_port: int = 8443
+    # Fuseau des minuteurs, rappels et de l'heure dite (pas celui du système).
+    timezone: str = "Europe/Paris"
 
 
 class MqttConfig(_Section):
@@ -50,6 +52,8 @@ class HaConfig(_Section):
 class LmsConfig(_Section):
     host: str = ""
     port: int = 9000
+    # Hôtes dont le cerveau peut lancer une URL de flux ; vide : favoris LMS seulement.
+    allowed_url_hosts: list[str] = Field(default_factory=list)
 
 
 class ProviderConfig(_Section):
@@ -127,8 +131,10 @@ class SafetyConfig(_Section):
     sensitive_domains: list[str] = Field(
         default_factory=lambda: ["lock", "alarm_control_panel"]
     )
-    # `cover` n'est sensible que pour ces device_class (garage, portail).
-    sensitive_cover_classes: list[str] = Field(default_factory=lambda: ["garage", "gate"])
+    # `cover` n'est sensible que pour ces device_class (garage, portail, porte).
+    sensitive_cover_classes: list[str] = Field(
+        default_factory=lambda: ["garage", "gate", "door"]
+    )
     # `climate` hors de cette plage (°C) est sensible.
     climate_range: list[float] = Field(default_factory=lambda: [16.0, 24.0])
     # Entités marquées « sensible » par le propriétaire (four, chauffe-eau…).

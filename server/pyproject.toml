@@ -25,6 +25,8 @@ dependencies = [
     "httpx2>=2.16",
     # Client MCP (stdio) vers ha-mcp, lancé en sous-processus
     "mcp==2.3.0",
+    # Fuseaux horaires (zoneinfo) même sans base système (images Docker minimales)
+    "tzdata>=2024.1",
 ]
 
 [dependency-groups]
