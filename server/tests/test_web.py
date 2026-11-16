@@ -3,6 +3,8 @@
 
 import datetime as dt
 import json
+import stat
+import threading
 import zipfile
 from pathlib import Path
 
@@ -91,13 +93,24 @@ def env(tmp_path):
         registry=RabbitRegistry(),
         ota=FakeOta(),
         updater=FakeUpdater(),
+        setup_token_path=tmp_path / "data" / "setup-token",
     )
-    client = TestClient(create_app(settings, web=ctx))
+    ctx.auth.prepare_setup()  # comme Services.start
+    client = TestClient(create_app(settings, web=ctx), base_url=BASE)
     return client, ctx, tmp_path
 
 
+BASE = "http://localhost"
+
+
+def _token(tmp_path) -> str:
+    return (tmp_path / "data" / "setup-token").read_text(encoding="utf-8").strip()
+
+
 def _login(client):
-    r = client.post("/api/setup", json={"password": PASSWORD}, headers=H)
+    tmp_path = Path(client.app.state.web.setup_token_path).parents[1]
+    r = client.post("/api/setup", json={"password": PASSWORD, "token": _token(tmp_path)},
+                    headers=H)
     assert r.status_code == 200, r.text
     return client
 
@@ -135,12 +148,17 @@ def test_pages_are_public_and_french(env):
 
 def test_setup_then_login(env):
     client, _, tmp_path = env
-    assert client.get("/api/session").json() == {"password_set": False, "logged_in": False}
-    assert client.post("/api/setup", json={"password": "court"}, headers=H).status_code == 422
+    token_file = tmp_path / "data" / "setup-token"
+    assert client.get("/api/session").json() == {
+        "password_set": False, "logged_in": False, "setup_file": str(token_file)}
+    assert client.post("/api/setup", json={"password": "court", "token": _token(tmp_path)},
+                       headers=H).status_code == 422
     _login(client)
-    assert client.get("/api/session").json() == {"password_set": True, "logged_in": True}
+    assert client.get("/api/session").json() == {
+        "password_set": True, "logged_in": True, "setup_file": None}
+    assert not token_file.exists()  # usage unique : effacé dès le mot de passe créé
     # Une seule fois : ensuite il faut le mot de passe.
-    assert client.post("/api/setup", json={"password": "Autre-mot-2"},
+    assert client.post("/api/setup", json={"password": "Autre-mot-2", "token": "x"},
                        headers=H).status_code == 409
     secrets = (tmp_path / "secrets.toml").read_text(encoding="utf-8")
     assert "$argon2id$" in secrets and PASSWORD not in secrets
@@ -160,7 +178,8 @@ def test_password_survives_restart(env):
     client, ctx, tmp_path = env
     _login(client)
     settings = load_settings(tmp_path / "config.toml")
-    other = TestClient(create_app(settings, web=WebContext(store=SettingsStore(settings))))
+    other = TestClient(create_app(settings, web=WebContext(store=SettingsStore(settings))),
+                       base_url=BASE)
     assert other.get("/api/session").json()["password_set"] is True
     assert other.post("/api/login", json={"password": PASSWORD}, headers=H).status_code == 200
 
@@ -217,23 +236,29 @@ def test_settings_never_contain_secrets(env):
 
 
 def test_put_settings_saves_and_keeps_secrets(env):
+    """Destinations inchangées : les secrets restent ; le corps ne peut pas les écraser par
+    des valeurs vides, ni toucher au PIN, au haché admin ni aux commandes."""
     client, ctx, tmp_path = env
     _login(client)
     r = client.put("/api/settings", headers=H, json={
         "budget": {"monthly_usd": 12.5},
-        "mqtt": {"host": "192.168.1.50", "password": "ÉCRASÉ"},
+        "mqtt": {"username": "lapin", "password": ""},
+        "ha": {"token": ""},
         "brain": {"persona_extra": "La famille a un chat, Moustache.",
-                  "providers": {"anthropic": {"kind": "anthropic", "api_key": "ÉCRASÉ"},
+                  "providers": {"anthropic": {"kind": "anthropic", "api_key": ""},
                                 "mistral": {"kind": "openai",
                                             "base_url": "https://api.mistral.ai/v1"}}},
         "admin": {"password_hash": "x"},
+        "update": {"restart_command": ["rm", "-rf", "/"]},
         "safety": {"allowed_entities": ["lock.entree"], "pin": "0000"},
     })
     assert r.status_code == 200, r.text
-    assert r.json()["restart_needed"] is True
+    assert r.json()["restart_needed"] is True and r.json()["cleared"] == []
     saved = load_settings(tmp_path / "config.toml")
-    assert saved.budget.monthly_usd == 12.5 and saved.mqtt.host == "192.168.1.50"
+    assert saved.budget.monthly_usd == 12.5 and saved.mqtt.username == "lapin"
     assert saved.mqtt.password == "mqtt-SECRET" and saved.safety.pin == "4321"
+    assert saved.ha.token == "ha-SECRET"
+    assert saved.update.restart_command == ["systemctl", "--no-block", "restart", "lapinou"]
     assert saved.brain.providers["anthropic"].api_key == "sk-ant-SECRET"
     assert saved.brain.providers["mistral"].base_url == "https://api.mistral.ai/v1"
     assert saved.brain.persona_extra.startswith("La famille")
@@ -257,6 +282,330 @@ def test_put_settings_rejects_invalid_values(env):
     r = client.put("/api/settings", headers=H, json={"voice": {"wake_method": "rien"}})
     assert r.status_code == 422
     assert (tmp_path / "config.toml").read_bytes() == before
+
+
+# Chacune empêcherait le service de redémarrer : 422, rien d'écrit (le service garde l'ancien).
+INVALID = [
+    {"server": {"timezone": "Mars/Olympus"}},
+    {"server": {"timezone": "../../etc/passwd"}},
+    {"server": {"timezone": "Europe"}},
+    {"budget": {"warn_pct": 150}},
+    {"server": {"http_port": 70000}},
+    {"server": {"tts_port": 0}},
+    {"mqtt": {"port": -1}},
+    {"lms": {"port": 65536}},
+    {"server": {"public_url": "ftp://192.168.1.10"}},
+    {"server": {"public_url": "192.168.1.10:8080"}},
+    {"server": {"public_url": "http://x:99999"}},
+    {"ha": {"url": "javascript:alert(1)"}},
+    {"brain": {"providers": {"local": {"kind": "openai", "base_url": "file:///etc/passwd"}}}},
+    {"brain": {"providers": {"local": {"kind": "autre"}}}},
+    {"budget": {"monthly_usd": -1}},
+    {"budget": {"warn_pct": 0}},
+    {"budget": {"prices": {"x": {"input": -2}}}},
+    {"voice": {"wake_threshold": 1.5}},
+    {"voice": {"wake_threshold": -0.1}},
+    {"voice": {"vad_silence_ms": 0}},
+    {"voice": {"followup_s": 999}},
+    {"voice": {"tts_engine": "espeak"}},
+    {"safety": {"climate_range": [30, 10]}},
+    {"safety": {"climate_range": [16]}},
+    {"memory": {"max_items": 0}},
+    {"logs": {"retention_days": 0}},
+    {"ota": {"check_hours": -1}},
+]
+
+
+@pytest.mark.parametrize("body", INVALID, ids=lambda b: json.dumps(b)[:60])
+def test_values_that_would_break_the_service_are_refused(env, body):
+    client, ctx, tmp_path = env
+    _login(client)
+    before = (tmp_path / "config.toml").read_bytes()
+    r = client.put("/api/settings", headers=H, json=body)
+    assert r.status_code == 422, r.text
+    assert (tmp_path / "config.toml").read_bytes() == before
+    assert load_settings(tmp_path / "config.toml").model_dump() == ctx.store.get().model_dump()
+
+
+def test_valid_urls_and_timezone_are_accepted(env):
+    client, _, tmp_path = env
+    _login(client)
+    r = client.put("/api/settings", headers=H, json={
+        "server": {"public_url": "https://lapinou.maison:8443", "timezone": "America/Montreal"},
+        "ha": {"url": "http://192.168.1.20:8123"}, "voice": {"wake_threshold": 0.5}})
+    assert r.status_code == 200, r.text
+    saved = load_settings(tmp_path / "config.toml")
+    assert saved.server.timezone == "America/Montreal"
+
+
+# --- Destination changée : son secret est effacé (sinon il partirait chez un autre) --------
+
+
+def test_changing_ha_url_without_token_clears_the_token(env):
+    client, _, tmp_path = env
+    _login(client)
+    r = client.put("/api/settings", headers=H, json={"ha": {"url": "http://192.168.66.6:8123"}})
+    assert r.status_code == 200, r.text
+    assert r.json()["cleared"] == ["ha.token"]
+    assert r.json()["secrets"]["ha.token"] is False
+    saved = load_settings(tmp_path / "config.toml")
+    assert saved.ha.url == "http://192.168.66.6:8123" and saved.ha.token == ""
+    assert "ha-SECRET" not in (tmp_path / "secrets.toml").read_text(encoding="utf-8")
+
+
+def test_changing_a_destination_with_its_new_secret_keeps_the_new_one(env):
+    client, _, tmp_path = env
+    _login(client)
+    r = client.put("/api/settings", headers=H, json={
+        "ha": {"url": "http://ha.maison:8123", "token": "nouveau-jeton"},
+        "mqtt": {"host": "192.168.1.51", "password": "nouveau-mqtt"},
+        "brain": {"providers": {"anthropic": {"kind": "openai",
+                                              "base_url": "https://autre.example/v1",
+                                              "api_key": "nouvelle-cle"}}},
+    })
+    assert r.status_code == 200 and r.json()["cleared"] == []
+    assert "nouveau" not in r.text and "nouvelle" not in r.text
+    saved = load_settings(tmp_path / "config.toml")
+    assert (saved.ha.token, saved.mqtt.password) == ("nouveau-jeton", "nouveau-mqtt")
+    assert saved.brain.providers["anthropic"].api_key == "nouvelle-cle"
+
+
+def test_changing_mqtt_host_or_provider_destination_clears_their_secrets(env):
+    client, _, tmp_path = env
+    _login(client)
+    r = client.put("/api/settings", headers=H, json={
+        "mqtt": {"host": "attaquant.example"},
+        "brain": {"providers": {"anthropic": {"kind": "openai",
+                                              "base_url": "https://attaquant.example/v1"}}},
+    })
+    assert r.status_code == 200, r.text
+    assert sorted(r.json()["cleared"]) == ["brain.providers.anthropic.api_key", "mqtt.password"]
+    saved = load_settings(tmp_path / "config.toml")
+    assert saved.mqtt.password == "" and saved.brain.providers["anthropic"].api_key == ""
+    secrets = (tmp_path / "secrets.toml").read_text(encoding="utf-8")
+    assert "mqtt-SECRET" not in secrets and "sk-ant-SECRET" not in secrets
+    # Le type seul compte aussi (la clé partirait vers un autre service).
+    client.put("/api/secrets", headers=H, json={"name": "brain.providers.anthropic.api_key",
+                                                "value": "k2"})
+    r = client.put("/api/settings", headers=H, json={
+        "brain": {"providers": {"anthropic": {"kind": "anthropic",
+                                              "base_url": "https://attaquant.example/v1"}}}})
+    assert r.json()["cleared"] == ["brain.providers.anthropic.api_key"]
+
+
+# --- Host, code d'installation (R40) ------------------------------------------------------
+
+
+@pytest.mark.parametrize("host", ["evil.example", "evil.example:8080", "192.168.66.6",
+                                  "lapinou.local"])
+def test_unknown_host_names_are_refused(env, host):
+    client, _, _ = env
+    for path in ("/", "/static/app.js", "/api/session", "/api/settings"):
+        r = client.get(path, headers={"Host": host})
+        assert r.status_code == 400, (path, host)
+    r = client.post("/api/login", json={"password": "x"}, headers={**H, "Host": host})
+    assert r.status_code == 400
+
+
+@pytest.mark.parametrize("host", ["localhost", "localhost:8080", "127.0.0.1:8080", "[::1]:8080",
+                                  "192.168.1.10:8080", "LAPINOU.local"])
+def test_known_host_names_are_accepted(env, host):
+    client, ctx, _ = env
+    s = ctx.store.get().model_dump()
+    s["server"]["allowed_hosts"] = ["lapinou.local"]
+    ctx.store.replace(s)
+    assert client.get("/api/session", headers={"Host": host}).status_code == 200
+
+
+def test_own_lan_address_is_accepted(env, monkeypatch):
+    from lapinou.web import routes
+
+    client, _, _ = env
+    monkeypatch.setattr(routes, "own_addresses", lambda: frozenset({"10.1.2.3"}))
+    assert client.get("/", headers={"Host": "10.1.2.3:8080"}).status_code == 200
+
+
+def test_rabbit_paths_ignore_the_host_check(env):
+    client, _, _ = env
+    assert client.get("/api/health", headers={"Host": "lapin"}).status_code == 200
+    assert client.get("/ota/manifest.json", headers={"Host": "lapin"}).status_code == 404
+    assert client.get("/tts/x.mp3", headers={"Host": "lapin"}).status_code == 404
+
+
+def test_setup_needs_the_one_time_code(env):
+    client, ctx, tmp_path = env
+    token_file = tmp_path / "data" / "setup-token"
+    assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+    for token in ("", "faux", _token(tmp_path) + "x"):
+        r = client.post("/api/setup", json={"password": PASSWORD, "token": token}, headers=H)
+        assert r.status_code == 403, token
+    assert not ctx.auth.password_set()
+    r = client.post("/api/setup", json={"password": PASSWORD, "token": _token(tmp_path)},
+                    headers=H)
+    assert r.status_code == 200
+    assert not token_file.exists()
+
+
+def test_setup_code_is_logged_by_location_only(tmp_path, caplog):
+    from lapinou.web.auth import Auth
+
+    settings = load_settings(tmp_path / "config.toml")
+    auth = Auth(SettingsStore(settings), tmp_path / "data" / "setup-token")
+    with caplog.at_level("INFO"):
+        auth.prepare_setup()
+    token = (tmp_path / "data" / "setup-token").read_text().strip()
+    assert len(token) >= 24 and token not in caplog.text
+    assert str(tmp_path / "data" / "setup-token") in caplog.text
+
+
+def test_no_setup_code_when_a_password_exists(tmp_path):
+    from lapinou.web.auth import Auth, SetupRefused, hash_password
+
+    settings = load_settings(tmp_path / "config.toml")
+    path = tmp_path / "setup-token"
+    path.write_text("ancien\n")
+    settings.admin.password_hash = hash_password(PASSWORD)
+    auth = Auth(SettingsStore(settings), path)
+    auth.prepare_setup()
+    assert not path.exists()
+    # Sans fichier de code (ou sans code préparé) : création par la page impossible.
+    bare = Auth(SettingsStore(load_settings(tmp_path / "autre" / "config.toml")))
+    with pytest.raises(SetupRefused):
+        bare.setup("", PASSWORD, "c")
+
+
+def test_concurrent_setups_only_one_wins(tmp_path):
+    from lapinou.web.auth import Auth
+
+    settings = load_settings(tmp_path / "config.toml")
+    auth = Auth(SettingsStore(settings), tmp_path / "setup-token")
+    auth.prepare_setup()
+    token = (tmp_path / "setup-token").read_text().strip()
+    results: list[str] = []
+    barrier = threading.Barrier(4)
+
+    def attempt(i):
+        barrier.wait()
+        try:
+            auth.setup(token, f"Mot-de-passe-{i}", f"client-{i}")
+            results.append("ok")
+        except Exception as e:  # noqa: BLE001
+            results.append(type(e).__name__)
+
+    threads = [threading.Thread(target=attempt, args=(i,)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results.count("ok") == 1, results
+
+
+def test_cli_sets_the_password_hash(tmp_path, monkeypatch, capsys):
+    import io
+
+    from lapinou.web import auth
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(PASSWORD + "\n"))
+    auth.main(["--config", str(tmp_path / "config.toml")])
+    saved = load_settings(tmp_path / "config.toml")
+    assert saved.admin.password_hash.startswith("$argon2id$")
+    assert PASSWORD not in (tmp_path / "secrets.toml").read_text()
+    assert stat.S_IMODE((tmp_path / "secrets.toml").stat().st_mode) == 0o600
+
+
+# --- Essais limités -----------------------------------------------------------------------
+
+
+class Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+def _auth_with_password(tmp_path, clock):
+    from lapinou.web.auth import Auth, hash_password
+
+    settings = load_settings(tmp_path / "config.toml")
+    settings.admin.password_hash = hash_password(PASSWORD)
+    return Auth(SettingsStore(settings), clock=clock)
+
+
+def test_lockout_doubles_up_to_15_minutes(tmp_path):
+    from lapinou.web.auth import Locked
+
+    clock = Clock()
+    auth = _auth_with_password(tmp_path, clock)
+    waits = []
+    for _ in range(6):
+        for _ in range(5):
+            assert auth.login("faux", "c") is None
+        with pytest.raises(Locked) as e:
+            auth.login(PASSWORD, "c")
+        waits.append(e.value.retry_after)
+        clock.t += e.value.retry_after
+    assert waits == [61, 121, 241, 481, 901, 901]
+    assert auth.login(PASSWORD, "c") is not None  # réussite : la série repart de zéro
+    for _ in range(5):
+        auth.login("faux", "c")
+    with pytest.raises(Locked) as e:
+        auth.login("faux", "c")
+    assert e.value.retry_after == 61
+
+
+def test_attempts_are_counted_before_argon2(tmp_path, monkeypatch):
+    """Des essais en parallèle ne passent pas tous : le compte se fait sous verrou, avant le
+    calcul (lent) du haché."""
+    from lapinou.web import auth as auth_mod
+
+    clock = Clock()
+    auth = _auth_with_password(tmp_path, clock)
+    started = threading.Event()
+
+    def slow_verify(password):
+        started.wait(2)
+        return False
+
+    monkeypatch.setattr(auth, "_verify", slow_verify)
+    results = []
+
+    def attempt():
+        try:
+            results.append(auth.login("faux", "c"))
+        except auth_mod.Locked:
+            results.append("locked")
+
+    threads = [threading.Thread(target=attempt) for _ in range(20)]
+    for t in threads:
+        t.start()
+    started.set()
+    for t in threads:
+        t.join()
+    assert results.count(None) == 5 and results.count("locked") == 15
+
+
+def test_password_change_failures_count_too(tmp_path):
+    from lapinou.web.auth import Locked
+
+    auth = _auth_with_password(tmp_path, Clock())
+    for _ in range(5):
+        assert auth.change("faux", "Nouveau-mot-1", "c") is False
+    with pytest.raises(Locked):
+        auth.login(PASSWORD, "c")
+
+
+def test_failures_table_is_bounded(tmp_path):
+    from lapinou.web import auth as auth_mod
+
+    clock = Clock()
+    auth = _auth_with_password(tmp_path, clock)
+    for i in range(auth_mod.MAX_CLIENTS + 200):
+        auth._attempt(f"10.0.{i // 256}.{i % 256}")
+    assert len(auth._clients) <= auth_mod.MAX_CLIENTS
+    clock.t += auth_mod.FORGET_S + 1
+    auth._attempt("autre")
+    assert list(auth._clients) == ["autre"]
 
 
 def test_set_and_clear_secret(env):

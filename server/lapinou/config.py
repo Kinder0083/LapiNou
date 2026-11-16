@@ -9,10 +9,12 @@ import tempfile
 import threading
 import tomllib
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import tomli_w
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 DEFAULT_CONFIG_PATH = Path("/etc/lapinou/config.toml")
 SECRETS_NAME = "secrets.toml"
@@ -22,28 +24,63 @@ class _Section(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+# Valeurs contrôlées dès le chargement : une valeur fausse enregistrée par la page empêcherait
+# le service de redémarrer (la page reçoit un 422 et rien n'est écrit).
+Port = Annotated[int, Field(ge=1, le=65535)]
+Pct = Annotated[int, Field(ge=1, le=1000)]
+
+
+def _http_url(value: str) -> str:
+    """Vide, ou une URL http(s) avec un hôte."""
+    value = value.strip()
+    if value:
+        parts = urlsplit(value)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise ValueError("il faut une adresse http:// ou https://")
+        try:
+            parts.port  # noqa: B018 (lève ValueError pour un port invalide)
+        except ValueError:
+            raise ValueError("port invalide dans l'adresse") from None
+    return value
+
+
+HttpUrl = Annotated[str, AfterValidator(_http_url)]
+
+
+def _timezone(value: str) -> str:
+    try:
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        raise ValueError(f"fuseau horaire inconnu : {value!r} (ex. Europe/Paris)") from None
+    return value
+
+
 class ServerConfig(_Section):
-    platform_port: int = 9123
-    mic_port: int = 9300
-    http_port: int = 8080
-    tts_port: int = 8081
-    asr_port: int = 8443
+    platform_port: Port = 9123
+    mic_port: Port = 9300
+    http_port: Port = 8080
+    tts_port: Port = 8081
+    asr_port: Port = 8443
     # Fuseau des minuteurs, rappels et de l'heure dite (pas celui du système).
-    timezone: str = "Europe/Paris"
+    timezone: Annotated[str, AfterValidator(_timezone)] = "Europe/Paris"
     # Adresse par laquelle les lapins joignent ce serveur (MP3 des réponses, clé USB), par
     # exemple http://192.168.1.10:8080 ; vide : LAPINOU_BASE_URL, sinon l'adresse locale détectée.
-    public_url: str = ""
+    # Les lapins supposent le port 8080 pour les applications (url_app de la clé USB).
+    public_url: HttpUrl = ""
+    # Noms d'hôte acceptés en plus pour la page (en-tête Host) : localhost, les adresses du
+    # serveur et le nom de `public_url` le sont toujours (contre le « DNS rebinding »).
+    allowed_hosts: list[str] = Field(default_factory=list)
 
 
 class MqttConfig(_Section):
     host: str = ""
-    port: int = 1883
+    port: Port = 1883
     username: str = ""
     password: str = ""  # secret
 
 
 class HaConfig(_Section):
-    url: str = ""
+    url: HttpUrl = ""
     token: str = ""  # secret
     # Commande qui lance ha-mcp en stdio (reçoit HOMEASSISTANT_URL et HOMEASSISTANT_TOKEN).
     mcp_command: list[str] = Field(default_factory=lambda: ["ha-mcp"])
@@ -55,14 +92,14 @@ class HaConfig(_Section):
 
 class LmsConfig(_Section):
     host: str = ""
-    port: int = 9000
+    port: Port = 9000
     # Hôtes dont le cerveau peut lancer une URL de flux ; vide : favoris LMS seulement.
     allowed_url_hosts: list[str] = Field(default_factory=list)
 
 
 class ProviderConfig(_Section):
-    kind: str = "anthropic"  # anthropic | openai
-    base_url: str = ""
+    kind: Literal["anthropic", "openai"] = "anthropic"
+    base_url: HttpUrl = ""
     api_key: str = ""  # secret
 
 
@@ -81,10 +118,10 @@ class BrainConfig(_Section):
 class ModelPrice(_Section):
     """Prix en dollars par million de jetons."""
 
-    input: float = 0.0
-    output: float = 0.0
-    cache_read: float = 0.0
-    cache_write: float = 0.0
+    input: float = Field(default=0.0, ge=0)
+    output: float = Field(default=0.0, ge=0)
+    cache_read: float = Field(default=0.0, ge=0)
+    cache_write: float = Field(default=0.0, ge=0)
 
 
 def _default_prices() -> dict[str, ModelPrice]:
@@ -103,27 +140,27 @@ def _default_prices() -> dict[str, ModelPrice]:
 
 
 class BudgetConfig(_Section):
-    monthly_usd: float = 20.0
-    warn_pct: int = 80
-    stop_pct: int = 100
+    monthly_usd: float = Field(default=20.0, ge=0)
+    warn_pct: Annotated[int, Field(ge=1, le=100)] = 80
+    stop_pct: Pct = 100
     # Modèle absent de la table : gratuit (modèle local, Assist), sauf un modèle Claude, facturé
     # au prix du modèle demandé (ou du plus cher de la table).
     prices: dict[str, ModelPrice] = Field(default_factory=_default_prices)
-    web_search_per_1k: float = 10.0
+    web_search_per_1k: float = Field(default=10.0, ge=0)
 
 
 class VoiceConfig(_Section):
     # Détection de « Lapinou » : « asr » (transcription Parakeet, principale, R23), « oww »
     # (classifieur openWakeWord seul) ou « both » (openWakeWord garde la transcription).
     wake_method: Literal["asr", "oww", "both"] = "asr"
-    tts_engine: str = "piper"
+    tts_engine: Literal["kokoro", "piper"] = "piper"
     voice: str = "fr_FR-siwis-medium"
-    wake_threshold: float = 0.9  # validé : tools/train_wakeword/README.md
+    wake_threshold: float = Field(default=0.9, ge=0, le=1)  # validé : tools/train_wakeword/README.md
     # Classifieur openWakeWord entraîné localement (tools/train_wakeword) ; vide = absent.
     # Non distribué : il hérite des licences NC/SA de ses données d'entraînement.
     wake_model: str = ""
-    vad_silence_ms: int = 700
-    followup_s: int = 5
+    vad_silence_ms: int = Field(default=700, ge=100, le=5000)
+    followup_s: int = Field(default=5, ge=0, le=60)
 
 
 class SafetyConfig(_Section):
@@ -143,6 +180,13 @@ class SafetyConfig(_Section):
     )
     # `climate` hors de cette plage (°C) est sensible.
     climate_range: list[float] = Field(default_factory=lambda: [16.0, 24.0])
+
+    @field_validator("climate_range")
+    @classmethod
+    def _climate_range(cls, value: list[float]) -> list[float]:
+        if len(value) != 2 or not 0 <= value[0] <= value[1] <= 40:
+            raise ValueError("deux températures [min, max] entre 0 et 40 °C, min ≤ max")
+        return value
     # Entités marquées « sensible » par le propriétaire (four, chauffe-eau…).
     sensitive_entities: list[str] = Field(default_factory=list)
     # Entités sensibles activées : permises après confirmation vocale (et PIN s'il est réglé).
@@ -165,11 +209,11 @@ class SafetyConfig(_Section):
 
 class MemoryConfig(_Section):
     enabled: bool = True
-    max_items: int = 50
+    max_items: int = Field(default=50, ge=1, le=1000)
 
 
 class LogsConfig(_Section):
-    retention_days: int = 7
+    retention_days: int = Field(default=7, ge=1, le=365)
 
 
 class RabbitConfig(_Section):
@@ -183,7 +227,7 @@ class OtaConfig(_Section):
     # Jeton GitHub à grain fin, lecture seule de « Contents », pour un dépôt privé.
     token: str = ""  # secret
     dir: str = "/var/lib/lapinou/ota"
-    check_hours: float = 12.0  # 0 : seulement à la demande
+    check_hours: float = Field(default=12.0, ge=0)  # 0 : seulement à la demande
 
 
 class UpdateConfig(_Section):

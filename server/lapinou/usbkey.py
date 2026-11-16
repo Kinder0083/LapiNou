@@ -18,6 +18,7 @@ from __future__ import annotations
 import copy
 import os
 import re
+import stat
 import tempfile
 import zipfile
 from dataclasses import dataclass
@@ -108,7 +109,10 @@ def check_values(v: dict[str, str]) -> list[str]:
 
 
 def server_host(settings: Settings) -> str:
-    """Le nom ou l'adresse par lequel les lapins joignent ce serveur."""
+    """Le nom ou l'adresse par lequel les lapins joignent ce serveur : l'hôte seul, comme
+    l'attend `LAPINOU_SERVER` (ni schéma ni port). applysettings.sh en déduit les ports de
+    LapinLibre, dont `url_app=http://<hôte>:8080` : un `public_url` sur un autre port ne
+    change pas ce port-là (la page le signale)."""
     from .app import base_url
 
     return urlsplit(base_url(settings)).hostname or ""
@@ -157,6 +161,11 @@ def _safe_name(name: str) -> bool:
             and ":" not in p.parts[0])
 
 
+def _is_link(info: zipfile.ZipInfo) -> bool:
+    """Une entrée lien symbolique (attributs Unix dans les 16 bits hauts)."""
+    return stat.S_ISLNK(info.external_attr >> 16)
+
+
 def build_usb_key(release_zip: Path, settings: Settings, wifi: WifiInput, out: Path) -> Path:
     """L'archive de la clé (`release_zip`, celle de la version), `lapinlibre.txt` rempli, écrite
     dans `out` (mode 0600 : elle contient des mots de passe). UsbKeyError si la clé ne
@@ -171,9 +180,9 @@ def build_usb_key(release_zip: Path, settings: Settings, wifi: WifiInput, out: P
         raise UsbKeyError(f"archive de la clé illisible : {e}") from e
     with src:
         infos = src.infolist()
-        bad = [i.filename for i in infos if not _safe_name(i.filename)]
+        bad = [i.filename for i in infos if not _safe_name(i.filename) or _is_link(i)]
         if bad:
-            raise UsbKeyError(f"archive de la clé invalide (chemin {bad[0]!r})")
+            raise UsbKeyError(f"archive de la clé invalide (chemin ou lien {bad[0]!r})")
         if SETTINGS_FILE not in src.namelist():
             raise UsbKeyError(f"archive de la clé sans {SETTINGS_FILE}")
         template = src.read(SETTINGS_FILE).decode("utf-8").replace("\r\n", "\n")

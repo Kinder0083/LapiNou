@@ -28,7 +28,9 @@
     "secret_save": "Changer",
     "secret_clear": "Effacer",
     "secret_cleared": "Effacé.",
-    "secret_changed": "Changé. Il sert au prochain redémarrage du service."
+    "secret_changed": "Changé. Il sert au prochain redémarrage du service.",
+    "secret_reenter": "C'est enregistré, mais l'adresse a changé : par sécurité, la clé correspondante a été effacée. Saisissez-la de nouveau : ",
+    "port_warning": "Attention : les lapins cherchent leurs applications sur le port 8080 de ce serveur (url_app), quel que soit le port de cette adresse. Gardez le port 8080 ouvert vers LapiNou."
   },
   "login": {
     "title": "Connexion",
@@ -39,6 +41,9 @@
     "locked": "Trop d'essais : attendez une minute.",
     "setup_title": "Bienvenue !",
     "setup_intro": "Choisissez le mot de passe administrateur de cette page (8 caractères au moins). Gardez-le bien : il protège les clés de vos services.",
+    "setup_code": "Code d'installation",
+    "setup_code_help": "Pour prouver que vous êtes le propriétaire du serveur : copiez le code écrit dans ce fichier du serveur (lisible par root) : ",
+    "setup_cli": "Sur le serveur, créez le mot de passe avec : python -m lapinou.web.auth --config /etc/lapinou/config.toml",
     "setup_confirm": "Encore une fois",
     "setup_submit": "Créer le mot de passe",
     "mismatch": "Les deux mots de passe ne sont pas pareils."
@@ -108,6 +113,7 @@
     "safety.assist_blocked_words": ["Mots refusés à Assist (mots entiers)", ""],
     "server.public_url": ["Adresse du serveur pour les lapins", "Par exemple http://192.168.1.10:8080. Vide : détectée toute seule."],
     "server.timezone": ["Fuseau horaire", "Par exemple Europe/Paris."],
+    "server.allowed_hosts": ["Autres noms de ce serveur", "Un par ligne, par exemple lapinou.local, si vous ouvrez cette page par un nom. L'adresse ci-dessus, localhost et les adresses du serveur sont toujours acceptées."],
     "ha.url": ["Home Assistant : adresse", "Par exemple http://192.168.1.20:8123."],
     "ha.token": ["Home Assistant : jeton longue durée", ""],
     "lms.host": ["Lyrion (musique) : adresse", ""],

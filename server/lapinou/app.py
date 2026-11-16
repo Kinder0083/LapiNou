@@ -114,6 +114,8 @@ class Services:
         self._tts_thread.start()
         if self.ota is not None:
             await self.ota.start()
+        if self.web is not None:
+            self.web.auth.prepare_setup()  # code d'installation si aucun mot de passe (R40)
         log.info("serveur LapiNou démarré")
 
     async def close(self) -> None:
@@ -235,6 +237,8 @@ def build_services(
         store=SettingsStore(settings), db=db, memory=memory, timers=timers,
         budget=orchestrator.deps.budget, log=orchestrator.deps.log, registry=registry,
         voice=voice, ota=relay, updater=Updater.from_settings(settings),
+        setup_token_path=(None if str(db_path) == ":memory:"
+                          else Path(db_path).parent / "setup-token"),
     )
     return Services(
         settings=settings, db=db, registry=registry, gateway=gateway, voice=voice,

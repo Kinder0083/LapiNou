@@ -9,7 +9,12 @@ autorisation CORS : protection contre le CSRF, en plus du cookie SameSite=Strict
 
 Les commandes lancées par le serveur (`[update]`, `ha.mcp_command`) et le dossier OTA ne se
 changent que dans config.toml, pas par la page : une session volée ne doit pas pouvoir faire
-exécuter n'importe quoi.
+exécuter n'importe quoi. Changer la destination d'un secret (adresse de Home Assistant, broker
+MQTT, adresse ou type d'un fournisseur) efface ce secret, sauf si la même requête en donne un
+nouveau : sinon une session pourrait faire envoyer le jeton chez elle.
+
+Contre le « DNS rebinding » (R40), la page et l'API ne répondent qu'aux en-têtes Host connus :
+localhost, les adresses du serveur, le nom de `server.public_url` et `server.allowed_hosts`.
 """
 
 from __future__ import annotations
@@ -17,10 +22,13 @@ from __future__ import annotations
 import asyncio
 import copy
 import shutil
+import socket
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
@@ -55,10 +63,13 @@ class WebContext:
     voice: Any = None
     ota: Any = None
     updater: Any = None
+    # Fichier du code d'installation (R40), dans le dossier de données ; None : pas de création
+    # du mot de passe par la page.
+    setup_token_path: Path | None = None
     auth: auth_mod.Auth = field(init=False)
 
     def __post_init__(self) -> None:
-        self.auth = auth_mod.Auth(self.store)
+        self.auth = auth_mod.Auth(self.store, self.setup_token_path)
 
 
 def _ctx(request: Request) -> WebContext:
@@ -116,11 +127,24 @@ def _strip(body: dict[str, Any]) -> None:
             body[section].pop(key, None)
 
 
-def updated_settings(current: Settings, body: dict[str, Any]) -> dict[str, Any]:
-    """Les réglages complets après les changements de la page (secrets gardés)."""
+# Un secret et sa destination : si la destination change, le secret est effacé.
+DESTINATIONS = (("ha", "url", "token"), ("mqtt", "host", "password"))
+
+
+def _supplied(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def updated_settings(current: Settings, body: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Les réglages complets après les changements de la page, et les secrets effacés parce
+    que leur destination a changé. Les secrets ne viennent pas du corps, sauf celui d'une
+    destination (`ha.token`, `mqtt.password`, clé d'un fournisseur) donné non vide."""
     body = copy.deepcopy(body)
+    given = {f"{sec}.{key}": _supplied(body[sec].get(key))
+             for sec, _, key in DESTINATIONS if isinstance(body.get(sec), dict)}
     _strip(body)
     data = current.model_dump(mode="python")
+    cleared: list[str] = []
     brain = body.get("brain")
     if isinstance(brain, dict) and "providers" in brain:
         providers = brain.pop("providers")
@@ -128,13 +152,30 @@ def updated_settings(current: Settings, body: dict[str, Any]) -> dict[str, Any]:
                 isinstance(p, dict) for p in providers.values()):
             raise HTTPException(422, "brain.providers : un objet par fournisseur")
         old = data["brain"]["providers"]
-        data["brain"]["providers"] = {
-            name: {**old.get(name, {}), **{k: v for k, v in p.items() if k != "api_key"}}
-            for name, p in providers.items()
-        }
+        merged = {}
+        for name, p in providers.items():
+            prov = {**old.get(name, {}), **{k: v for k, v in p.items() if k != "api_key"}}
+            before = old.get(name)
+            if _supplied(p.get("api_key")):
+                prov["api_key"] = p["api_key"]
+            elif before and prov.get("api_key") and (
+                    prov.get("base_url") != before["base_url"] or prov.get("kind") != before["kind"]):
+                prov["api_key"] = ""
+                cleared.append(f"brain.providers.{name}.api_key")
+            merged[name] = prov
+        data["brain"]["providers"] = merged
     if "rabbits" in body:  # remplacée d'un bloc : un lapin retiré disparaît
         data["rabbits"] = body.pop("rabbits")
-    return _merge(data, body)
+    data = _merge(data, body)
+    for sec, dest, key in DESTINATIONS:
+        new_secret = given.get(f"{sec}.{key}")
+        if new_secret:
+            data[sec][key] = new_secret
+        elif data[sec][key] and str(data[sec][dest]).strip() != str(
+                getattr(getattr(current, sec), dest)).strip():
+            data[sec][key] = ""
+            cleared.append(f"{sec}.{key}")
+    return data, cleared
 
 
 def _validation_detail(e: ValidationError) -> list[dict[str, str]]:
@@ -147,6 +188,11 @@ def _validation_detail(e: ValidationError) -> list[dict[str, str]]:
 
 class PasswordBody(BaseModel):
     password: str
+
+
+class SetupBody(BaseModel):
+    password: str
+    token: str = ""
 
 
 class ChangePasswordBody(BaseModel):
@@ -180,19 +226,34 @@ class UsbKeyBody(BaseModel):
 public = APIRouter(prefix="/api")
 
 
+def _locked(e: auth_mod.Locked) -> HTTPException:
+    minutes = max(1, round(e.retry_after / 60))
+    return HTTPException(429, f"trop d'essais : réessayez dans {minutes} min",
+                         headers={"Retry-After": str(e.retry_after)})
+
+
 @public.get("/session")
-def session(request: Request) -> dict[str, bool]:
+def session(request: Request) -> dict[str, Any]:
     ctx = _ctx(request)
-    return {"password_set": ctx.auth.password_set(),
-            "logged_in": ctx.auth.check(request.cookies.get(auth_mod.COOKIE))}
+    a = ctx.auth
+    password_set = a.password_set()
+    return {"password_set": password_set,
+            "logged_in": a.check(request.cookies.get(auth_mod.COOKIE)),
+            "setup_file": (str(a.setup_token_path)
+                           if not password_set and a.setup_token_path else None)}
 
 
 @public.post("/setup")
-async def setup(body: PasswordBody, request: Request, response: Response) -> dict[str, bool]:
+async def setup(body: SetupBody, request: Request, response: Response) -> dict[str, bool]:
     try:
-        token = await asyncio.to_thread(_ctx(request).auth.setup, body.password)
+        token = await asyncio.to_thread(_ctx(request).auth.setup, body.token, body.password,
+                                        _client(request))
+    except auth_mod.Locked as e:
+        raise _locked(e) from None
     except PermissionError:
         raise HTTPException(409, "un mot de passe existe déjà : connectez-vous") from None
+    except auth_mod.SetupRefused as e:
+        raise HTTPException(403, str(e)) from None
     except ValueError as e:
         raise HTTPException(422, str(e)) from None
     _set_session(response, token, request)
@@ -205,8 +266,7 @@ async def login(body: PasswordBody, request: Request, response: Response) -> dic
         token = await asyncio.to_thread(_ctx(request).auth.login, body.password,
                                         _client(request))
     except auth_mod.Locked as e:
-        raise HTTPException(429, "trop d'essais : réessayez dans une minute",
-                            headers={"Retry-After": str(e.retry_after)}) from None
+        raise _locked(e) from None
     if token is None:
         raise HTTPException(401, "mot de passe incorrect")
     _set_session(response, token, request)
@@ -231,8 +291,8 @@ async def change_password(body: ChangePasswordBody, request: Request,
     a = _ctx(request).auth
     try:
         ok = await asyncio.to_thread(a.change, body.old, body.new, _client(request))
-    except auth_mod.Locked:
-        raise HTTPException(429, "trop d'essais : réessayez dans une minute") from None
+    except auth_mod.Locked as e:
+        raise _locked(e) from None
     except ValueError as e:
         raise HTTPException(422, str(e)) from None
     if not ok:
@@ -252,12 +312,12 @@ async def put_settings(request: Request) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise HTTPException(422, "un objet JSON est attendu")
     store = _ctx(request).store
-    data = updated_settings(store.get(), body)
+    data, cleared = updated_settings(store.get(), body)
     try:
         new = await asyncio.to_thread(store.replace, data)
     except ValidationError as e:
         raise HTTPException(422, _validation_detail(e)) from None
-    return {**public_view(new), "restart_needed": True}
+    return {**public_view(new), "restart_needed": True, "cleared": cleared}
 
 
 @router.put("/secrets")
@@ -484,6 +544,55 @@ async def usb_key(body: UsbKeyBody, request: Request) -> FileResponse:
 # --- Installation dans l'application -----------------------------------------------------
 
 
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+_OWN_TTL_S = 300.0
+_own: tuple[float, frozenset[str]] = (0.0, frozenset())
+
+
+def own_addresses() -> frozenset[str]:
+    """Les adresses de ce serveur (relues toutes les 5 minutes : DHCP)."""
+    global _own
+    now = time.monotonic()
+    if now - _own[0] < _OWN_TTL_S and _own[1]:
+        return _own[1]
+    from ..app import _lan_address
+
+    found = {_lan_address()}
+    try:
+        found |= {str(info[4][0]) for info in socket.getaddrinfo(socket.gethostname(), None)}
+    except OSError:
+        pass
+    _own = (now, frozenset(a.lower() for a in found))
+    return _own[1]
+
+
+def _host_name(header: str) -> str:
+    header = header.strip().lower()
+    if header.startswith("["):  # [IPv6]:port
+        return header[1:header.find("]")] if "]" in header else ""
+    if header.count(":") == 1:
+        header = header.split(":", 1)[0]
+    return header.rstrip(".")
+
+
+def host_allowed(header: str, settings: Settings) -> bool:
+    from ..app import base_url
+
+    host = _host_name(header)
+    if not host:
+        return False
+    named = {urlsplit(base_url(settings)).hostname or "",
+             urlsplit(settings.server.public_url).hostname or ""}
+    extra = {h.strip().lower().rstrip(".") for h in settings.server.allowed_hosts}
+    return host in _LOCAL_HOSTS | own_addresses() | {n.lower() for n in named if n} | extra
+
+
+def _guarded(path: str) -> bool:
+    """La page et l'API (pas /ota ni /tts, servis aux lapins, ni /api/health)."""
+    return path == "/" or path.startswith("/static/") or (
+        path.startswith("/api/") and path != "/api/health")
+
+
 def install(app: FastAPI) -> None:
     app.include_router(public)
     app.include_router(router)
@@ -496,6 +605,10 @@ def install(app: FastAPI) -> None:
     @app.middleware("http")
     async def guard(request: Request, call_next):
         path = request.url.path
+        if _guarded(path) and not host_allowed(request.headers.get("host", ""),
+                                               _ctx(request).store.get()):
+            return JSONResponse({"detail": "nom d'hôte non autorisé (server.allowed_hosts)"},
+                                status_code=400)
         if (path.startswith("/api/") and request.method not in ("GET", "HEAD", "OPTIONS")
                 and request.headers.get(CSRF_HEADER) != "1"):
             return JSONResponse({"detail": "en-tête X-LapiNou manquant"}, status_code=403)

@@ -27,11 +27,14 @@ class FakeGitHub:
         self.requests: list[httpx2.Request] = []
         self.status = 200
         self.fail_network = False
+        self.storage = "https://objects.example.com"  # où l'API redirige les téléchargements
         self.set_release(version, files, key)
 
     def set_release(self, version, files=None, key=True, manifest_files=None):
-        files = files or {"zImage": b"K" * 1000, "rootfs.img.gz": b"R" * 3000,
-                          "usr.tar.gz": b"U" * 5000}
+        files = dict(files or {"zImage": b"K" * 1000, "rootfs.img.gz": b"R" * 3000,
+                               "usr.tar.gz": b"U" * 5000})
+        if key:  # la clé USB est listée par le manifeste signé (R41)
+            files[f"LapinLibre-{version}.zip"] = b"PK\x03\x04cle"
         listed = manifest_files or {n: {"sha256": _sha(d), "size": len(d)}
                                     for n, d in files.items()}
         # Mise en forme et ordre volontairement inhabituels : servis tels quels, octet pour octet.
@@ -40,9 +43,8 @@ class FakeGitHub:
             % (version, json.dumps(listed, indent=3))
         ).encode()
         self.assets = {"manifest.json": self.manifest, **files}
-        if key:
+        if key:  # somme publiée à part, comme release.yml : elle ne fait plus foi
             zip_name = f"LapinLibre-{version}.zip"
-            self.assets[zip_name] = b"PK\x03\x04cle"
             self.assets[zip_name + ".sha256"] = (
                 f"{_sha(self.assets[zip_name])}  {zip_name}\n".encode())
         self.version = version
@@ -67,8 +69,8 @@ class FakeGitHub:
             assert request.headers["accept"] == "application/octet-stream"
             i = int(url.rsplit("/", 1)[1])
             return httpx2.Response(302, headers={
-                "location": f"https://objects.example.com/blob/{i}?sig=abc"})
-        if url.startswith("https://objects.example.com/blob/"):
+                "location": f"{self.storage}/blob/{i}?sig=abc"})
+        if "/blob/" in url:
             i = int(url.split("/blob/")[1].split("?")[0])
             return httpx2.Response(200, content=list(self.assets.values())[i])
         return httpx2.Response(404)
@@ -77,8 +79,9 @@ class FakeGitHub:
         return httpx2.AsyncClient(transport=httpx2.MockTransport(self.handler))
 
 
-def _relay(gh, tmp_path, token=""):
-    return OtaRelay(REPO, token, tmp_path / "ota", client=gh.client())
+def _relay(gh, tmp_path, token="", clock=None):
+    kwargs = {"clock": clock} if clock else {}
+    return OtaRelay(REPO, token, tmp_path / "ota", client=gh.client(), **kwargs)
 
 
 def _app(relay):
@@ -165,7 +168,25 @@ async def test_new_release_replaces_old_one(tmp_path):
     client = _app(relay)
     assert client.get("/ota/manifest.json").content == gh.manifest
     assert client.get("/ota/zImage").content == b"k2"
-    assert sorted(p.name for p in (tmp_path / "ota" / "releases").iterdir()) == ["v1.3.0"]
+
+
+async def test_previous_release_kept_for_a_grace_period(tmp_path):
+    """Un lapin peut être en train de télécharger l'ancienne : elle reste 10 minutes."""
+    now = [1_000_000.0]
+    gh = FakeGitHub()
+    relay = _relay(gh, tmp_path, clock=lambda: now[0])
+    await relay.refresh()
+    gh.set_release("v1.3.0", {"zImage": b"k2", "rootfs.img.gz": b"r2", "usr.tar.gz": b"u2"})
+    await relay.refresh()
+    releases = tmp_path / "ota" / "releases"
+    assert sorted(p.name for p in releases.iterdir()) == ["v1.2.3", "v1.3.0"]
+    now[0] += 599
+    await relay.refresh()  # même version : rien à télécharger, mais le ménage est fait
+    assert sorted(p.name for p in releases.iterdir()) == ["v1.2.3", "v1.3.0"]
+    now[0] += 2
+    await relay.refresh()
+    assert sorted(p.name for p in releases.iterdir()) == ["v1.3.0"]
+    assert _app(relay).get("/ota/zImage").content == b"k2"
 
 
 async def test_unsafe_manifest_is_refused(tmp_path):
@@ -185,12 +206,54 @@ async def test_usb_key_zip_checked_and_kept(tmp_path):
     key = relay.key_zip()
     assert key is not None and key.name == "LapinLibre-v1.2.3.zip"
     assert key.read_bytes() == gh.assets["LapinLibre-v1.2.3.zip"]
-    # Somme fausse : la version n'est pas retenue.
+    # Archive différente de ce que dit le manifeste signé : la version n'est pas retenue,
+    # même si la somme publiée à part concorde avec elle (R41 : seul le manifeste fait foi).
     gh.set_release("v2.0.0")
-    gh.assets["LapinLibre-v2.0.0.zip.sha256"] = b"0" * 64 + b"  LapinLibre-v2.0.0.zip\n"
+    bad = b"PK\x03\x04autre"
+    gh.assets["LapinLibre-v2.0.0.zip"] = bad
+    gh.assets["LapinLibre-v2.0.0.zip.sha256"] = f"{_sha(bad)}  LapinLibre-v2.0.0.zip\n".encode()
     with pytest.raises(OtaError, match="LapinLibre-v2.0.0.zip"):
         await relay.refresh()
     assert relay.key_zip() == key
+
+
+async def test_separate_checksum_is_not_the_authority(tmp_path):
+    gh = FakeGitHub()
+    gh.assets["LapinLibre-v1.2.3.zip.sha256"] = b"0" * 64 + b"  LapinLibre-v1.2.3.zip\n"
+    relay = _relay(gh, tmp_path)
+    await relay.refresh()
+    assert relay.key_zip().read_bytes() == gh.assets["LapinLibre-v1.2.3.zip"]
+
+
+async def test_key_zip_not_in_manifest_is_ignored(tmp_path):
+    gh = FakeGitHub(key=False)
+    gh.assets["LapinLibre-v1.2.3.zip"] = b"PK\x03\x04hors-manifeste"
+    relay = _relay(gh, tmp_path)
+    await relay.refresh()
+    assert relay.key_zip() is None
+
+
+async def test_manifest_file_named_key_sha256_is_kept(tmp_path):
+    gh = FakeGitHub()
+    gh.set_release("v1.2.3", {"zImage": b"k", "key.sha256": b"donnees"})
+    relay = _relay(gh, tmp_path)
+    await relay.refresh()
+    assert _app(relay).get("/ota/key.sha256").content == b"donnees"
+
+
+def test_api_must_be_https(tmp_path):
+    with pytest.raises(ValueError):
+        OtaRelay(REPO, "t", tmp_path, api="http://api.github.com")
+
+
+async def test_plain_http_redirect_is_refused(tmp_path):
+    gh = FakeGitHub()
+    gh.storage = "http://objects.example.com"
+    relay = _relay(gh, tmp_path, token="github_pat_SECRET")
+    with pytest.raises(OtaError, match="https"):
+        await relay.refresh()
+    assert all(r.url.scheme == "https" for r in gh.requests)
+    assert relay.status().version == ""
 
 
 async def test_github_errors_are_reported(tmp_path):

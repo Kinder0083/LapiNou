@@ -8,9 +8,14 @@ téléchargements. Une version comprend `manifest.json` (signé, format de `lapi
 et les fichiers qu'il liste ; chacun est vérifié (taille, SHA-256) avant que la version ne
 remplace la précédente, d'un bloc. La signature, elle, est vérifiée par le lapin : le manifeste
 lui est servi **octet pour octet** tel que publié. L'archive de la clé USB de la version
-(`LapinLibre-<v>.zip` ou `lapinou-key-<v>.zip`, avec sa somme `.sha256`) est gardée aussi.
+(`LapinLibre-<v>.zip` ou `lapinou-key-<v>.zip`) est l'un des fichiers listés par ce manifeste
+signé, vérifiée comme les autres (R41) : une somme `.sha256` publiée à part ne fait pas foi.
+Toutes les adresses GitHub sont en https, redirections comprises : le jeton ne passe jamais en
+clair.
 
 Disposition : `<dir>/releases/<version>/` et `<dir>/current` (le nom de la version servie).
+L'ancienne version reste sur le disque au moins 10 minutes après le changement (un lapin peut
+être en train de la télécharger), puis est effacée.
 Les lapins lisent `GET /ota/manifest.json` puis `GET /ota/<fichier>` (port 8080).
 """
 
@@ -26,6 +31,8 @@ import os
 import re
 import shutil
 import tempfile
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,6 +48,8 @@ log = logging.getLogger(__name__)
 API = "https://api.github.com"
 MANIFEST = "manifest.json"
 MAX_FILE = 300 * 1024 * 1024
+GRACE_S = 600  # l'ancienne version reste servie-able 10 minutes après le changement
+FIRST_CHECK_S = 60  # première vérification périodique une minute après le démarrage
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,99}")
 _KEY_ZIP = re.compile(r"(?:LapinLibre|lapinou-key)-.+\.zip")
 _SHA = re.compile(r"[0-9a-f]{64}")
@@ -100,10 +109,14 @@ class OtaRelay:
         client: httpx2.AsyncClient | None = None,
         api: str = API,
         check_hours: float = 0.0,
+        clock: Callable[[], float] = time.time,
     ) -> None:
+        if not api.startswith("https://"):
+            raise ValueError("l'API GitHub doit être en https")
         self.repo, self.token, self.dir = repo, token, Path(directory)
         self.api = api.rstrip("/")
         self.check_hours = check_hours
+        self._clock = clock
         self._client = client
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
@@ -127,10 +140,14 @@ class OtaRelay:
         return None
 
     def _key_name(self, version: str) -> str:
+        """L'archive de la clé USB listée par le manifeste signé de cette version, ou ""."""
         if not version:
             return ""
-        d = self.dir / "releases" / version
-        return next((p.name for p in sorted(d.iterdir()) if _KEY_ZIP.fullmatch(p.name)), "")
+        try:
+            files = parse_manifest((self.dir / "releases" / version / MANIFEST).read_bytes())
+        except (OSError, OtaError):
+            return ""
+        return next((n for n in sorted(files) if _KEY_ZIP.fullmatch(n)), "")
 
     def status(self) -> OtaStatus:
         return self._status
@@ -182,8 +199,8 @@ class OtaRelay:
         vers le stockage de GitHub, joint sans le jeton."""
         url, api_host = str(asset["url"]), httpx2.URL(self.api).host
         for _ in range(5):
-            if not url.startswith("https://") and httpx2.URL(url).host != api_host:
-                raise OtaError(f"redirection refusée pour {asset['name']}")
+            if not url.startswith("https://"):  # jamais de jeton ni de fichier en clair
+                raise OtaError(f"adresse non https refusée pour {asset['name']}")
             headers = (self._headers("application/octet-stream")
                        if httpx2.URL(url).host == api_host
                        else {"Accept": "application/octet-stream", "User-Agent": "lapinou"})
@@ -231,6 +248,7 @@ class OtaRelay:
             if not _NAME.fullmatch(version):
                 raise OtaError(f"nom de version invalide : {version[:40]!r}")
             self._status.latest = version
+            self._prune()
             if version == self._current():
                 return
             assets = {a["name"]: a for a in release.get("assets", [])
@@ -252,39 +270,42 @@ class OtaRelay:
                      assets: dict[str, dict[str, Any]], staging: Path) -> None:
         await self._download(client, assets[MANIFEST], staging / MANIFEST, limit=1 << 20)
         files = parse_manifest((staging / MANIFEST).read_bytes())
-        for name, want in files.items():
+        for name, want in files.items():  # la clé USB comprise (R41)
             if name not in assets:
                 raise OtaError(f"{name} manque dans la version {version}")
             path = staging / name
             await self._download(client, assets[name], path)
             if path.stat().st_size != want["size"] or _sha256(path) != want["sha256"]:
                 raise OtaError(f"{name} : taille ou SHA-256 différents du manifeste")
-        key = next((n for n in sorted(assets) if _KEY_ZIP.fullmatch(n)), None)
-        if key is not None and _NAME.fullmatch(key) and key + ".sha256" in assets:
-            await self._download(client, assets[key + ".sha256"], staging / "key.sha256",
-                                 limit=4096)
-            want = (staging / "key.sha256").read_text(encoding="utf-8").split()[:1]
-            (staging / "key.sha256").unlink()
-            await self._download(client, assets[key], staging / key)
-            if want != [_sha256(staging / key)]:
-                raise OtaError(f"{key} : SHA-256 différent de sa somme publiée")
 
     def _install(self, version: str, staging: Path) -> None:
         releases = self.dir / "releases"
         releases.mkdir(exist_ok=True)
         final = releases / version
-        if final.exists():
+        previous = self._current()
+        if final.exists():  # jamais la version servie (elle a été écartée plus haut)
             shutil.rmtree(final)
         os.replace(staging, final)
         tmp = self.dir / ".current.new"
         tmp.write_text(version + "\n", encoding="utf-8")
         os.replace(tmp, self.dir / "current")
-        for old in releases.iterdir():
-            if old.name != version:
-                shutil.rmtree(old, ignore_errors=True)
+        if previous is not None:  # retirée maintenant : gardée GRACE_S à partir d'ici
+            now = self._clock()
+            os.utime(releases / previous, (now, now))
+        self._prune()
         self._status.version = version
         self._status.key_zip = self._key_name(version)
         log.info("relais OTA : version %s servie aux lapins", version)
+
+    def _prune(self) -> None:
+        """Efface les versions retirées depuis plus de GRACE_S (jamais la version servie)."""
+        releases = self.dir / "releases"
+        if not releases.is_dir():
+            return
+        current, now = self._current(), self._clock()
+        for old in releases.iterdir():
+            if old.name != current and now - old.stat().st_mtime > GRACE_S:
+                shutil.rmtree(old, ignore_errors=True)
 
     # --- Vérification périodique --------------------------------------------------------
 
@@ -300,6 +321,7 @@ class OtaRelay:
             self._task = None
 
     async def _loop(self) -> None:
+        await asyncio.sleep(FIRST_CHECK_S)
         while True:
             with contextlib.suppress(OtaError):
                 await self.refresh()

@@ -192,6 +192,13 @@
         for (const c of this.collectors) c(body);
         const data = await api("PUT", "/api/settings", body);
         Object.assign(state, { settings: data.settings, secrets: data.secrets });
+        if (data.cleared && data.cleared.length) {
+          // Destination changée : son secret a été effacé, il faut le saisir de nouveau.
+          const names = data.cleared.map((n) => label(n.startsWith("brain.providers.") ? "provider.api_key" : n)[0]);
+          toast(t("app.secret_reenter") + names.join(", "), true);
+          show(location.hash.slice(1));
+          return;
+        }
         toast(t("app.saved"));
         if (after) after();
       }));
@@ -231,6 +238,20 @@
   }
 
   const card = (...children) => el("section", { class: "card" }, ...children);
+
+  // Les lapins joignent les applications sur le port 8080 (url_app de la clé USB).
+  function portWarning() {
+    const url = (state.settings.server || {}).public_url || "";
+    if (!url) return null;
+    let port;
+    try {
+      const u = new URL(url);
+      port = u.port || (u.protocol === "https:" ? "443" : "80");
+    } catch (e) {
+      return null;
+    }
+    return port === "8080" ? null : el("p", { class: "notice warn", text: t("app.port_warning") });
+  }
   const intro = (page) => el("p", { class: "intro", text: t("intro." + page) });
   const empty = () => el("p", { class: "meta", text: t("app.none") });
 
@@ -387,6 +408,7 @@
       const f = new Form();
       root.append(card(intro("connections"),
         el("div", { class: "grid2" }, f.text("server.public_url", undefined, "url"), f.text("server.timezone")),
+        portWarning(), f.list("server.allowed_hosts"),
         el("h3", { text: "Home Assistant" }), f.text("ha.url", undefined, "url"),
         el("h3", { text: "Lyrion" }),
         el("div", { class: "grid2" }, f.text("lms.host"), f.number("lms.port", undefined, { min: 1, max: 65535 })),
@@ -613,7 +635,7 @@
         setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
         toast(t("usbkey.done"));
       }));
-      root.append(card(intro("usbkey"), form));
+      root.append(card(intro("usbkey"), portWarning(), form));
     },
   };
 
@@ -650,14 +672,17 @@
     main.focus({ preventScroll: true });
   }
 
-  function loginScreen(passwordSet) {
+  function loginScreen(passwordSet, setupFile) {
     nav.hidden = menuButton.hidden = logoutButton.hidden = true;
     const pw = el("input", { id: "login-pw", type: "password", required: true, minlength: passwordSet ? null : 8,
       autocomplete: passwordSet ? "current-password" : "new-password" });
     const pw2 = el("input", { id: "login-pw2", type: "password", required: true, minlength: 8, autocomplete: "new-password" });
+    const code = el("input", { id: "login-code", type: "text", required: true, autocomplete: "off", spellcheck: "false" });
     const submit = el("button", { type: "submit", text: t(passwordSet ? "login.submit" : "login.setup_submit") });
     const message = el("p", { class: "notice error", hidden: true, role: "alert" });
     const form = el("form", {},
+      passwordSet ? null : el("div", { class: "field" }, el("label", { for: "login-code", text: t("login.setup_code") }), code,
+        el("p", { class: "help", text: setupFile ? t("login.setup_code_help") + setupFile : t("login.setup_cli") })),
       el("div", { class: "field" }, el("label", { for: "login-pw", text: t("login.password") }), pw),
       passwordSet ? null : el("div", { class: "field" }, el("label", { for: "login-pw2", text: t("login.setup_confirm") }), pw2),
       message, el("div", { class: "actions" }, submit));
@@ -671,10 +696,11 @@
       }
       submit.disabled = true;
       try {
-        await api("POST", passwordSet ? "/api/login" : "/api/setup", { password: pw.value });
+        await api("POST", passwordSet ? "/api/login" : "/api/setup",
+          passwordSet ? { password: pw.value } : { password: pw.value, token: code.value.trim() });
         await start();
       } catch (e) {
-        message.textContent = e.status === 401 ? t("login.wrong") : e.status === 429 ? t("login.locked") : e.message;
+        message.textContent = e.status === 401 ? t("login.wrong") : e.status === 429 ? e.message || t("login.locked") : e.message;
         message.hidden = false;
       } finally {
         submit.disabled = false;
@@ -683,7 +709,7 @@
     main.replaceChildren(el("section", { class: "card login" },
       el("h2", { text: t(passwordSet ? "login.title" : "login.setup_title") }),
       el("p", { class: "intro", text: t(passwordSet ? "login.intro" : "login.setup_intro") }), form));
-    pw.focus();
+    (passwordSet ? pw : code).focus();
   }
 
   async function start() {
@@ -697,7 +723,7 @@
       return;
     }
     if (!session.logged_in) {
-      loginScreen(session.password_set);
+      loginScreen(session.password_set, session.setup_file);
       return;
     }
     const data = await api("GET", "/api/settings");

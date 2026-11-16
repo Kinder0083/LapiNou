@@ -253,3 +253,25 @@ def test_release_with_unsafe_names_is_refused(tmp_path):
         build_usb_key(z, _settings(), WifiInput(ssid="M", password="motdepasse"),
                       tmp_path / "k.zip")
     assert not (tmp_path / "k.zip").exists()
+
+
+def test_release_with_symlink_entry_is_refused(tmp_path):
+    z = tmp_path / "r.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.write(DATA / "lapinlibre.txt", "lapinlibre.txt")
+        link = zipfile.ZipInfo("autorun")
+        link.external_attr = (stat.S_IFLNK | 0o777) << 16
+        zf.writestr(link, "/etc/passwd")
+    with pytest.raises(UsbKeyError, match="autorun"):
+        build_usb_key(z, _settings(), WifiInput(ssid="M", password="motdepasse"),
+                      tmp_path / "k.zip")
+    assert not (tmp_path / "k.zip").exists()
+
+
+def test_lapinou_server_is_the_host_only(tmp_path):
+    """applysettings.sh attend un hôte : ni schéma, ni port, ni chemin (url_app = :8080)."""
+    s = Settings(server=ServerConfig(public_url="https://Lapinou.maison:8443/reglages/"))
+    out = build_usb_key(_release_zip(tmp_path), s, WifiInput(ssid="M", password="motdepasse"),
+                        tmp_path / "k.zip")
+    assert _parsed(tmp_path / "p", _lapinlibre(out), ["LAPINOU_SERVER"]) == {
+        "LAPINOU_SERVER": "lapinou.maison"}
