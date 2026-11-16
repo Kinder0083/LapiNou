@@ -33,12 +33,14 @@ _UNSET: Any = object()
 
 
 def create_app(
-    settings: Settings, *, services: Services | None = None, web: Any = None
+    settings: Settings, *, services: Services | None = None, web: Any = None, apps: Any = None
 ) -> FastAPI:
     """`web` (`WebContext`) : ce que la page de réglages montre ; sinon celui des services, ou
-    une page sans base (réglages et connexion seulement)."""
+    une page sans base (réglages et connexion seulement). `apps` (`AppHost`) : les applications
+    LapinLibre servies aux lapins ; sinon celles des services, ou aucune."""
     from . import ota
     from .config import SettingsStore
+    from .web import apps as apps_mod
     from .web import routes
 
     lifespan = None
@@ -66,6 +68,11 @@ def create_app(
     app.state.web = web
     app.state.ota = web.ota  # GET /ota/manifest.json et ses fichiers, pour les lapins
     app.include_router(ota.router)
+    if apps is None:
+        apps = services.apps if services is not None and services.apps is not None else (
+            apps_mod.AppHost(None, None))
+    app.state.apps = apps  # /file/…/get, /asr/grammar/…, /log, /upload (url_app des lapins)
+    app.include_router(apps_mod.router)
     routes.install(app)
 
     @app.get("/api/health")
@@ -87,10 +94,13 @@ class Services:
     state: Any
     ha: Any = None
     tool_sources: list[Any] = field(default_factory=list)
-    tts_server: Any = None
     ota: Any = None
     web: Any = None
-    _tts_thread: threading.Thread | None = None
+    apps: Any = None
+    recogniser: Any = None
+    tts_server: Any = None
+    asr_server: Any = None
+    _threads: list[threading.Thread] = field(default_factory=list)
 
     def refresh_tools(self) -> None:
         """La boîte à outils des sessions (après le démarrage de ha-mcp : sa liste d'outils)."""
@@ -107,26 +117,36 @@ class Services:
             self.refresh_tools()
         await self.timers.start()
         self.state.start()
-        from .web import tts_compat
+        from .web import apps as apps_mod
+        from .web import asr_compat, tts_compat
 
         self.tts_server = tts_compat.make_server(self.voice, "0.0.0.0", server.tts_port)
-        self._tts_thread = threading.Thread(
-            target=self.tts_server.serve_forever, name="tts-compat", daemon=True
-        )
-        self._tts_thread.start()
+        self._serve(self.tts_server, "tts-compat")
+        self.asr_server = asr_compat.make_server(
+            self.recogniser, self.apps or apps_mod.AppHost(None, None), "0.0.0.0",
+            server.asr_port)
+        self._serve(self.asr_server, "asr-compat")
         if self.ota is not None:
             await self.ota.start()
         if self.web is not None:
             self.web.auth.prepare_setup()  # code d'installation si aucun mot de passe (R40)
         log.info("serveur LapiNou démarré")
 
+    def _serve(self, server: Any, name: str) -> None:
+        thread = threading.Thread(target=server.serve_forever, name=name, daemon=True)
+        thread.start()
+        self._threads.append(thread)
+
     async def close(self) -> None:
         if self.ota is not None:
             await self.ota.close()
-        if self.tts_server is not None:
-            await asyncio.to_thread(self.tts_server.shutdown)
-            self.tts_server.server_close()
-            self.tts_server = self._tts_thread = None
+        for attr in ("asr_server", "tts_server"):
+            srv = getattr(self, attr)
+            if srv is not None:
+                await asyncio.to_thread(srv.shutdown)
+                srv.server_close()
+                setattr(self, attr, None)
+        self._threads.clear()
         await self.orchestrator.close()
         await self.timers.close()
         if self.ha is not None:
@@ -136,6 +156,7 @@ class Services:
         await asyncio.to_thread(self.state.close)
         self.voice.close()
         self.db.close()
+        log.info("serveur LapiNou arrêté")
 
 
 def _lan_address() -> str:
@@ -234,7 +255,12 @@ def build_services(
     from .updater import Updater
     from .web.routes import WebContext
 
+    from .web.apps import AppHost
+
     relay = OtaRelay.from_settings(settings)
+    data_dir = None if str(db_path) == ":memory:" else Path(db_path).parent
+    apps = AppHost(data_dir / "apps" if data_dir else None,
+                   data_dir / "uploads" if data_dir else None)
     web = WebContext(
         store=SettingsStore(settings), db=db, memory=memory, timers=timers,
         budget=orchestrator.deps.budget, log=orchestrator.deps.log, registry=registry,
@@ -245,16 +271,30 @@ def build_services(
     return Services(
         settings=settings, db=db, registry=registry, gateway=gateway, voice=voice,
         orchestrator=orchestrator, timers=timers, state=orchestrator.deps.state, ha=ha,
-        tool_sources=sources, ota=relay, web=web,
+        tool_sources=sources, ota=relay, web=web, apps=apps, recogniser=recogniser,
     )
 
 
-def main() -> None:
-    """`python -m lapinou` : le serveur complet (réglages : LAPINOU_CONFIG, base : LAPINOU_DB)."""
+def main(argv: list[str] | None = None) -> None:
+    """`python -m lapinou [--config CHEMIN] [--db CHEMIN]` : le serveur complet, jusqu'à SIGTERM
+    ou SIGINT (arrêt propre : services refermés dans l'ordre inverse)."""
+    import argparse
+
     import uvicorn
 
+    parser = argparse.ArgumentParser(prog="python -m lapinou", description="Serveur LapiNou")
+    parser.add_argument("--config", type=Path,
+                        default=Path(os.environ.get("LAPINOU_CONFIG", DEFAULT_CONFIG_PATH)),
+                        help="config.toml (secrets.toml à côté) ; défaut : LAPINOU_CONFIG, "
+                             "sinon %(default)s")
+    parser.add_argument("--db", type=Path,
+                        default=Path(os.environ.get("LAPINOU_DB", DEFAULT_DB_PATH)),
+                        help="base SQLite ; son dossier garde aussi apps/, uploads/ et le code "
+                             "d'installation ; défaut : LAPINOU_DB, sinon %(default)s")
+    args = parser.parse_args(argv)
+
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    settings = load_settings(Path(os.environ.get("LAPINOU_CONFIG", DEFAULT_CONFIG_PATH)))
-    services = build_services(settings, db_path=os.environ.get("LAPINOU_DB", DEFAULT_DB_PATH))
+    settings = load_settings(args.config)
+    services = build_services(settings, db_path=args.db)
     uvicorn.run(create_app(settings, services=services), host="0.0.0.0",
-                port=settings.server.http_port)
+                port=settings.server.http_port, timeout_graceful_shutdown=10)

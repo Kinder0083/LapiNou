@@ -854,7 +854,7 @@ def test_production_services_wire_voice_tools_and_tts_compat(tmp_path):
 
     settings = Settings()
     settings.server.platform_port = settings.server.mic_port = 0
-    settings.server.tts_port = 0
+    settings.server.tts_port = settings.server.asr_port = 0
     settings.server.timezone = "America/Montreal"
     settings.safety.pin = "4321"
     settings.lms.host = "lms.test"
@@ -889,8 +889,12 @@ def test_production_services_wire_voice_tools_and_tts_compat(tmp_path):
         assert services.tts_server is not None
         port = services.tts_server.server_address[1]
         assert port > 0
+        assert services.asr_server.server_address[1] > 0  # ASR de compatibilité (8443)
+        assert app.state.apps is services.apps
+        assert services.apps.folder == tmp_path / "apps"
+        assert services.apps.uploads == tmp_path / "uploads"
     assert closed == [True]
-    assert services.tts_server is None
+    assert services.tts_server is None and services.asr_server is None
 
 
 # --- Rapport de correction 1 --------------------------------------------------------------
@@ -968,6 +972,7 @@ def test_services_started_partly_are_closed_on_failure(tmp_path):
 
     settings = Settings()
     settings.server.platform_port = settings.server.mic_port = settings.server.tts_port = 0
+    settings.server.asr_port = 0
     closed = []
 
     class Voice(FakeVoice):

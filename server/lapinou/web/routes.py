@@ -611,8 +611,10 @@ def host_allowed(header: str, settings: Settings) -> bool:
 
 # Seuls ces chemins (pour les lapins, et la santé du service) échappent au contrôle de Host ;
 # tout le reste du port 8080 y passe, y compris une route ajoutée plus tard.
-RABBIT_PREFIXES = ("/ota/", "/tts/")
-RABBIT_PATHS = frozenset({"/api/health"})
+# Les endpoints LapinLibre des applications (web/apps.py) en font partie : le lapin les joint
+# par le nom ou l'adresse de `url_app`, quel qu'il soit.
+RABBIT_PREFIXES = ("/ota/", "/tts/", "/file/", "/asr/grammar/", "/upload/")
+RABBIT_PATHS = frozenset({"/api/health", "/log", "/upload", "/text"})
 
 
 def _guarded(path: str) -> bool:
