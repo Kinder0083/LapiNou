@@ -42,7 +42,7 @@ status=0
 SCENARIOS="button_daemon ears_daemon led_daemon rfid_daemon scheduler_daemon webcam_daemon webcam_capture serial_daemon
            controller controller_platform controller_webcam_direct controller_message_query controller_schedule_gone
            controller_k2k_no_config controller_bad_descriptor app_server
-           multimedia_daemon voice_daemon k2k_daemon karotzVM"
+           multimedia_daemon voice_daemon k2k_daemon karotzVM lapinou_mic"
 AGGRESSIVE=$(cd "$T/aggressive" && ls [a-z]*.py | sed 's/\.py$//')
 
 # section TITLE COMMAND...: run a step, its output to the terminal and the log.

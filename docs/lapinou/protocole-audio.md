@@ -20,3 +20,14 @@ Le Hello voyage dans le champ 6 de la première `LapinouAudio` de chaque connexi
 ## Reconnexion
 
 Quand un lapin se reconnecte, le serveur garde le même `RabbitStream` : `seq` repart de la valeur envoyée par le lapin, sans compter de perte entre deux connexions.
+
+## Côté lapin (`lapinou-mic`)
+
+`userland/src/usr/lapinou-mic/lapinou-mic.c` encode les trames à la main (varints et champs de longueur, sans bibliothèque protobuf).
+
+- Le micro (`/dev/audio`, OSS mu-law 16 kHz mono) est lu par blocs d'au plus 2048 octets ; chaque bloc devient une trame audio (`seq` suivant, `first_sample` = échantillons déjà capturés). Le gain `[audio] mic_gain_db` (12 dB par défaut, de -20 à +30) est appliqué avant l'envoi : chaque octet est décodé, multiplié (facteur en Q12), écrêté et réencodé, par une table de 256 octets.
+- Le Hello voyage sur la plus ancienne trame en attente, ou seul dans une trame (avec son propre `seq`) s'il n'y en a pas.
+- Les trames attendent dans une file de 2 s d'audio au plus ; au-delà, les plus anciennes sont perdues (saut de `seq`). La trame en cours d'envoi lors d'une coupure est renvoyée en entier à la connexion suivante.
+- `mark_playback(playback_id, start)` (D-Bus `com.mindscape.karotz.LapinouMic`) ajoute une trame `mark` à `at_sample` = échantillons déjà capturés.
+- Reconnexion toutes les 2 s (5 fois), puis toutes les 10 s ; une connexion qui n'avance plus pendant 10 s est abandonnée.
+- Le même audio (gain compris) est servi localement sur `/var/run/lapinou/mic.sock`.

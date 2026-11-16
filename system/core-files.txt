@@ -397,6 +397,7 @@ usr:karotz/bin/ears-daemon f 0755 0:0 own
 usr:karotz/bin/immortaldog f 0755 0:0 own
 usr:karotz/bin/k2k-daemon f 0755 0:0 own
 usr:karotz/bin/karotzVM f 0755 0:0 own
+usr:karotz/bin/lapinou-mic f 0755 0:0 own  # LapiNou: the microphone to the server and to mic.sock
 usr:karotz/bin/led-daemon f 0755 0:0 own
 usr:karotz/bin/multimedia-daemon f 0755 0:0 own
 usr:karotz/bin/rfid-daemon f 0755 0:0 own

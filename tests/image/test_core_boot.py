@@ -794,6 +794,17 @@ class S40Test(unittest.TestCase):
         self.run_s40("start")
         self.assertEqual(self.started().count("tag_listener"), 1)
 
+    def test_microphone_before_its_readers(self):
+        # lapinou-mic (not "-daemon") owns /dev/audio: up before voice-daemon and multimedia-daemon.
+        self.run_s40("start")
+        started = self.started()
+        self.assertEqual(started.count("lapinou-mic"), 1)
+        self.assertLess(started.index("lapinou-mic"), started.index("voice-daemon"))
+        self.assertLess(started.index("lapinou-mic"), started.index("multimedia-daemon"))
+        self.assertIn(f"immortaldog lapinou-mic {self.sb}/usr/karotz/bin/lapinou-mic", self.log.read_text().splitlines())
+        self.assertTrue((self.sb / "var/run/karotz/lapinou-mic.pid").is_file())
+        self.run_s40("stop")
+
     def test_stop_ends_the_listener(self):
         self.run_s40("start")
         pid = (self.sb / "var/run/karotz/tag_listener.pid").read_text().strip()

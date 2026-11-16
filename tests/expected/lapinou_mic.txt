@@ -1,0 +1,50 @@
+== registered: True
+== introspection
+method com.mindscape.karotz.LapinouMic.mark_playback(in:s,in:b)
+method com.mindscape.karotz.LapinouMic.set_streaming(in:b)
+signal com.mindscape.karotz.LapinouMic.stream_state(out:s)
+microphone opened by the daemon: True
+== 1. connection
+fake server ready: True
+  connection 1
+  frame rabbit_id=<uuid.conf> seq=0 hello(rabbit_id=<uuid.conf>, firmware_version=<build stamp>, sample_rate=16000)
+== 2. 4096 bytes from the microphone
+  audio seq 1-2: samples 0-4096
+mu-law bytes received: 4096, the microphone's with +12 dB: True
+== 3. playback marks
+mark_playback('string:p1', 'boolean:true'): ok
+mark_playback('string:p1', 'boolean:false'): ok
+  frame rabbit_id=<uuid.conf> seq=3 mark(p1, at_sample=4096, start=True)
+  audio seq 4: samples 4096-6144
+  frame rabbit_id=<uuid.conf> seq=5 mark(p1, at_sample=6144, start=False)
+== 4. the server stopped, then started again
+disconnected: True
+fake server ready: True
+reconnected: True
+  connection 2
+  frame rabbit_id=<uuid.conf> seq=11 hello(rabbit_id=<uuid.conf>, firmware_version=<build stamp>, sample_rate=16000) mulaw=2048 first_sample=16384
+  audio seq 12-25: samples 18432-47104
+after the reconnection: 30720 bytes, the last ones written with the gain: True
+== 5. streaming off, local clients, streaming on
+set_streaming('boolean:false',): ok
+  closed 2
+both clients accepted: True
+client 1: 2048 bytes, client 2: 2048 bytes, the same: True, the microphone's with the gain: True
+nothing streamed meanwhile: True
+set_streaming('boolean:true',): ok
+  connection 3
+  frame rabbit_id=<uuid.conf> seq=26 hello(rabbit_id=<uuid.conf>, firmware_version=<build stamp>, sample_rate=16000)
+== signals
+com.mindscape.karotz.LapinouMic.stream_state(string "connected")
+com.mindscape.karotz.LapinouMic.stream_state(string "disconnected")
+com.mindscape.karotz.LapinouMic.stream_state(string "connected")
+com.mindscape.karotz.LapinouMic.stream_state(string "disconnected")
+com.mindscape.karotz.LapinouMic.stream_state(string "connected")
+== device I/O
+open /dev/audio
+ioctl /dev/audio 0x5000
+ioctl /dev/audio 0xc0045005
+ioctl /dev/audio 0xc0045003
+ioctl /dev/audio 0xc0045002
+read /dev/audio 2048
+== daemon still running: True

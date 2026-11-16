@@ -4,7 +4,9 @@
 # UUID (/usr/karotz/uuid.conf, made once and kept by the install) and the button sounds' switch
 # (/usr/etc/conf/playsounds, turned on once, the first time; the platform's settings may remove it
 # later, and that stays); then the hardware and service daemons, each kept running by immortaldog
-# (it restarts a daemon that dies and writes its own pid file), and the head button's watcher
+# (it restarts a daemon that dies and writes its own pid file), LapiNou's microphone (lapinou-mic,
+# the only reader of /dev/audio) first, before voice-daemon and multimedia-daemon, which read it from
+# lapinou-mic's socket; then the head button's watcher
 # (/usr/scripts/dbus_watcher: tones and /etc/button.d hooks) and the web API's tag listener
 # (/usr/scripts/tag_listener: tag learning and the tags' actions, as the user web, like the web API
 # whose programs it runs; web-files.sh makes its files first), each also under immortaldog and
@@ -12,7 +14,8 @@
 # which connects to the app server karotz.conf names and starts karotzVM for the applications; then
 # mDNS: mdnsd answers to the host name (<name>.local) on wlan0 and advertises the services in
 # /etc/mdns.d (SSH), started as Buildroot's own mdnsd script starts it.
-DAEMONS="led rfid webcam button ears multimedia voice scheduler serial k2k"
+# NAME: the program NAME-daemon, or NAME itself for LapiNou's (lapinou-*).
+DAEMONS="lapinou-mic led rfid webcam button ears multimedia voice scheduler serial k2k"
 # The bus names the controller needs before it starts.
 NEEDS="Led Ears Multimedia Voice Scheduler Rfid Button"
 BIN=/usr/karotz/bin
@@ -48,7 +51,10 @@ start() {
     fi
     mkdir -p $RUN
     for name in $DAEMONS; do
-        $BIN/immortaldog "$RUN/$name.pid" "$BIN/$name-daemon"
+        case $name in
+        lapinou-*) $BIN/immortaldog "$RUN/$name.pid" "$BIN/$name" ;;
+        *) $BIN/immortaldog "$RUN/$name.pid" "$BIN/$name-daemon" ;;
+        esac
     done
     # The watcher and the listener, each only when no live process holds its pid file.
     once dbus_watcher $WATCHER

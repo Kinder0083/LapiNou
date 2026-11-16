@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT -->
+<!-- lapinou-mic (userland/src/usr/lapinou-mic). Signal arguments are not listed: the generated server glue records only each signal's name, and the arguments are those the daemon's g_signal_new() declares (stream_state: s, "connected" or "disconnected"). -->
+<node>
+  <interface name="com.mindscape.karotz.LapinouMic">
+    <method name="mark_playback">
+      <arg name="playback_id" type="s" direction="in"/>
+      <arg name="start" type="b" direction="in"/>
+    </method>
+    <method name="set_streaming">
+      <arg name="on" type="b" direction="in"/>
+    </method>
+    <signal name="stream_state"/>
+  </interface>
+</node>
