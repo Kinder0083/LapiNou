@@ -10,6 +10,7 @@ dependencies = [
     "uvicorn>=0.30",
     "pydantic>=2.7",
     "tomli-w>=1.0",
+    "numpy>=1.26",
 ]
 
 [dependency-groups]

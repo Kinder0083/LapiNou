@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: MIT
+// lapinou-audio.proto : flux audio du micro du lapin vers le serveur LapiNou (TCP 9300).
+// Trames : longueur sur 4 octets big-endian, puis un LapinouAudio sérialisé.
+
+package lapinou.audio;
+
+message Hello {
+  required string rabbit_id = 1;
+  optional string firmware_version = 2;
+  required uint32 sample_rate = 3;
+}
+
+message PlaybackMark {
+  required string playback_id = 1;
+  required uint64 at_sample = 2;
+  required bool start = 3;
+}
+
+message LapinouAudio {
+  required string rabbit_id = 1;
+  required uint32 seq = 2;
+  optional bytes mulaw = 3;
+  optional uint64 first_sample = 4;
+  optional PlaybackMark mark = 5;
+  optional Hello hello = 6;
+}
