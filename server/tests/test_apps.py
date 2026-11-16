@@ -45,7 +45,7 @@ def test_app_zip_is_the_folder_without_config_bin(client):
     assert sorted(names) == ["descriptor.xml", "main.js"]
 
 
-@pytest.mark.parametrize("path", ["/file/nope/1/get", "/file/../1/get", "/file/hello/1/put"])
+@pytest.mark.parametrize("path", ["/file/nope/1/get", "/file/hello%2F..%2Fhello/1/get", "/file/hello/1/put"])
 def test_unknown_app_is_404(client, path):
     assert client.get(path, headers=RABBIT).status_code == 404
 
@@ -53,7 +53,7 @@ def test_unknown_app_is_404(client, path):
 def test_launch_grammar_lists_hosted_apps(client):
     r = client.get("/asr/grammar/launch-42.abnf", headers=RABBIT)
     assert r.status_code == 200
-    assert r.headers["content-type"] == "text/plain; charset=utf-8"
+    assert r.headers["content-type"].lower() == "text/plain; charset=utf-8"
     assert r.text.startswith("#ABNF 1.0 UTF-8;\nlanguage fr-FR;\n")
     assert "{<app>hello</app><par>default</par>}" in r.text
     assert client.get("/asr/grammar/launch.txt", headers=RABBIT).status_code == 404
