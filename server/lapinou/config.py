@@ -79,6 +79,10 @@ def _default_prices() -> dict[str, ModelPrice]:
         "claude-haiku-5-5": ModelPrice(
             input=0.10, output=0.50, cache_read=0.01, cache_write=0.125
         ),
+        # Cibles possibles du repli côté serveur.
+        "claude-opus-5": ModelPrice(input=5.0, output=25.0, cache_read=0.50, cache_write=6.25),
+        "claude-opus-4-8": ModelPrice(input=5.0, output=25.0, cache_read=0.50, cache_write=6.25),
+        "claude-sonnet-5": ModelPrice(input=2.0, output=10.0, cache_read=0.20, cache_write=2.5),
     }
 
 
@@ -86,7 +90,8 @@ class BudgetConfig(_Section):
     monthly_usd: float = 20.0
     warn_pct: int = 80
     stop_pct: int = 100
-    # Modèle absent de la table : gratuit (modèle local, Assist).
+    # Modèle absent de la table : gratuit (modèle local, Assist), sauf un modèle Claude, facturé
+    # au prix du modèle demandé (ou du plus cher de la table).
     prices: dict[str, ModelPrice] = Field(default_factory=_default_prices)
     web_search_per_1k: float = 10.0
 
@@ -115,6 +120,15 @@ class SafetyConfig(_Section):
     climate_range: list[float] = Field(default_factory=lambda: [16.0, 24.0])
     allowed_entities: list[str] = Field(default_factory=list)
     pin: str = ""  # secret
+    # Assist (repli) ne passe pas par la politique d'actions sensibles : toute phrase qui cite
+    # l'un de ces mots (singulier ou pluriel) lui est refusée. Dans Home Assistant, n'exposez pas
+    # à Assist les entités sensibles (serrures, alarme, portes, garage, chauffage, four...).
+    assist_blocked_keywords: list[str] = Field(
+        default_factory=lambda: [
+            "porte", "serrure", "verrou", "alarme", "garage", "portail", "chauffage",
+            "radiateur", "thermostat", "four", "plaque",
+        ]
+    )
 
 
 class MemoryConfig(_Section):

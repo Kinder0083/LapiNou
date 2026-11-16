@@ -25,19 +25,25 @@ from lapinou.brain.base import (
 class FakeBrain:
     """Un cerveau scripté : rejoue `events`, ou lève `error` avant toute réponse."""
 
-    def __init__(self, name: str, events: list | None = None, error: Exception | None = None):
+    def __init__(self, name: str, events: list | None = None, error: Exception | None = None,
+                 kind: str = "fake", paid: bool = True):
         self.name = name
+        self.kind = kind
+        self.model = name
+        self.paid = paid
         self.events = events if events is not None else [
             TextDelta(f"réponse de {name}"),
             Done(Usage(provider="fake", model=name, input_tokens=10, output_tokens=5)),
         ]
         self.error = error
+        self.error_once = False  # True : seul le premier appel échoue
         self.calls: list[tuple[Conversation, list[ToolSpec]]] = []
 
     async def respond(self, conv: Conversation, tools: list[ToolSpec]):
         self.calls.append((conv, tools))
         if self.error is not None:
-            raise self.error
+            error, self.error = self.error, (None if self.error_once else self.error)
+            raise error
         text = ""
         for event in self.events:
             if isinstance(event, TextDelta):
@@ -98,11 +104,16 @@ class _FakeAnthropicStream:
 
 
 class FakeAnthropicClient:
-    """Imite `AsyncAnthropic` : `client.beta.messages.stream(**kwargs)`."""
+    """Imite `AsyncAnthropic` : `client.beta.messages.stream(**kwargs)`.
 
-    def __init__(self, deltas=None, final: BetaMessage | None = None, error=None) -> None:
+    `finals` : un message final par appel successif (reprise après `pause_turn`).
+    """
+
+    def __init__(self, deltas=None, final: BetaMessage | None = None, error=None,
+                 finals: list[BetaMessage] | None = None) -> None:
         self.deltas = deltas or []
-        self.final = final or anthropic_message([{"type": "text", "text": "".join(self.deltas)}])
+        final = final or anthropic_message([{"type": "text", "text": "".join(self.deltas)}])
+        self.finals = list(finals or [final])
         self.error = error
         self.requests: list[dict[str, Any]] = []
         self.beta = self
@@ -112,12 +123,22 @@ class FakeAnthropicClient:
         self.requests.append(copy.deepcopy(kwargs))
         if self.error is not None:
             raise self.error
-        return _FakeAnthropicStream(self.deltas, self.final)
+        final = self.finals.pop(0) if len(self.finals) > 1 else self.finals[0]
+        return _FakeAnthropicStream(self.deltas, final)
 
 
 def connection_error() -> anthropic.APIConnectionError:
     return anthropic.APIConnectionError(
         request=httpx2.Request("POST", "https://api.anthropic.invalid/v1/messages")
+    )
+
+
+def bad_request() -> anthropic.BadRequestError:
+    request = httpx2.Request("POST", "https://api.anthropic.invalid/v1/messages")
+    return anthropic.BadRequestError(
+        "messages: thinking blocks cannot be modified",
+        response=httpx2.Response(400, request=request),
+        body=None,
     )
 
 

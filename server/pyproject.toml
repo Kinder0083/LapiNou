@@ -20,8 +20,8 @@ dependencies = [
     "lameenc>=1.7",
     "kokoro-onnx==0.6.1",
     # Cerveaux : Claude (API Messages), fournisseurs compatibles OpenAI, Assist de Home Assistant
-    "anthropic>=2.8",
-    "openai>=3.51",
+    "anthropic==2.8.0",
+    "openai==3.51.0",
     "httpx2>=2.16",
 ]
 

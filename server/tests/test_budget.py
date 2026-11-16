@@ -90,3 +90,35 @@ def test_zero_budget_means_nothing_to_spend(db):
     # Budget nul : aucune dépense payante permise (le routeur passe à Assist).
     b = Budget(db, BudgetConfig(monthly_usd=0.0), clock=Clock(dt.datetime(2026, 11, 1)))
     assert b.ratio() == float("inf")
+
+
+def test_fallback_target_prices():
+    prices = Settings().budget.prices
+    for model, (i, o) in {"claude-opus-5": (5.0, 25.0), "claude-opus-4-8": (5.0, 25.0),
+                          "claude-sonnet-5": (2.0, 10.0)}.items():
+        assert (prices[model].input, prices[model].output) == (i, o)
+
+
+def test_iterations_are_billed_per_attempt_model(db):
+    b = Budget(db, BudgetConfig(monthly_usd=100.0), clock=Clock(dt.datetime(2026, 11, 1)))
+    # Repli côté serveur : Opus 5.5 décline (1 MTok lu), Opus 5 répond (1 MTok + 0,1 MTok).
+    usage = Usage("anthropic", "claude-opus-5", input_tokens=1_000_000, output_tokens=100_000,
+                  requested_model="claude-opus-5-5", web_searches=1, iterations=[
+                      Usage("anthropic", "claude-opus-5-5", input_tokens=1_000_000),
+                      Usage("anthropic", "claude-opus-5", input_tokens=1_000_000,
+                            output_tokens=100_000)])
+    assert b.record(usage) == pytest.approx(4.0 + 5.0 + 2.5 + 0.01)
+    rows = {r["model"]: r["usd"] for r in db.conn.execute("SELECT model, usd FROM usage")}
+    assert rows["claude-opus-5-5"] == pytest.approx(4.0 + 0.01)
+    assert rows["claude-opus-5"] == pytest.approx(7.5)
+
+
+def test_unknown_anthropic_model_billed_at_requested_price(db, caplog):
+    b = Budget(db, BudgetConfig(monthly_usd=100.0), clock=Clock(dt.datetime(2026, 11, 1)))
+    usage = Usage("anthropic", "claude-mystere-9", input_tokens=1_000_000,
+                  requested_model="claude-opus-5-5")
+    assert b.record(usage) == pytest.approx(4.0)
+    assert any(r.levelname == "WARNING" and "claude-mystere-9" in r.getMessage()
+               for r in caplog.records)
+    # Sans modèle demandé connu : prix du modèle le plus cher de la table, jamais gratuit.
+    assert b.record(Usage("anthropic", "claude-mystere-9", input_tokens=1_000_000)) > 0

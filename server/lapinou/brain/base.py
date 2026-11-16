@@ -58,6 +58,11 @@ class Usage:
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     web_searches: int = 0
+    # Modèle demandé (le modèle qui répond peut différer : repli côté serveur).
+    requested_model: str = ""
+    # Une entrée par tentative (repli, boucle d'outil serveur), chacune avec son modèle ;
+    # si présente, c'est elle qui est facturée (les jetons ci-dessus restent un total).
+    iterations: list[Usage] = field(default_factory=list)
 
 
 @dataclass
@@ -92,11 +97,24 @@ class Refused:
     usage: Usage | None = None
 
 
-BrainEvent = TextDelta | ToolCall | Done | Refused
+@dataclass
+class Retract:
+    """Oublier tout ce qui a été émis pour ce tour (émis par le routeur avant un refus)."""
+
+
+BrainEvent = TextDelta | ToolCall | Done | Refused | Retract
 
 
 class BrainError(Exception):
-    """Le fournisseur n'a pas pu répondre (réseau, quota, erreur HTTP) : on passe au suivant."""
+    """Le fournisseur n'a pas pu répondre (réseau, quota, erreur HTTP) : on passe au suivant.
+
+    `retryable=False` : la requête elle-même est refusée (400), par exemple un historique
+    invalide ; la réessayer telle quelle échouera encore.
+    """
+
+    def __init__(self, message: str, *, retryable: bool = True) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 class Brain(Protocol):

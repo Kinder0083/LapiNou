@@ -4,8 +4,9 @@
 - commande maison courte → modèle rapide ; sinon → modèle principal ;
 - budget ≥ `warn_pct` → rapide ; ≥ `stop_pct` → Assist seul (rien de payant) ;
 - panne (BrainError) avant toute réponse → cerveau suivant : (rapide → principal si le budget
-  le permet), puis `fallback_chain`, puis Assist, puis une phrase d'excuse ;
-- `Refused` → une phrase de refus douce, ajoutée à la conversation.
+  le permet), puis `fallback_chain` (sans les payants au-delà du seuil d'alerte), puis Assist,
+  puis un cerveau qui s'excuse ; une requête refusée (400) remet l'historique à zéro une fois ;
+- `Refused` → `Retract` si du texte est déjà parti, puis une phrase de refus douce.
 """
 
 from __future__ import annotations
@@ -24,10 +25,12 @@ from .base import (
     Conversation,
     Done,
     Refused,
+    Retract,
     TextDelta,
     ToolSpec,
     Usage,
     add_assistant_text,
+    add_user_text,
     awaiting_tool_results,
     last_user_text,
     load_persona,
@@ -41,8 +44,12 @@ REFUSAL_FR = (
     "Ça, je préfère ne pas en parler. "
     "Tu veux plutôt que je te raconte une histoire, ou que je te dise une devinette ?"
 )
+SENSITIVE_FR = "Ça, je ne peux pas le faire tout seul. Il faut demander à un grand."
 DOWN_FR = "Oh, ma tête de lapin est toute embrouillée. Tu peux redemander dans un petit moment ?"
 OOPS_FR = " Oups, je me suis perdu. On réessaie ?"
+
+# Fin de la première phrase : le texte retenu jusque-là part d'un coup.
+SENTENCE_END = (".", "!", "?", "…")
 
 SIMPLE_MAX_WORDS = 10
 # Débuts de verbes d'une commande maison (impératif ou infinitif).
@@ -64,6 +71,26 @@ def is_simple(conv: Conversation) -> bool:
     return any(w.startswith(_COMMAND_STEMS) for w in words[:3])
 
 
+class ExcuseBrain:
+    """Quand aucun cerveau n'est disponible : une phrase pour dire que le service est absent."""
+
+    name = "excuse"
+    kind = "excuse"
+    model = "excuse"
+    paid = False
+
+    async def respond(
+        self, conv: Conversation, tools: list[ToolSpec]
+    ) -> AsyncIterator[BrainEvent]:
+        add_assistant_text(conv, DOWN_FR)
+        yield TextDelta(DOWN_FR)
+        yield Done(Usage(provider="", model=self.model))
+
+
+def _key(brain: Brain) -> tuple[str, str]:
+    return (getattr(brain, "kind", type(brain).__name__), getattr(brain, "model", brain.name))
+
+
 class BrainRouter:
     def __init__(
         self,
@@ -76,6 +103,7 @@ class BrainRouter:
         self.fast = fast
         self.fallbacks = fallbacks
         self.assist = assist
+        self.excuse = ExcuseBrain()
         # Dernier cerveau ayant répondu par lapin : une suite de tour d'outils reste chez lui.
         self._last: dict[str, Brain] = {}
 
@@ -88,6 +116,7 @@ class BrainRouter:
         return ratio >= cfg.warn_pct / 100, ratio >= cfg.stop_pct / 100
 
     def pick(self, conv: Conversation, budget: Budget) -> Brain:
+        """Le cerveau à essayer en premier (au pire, celui qui s'excuse)."""
         return self._candidates(conv, budget)[0]
 
     def _candidates(self, conv: Conversation, budget: Budget) -> list[Brain]:
@@ -105,52 +134,89 @@ class BrainRouter:
             if awaiting_tool_results(conv) and previous in order:
                 order.remove(previous)
                 order.insert(0, previous)
-            order += self.fallbacks
+            # Au-delà du seuil d'alerte, seul le modèle rapide reste payant.
+            order += [b for b in self.fallbacks if not (warn and getattr(b, "paid", True))]
         if self.assist is not None:
             order.append(self.assist)
-        seen: list[Brain] = []
+        order.append(self.excuse)
+        seen: dict[tuple[str, str], Brain] = {}
         for brain in order:
-            if brain not in seen:
-                seen.append(brain)
-        return seen
+            seen.setdefault(_key(brain), brain)
+        return list(seen.values())
 
     # --- Réponse ------------------------------------------------------------------------------
 
     async def respond(
         self, conv: Conversation, tools: list[ToolSpec], budget: Budget
     ) -> AsyncIterator[BrainEvent]:
-        """Comme `Brain.respond`, mais ne lève jamais et ne rend jamais `Refused`."""
-        for brain in self._candidates(conv, budget):
-            started = False
+        """Comme `Brain.respond`, mais ne lève jamais et ne rend jamais `Refused`.
+
+        Le texte est retenu jusqu'à la fin de la première phrase : un refus qui arrive avant
+        n'a rien laissé passer. Après, un refus est précédé de `Retract` (oublier le tour).
+        """
+        candidates = self._candidates(conv, budget)
+        index = 0
+        history_reset = False
+        while index < len(candidates):
+            brain = candidates[index]
+            held = ""  # texte pas encore émis
+            spoken = False  # du texte de ce cerveau est parti
+            emitted = False  # quelque chose de ce cerveau est parti (texte, outil)
             try:
                 async for event in brain.respond(conv, tools):
+                    if isinstance(event, TextDelta):
+                        if spoken:
+                            yield event
+                            continue
+                        held += event.text
+                        if any(mark in held for mark in SENTENCE_END):
+                            yield TextDelta(held)
+                            held, spoken, emitted = "", True, True
+                        continue
                     if isinstance(event, Refused):
                         log.info("%s refuse (%s)", brain.name, event.category)
                         if event.usage is not None:
                             budget.record(event.usage)
-                        add_assistant_text(conv, REFUSAL_FR)
-                        yield TextDelta(REFUSAL_FR)
+                        if spoken:
+                            yield Retract()
+                        phrase = SENSITIVE_FR if event.category == "sensitive" else REFUSAL_FR
+                        add_assistant_text(conv, phrase)
+                        yield TextDelta(phrase)
                         yield Done(event.usage or Usage(provider="", model=brain.name))
                         self._last[conv.rabbit_id] = brain
                         return
+                    if held:
+                        yield TextDelta(held)
+                        held, spoken = "", True
                     if isinstance(event, Done):
-                        budget.record(event.usage)
+                        if event.usage.provider:
+                            budget.record(event.usage)
                         self._last[conv.rabbit_id] = brain
-                    started = True
+                    emitted = True
                     yield event
+                if held:
+                    yield TextDelta(held)
                 return
             except BrainError as e:
-                if started:
+                if emitted:
                     # Une partie de la réponse est déjà dite : on ne recommence pas ailleurs.
                     log.warning("%s : panne en cours de réponse : %s", brain.name, e)
                     add_assistant_text(conv, OOPS_FR.strip())
                     yield TextDelta(OOPS_FR)
                     yield Done(Usage(provider="", model=brain.name))
                     return
+                if not e.retryable and not history_reset and not awaiting_tool_results(conv):
+                    # Historique sans doute invalide : on repart de la seule dernière phrase,
+                    # une fois, plutôt que d'échouer à chaque tour.
+                    log.error("%s refuse la requête : historique remis à zéro (%s)",
+                              brain.name, e)
+                    text = last_user_text(conv)
+                    conv.messages.clear()
+                    add_user_text(conv, text)
+                    history_reset = True
+                    continue
                 log.warning("%s en panne, cerveau suivant : %s", brain.name, e)
-        add_assistant_text(conv, DOWN_FR)
-        yield TextDelta(DOWN_FR)
-        yield Done(Usage(provider="", model="aucun"))
+                index += 1
 
     # --- Construction depuis les réglages -----------------------------------------------------
 
@@ -158,22 +224,39 @@ class BrainRouter:
     def from_settings(cls, settings: Settings) -> BrainRouter:
         persona = load_persona()
         b = settings.brain
+        built: dict[tuple[str, str], Brain] = {}
 
         def build(ref: str, *, effort: str, web_search: bool) -> Brain:
             name, sep, model = ref.partition(":")
             if not sep:  # identifiant Claude seul
                 name, model = "anthropic", ref
             prov = b.providers.get(name) or ProviderConfig(kind=name)
+            if (prov.kind, model) in built:
+                return built[(prov.kind, model)]
             if prov.kind == "openai":
-                return OpenAIBrain(prov.base_url, model, prov.api_key, persona=persona)
-            if prov.kind != "anthropic":
+                paid = bool(prov.api_key) or model in settings.budget.prices
+                brain: Brain = OpenAIBrain(prov.base_url, model, prov.api_key, paid=paid,
+                                           persona=persona)
+            elif prov.kind == "anthropic":
+                brain = AnthropicBrain(model, prov.api_key, web_search, effort=effort,
+                                       persona=persona)
+            else:
                 raise ValueError(f"fournisseur inconnu : {ref}")
-            return AnthropicBrain(model, prov.api_key, web_search, effort=effort,
-                                  persona=persona)
+            built[(prov.kind, model)] = brain
+            return brain
 
         primary = build(b.primary, effort="medium", web_search=b.web_search)
         fast = build(b.fast, effort="low", web_search=False)
-        fallbacks = [build(ref, effort="low", web_search=False)
-                     for ref in b.fallback_chain if ref != "homeassistant"]
-        assist = AssistBrain(settings.ha.url, settings.ha.token) if settings.ha.url else None
+        fallbacks: list[Brain] = []
+        for ref in b.fallback_chain:
+            if ref != "homeassistant":
+                brain = build(ref, effort="low", web_search=False)
+                if brain is not primary and brain not in fallbacks:
+                    fallbacks.append(brain)
+        assist = (
+            AssistBrain(settings.ha.url, settings.ha.token,
+                        blocked_keywords=settings.safety.assist_blocked_keywords)
+            if settings.ha.url
+            else None
+        )
         return cls(primary=primary, fast=fast, fallbacks=fallbacks, assist=assist)

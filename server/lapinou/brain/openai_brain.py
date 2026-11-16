@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
+import os
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
@@ -25,6 +27,9 @@ from .base import (
     load_persona,
     validate_args,
 )
+
+
+log = logging.getLogger(__name__)
 
 
 def _tool_content(content: Any) -> str:
@@ -76,6 +81,8 @@ def _tool_param(spec: ToolSpec) -> dict[str, Any]:
 
 
 class OpenAIBrain:
+    kind = "openai"
+
     def __init__(
         self,
         base_url: str,
@@ -83,6 +90,7 @@ class OpenAIBrain:
         api_key: str,
         *,
         max_tokens: int = 1024,
+        paid: bool = False,
         persona: str | None = None,
         client: Any = None,
         clock: Callable[[], dt.datetime] = dt.datetime.now,
@@ -90,10 +98,13 @@ class OpenAIBrain:
         self.name = model
         self.model = model
         self.max_tokens = max_tokens
+        self.paid = paid  # payant : sauté au-delà du seuil d'alerte du budget
         self.persona = persona if persona is not None else load_persona()
-        # Un serveur local n'exige pas de clé, mais le SDK en veut une.
+        # Clé vide : OPENAI_API_KEY ; un serveur local n'en exige pas, mais le SDK en veut une.
         self._client = client or openai.AsyncOpenAI(
-            base_url=base_url or None, api_key=api_key or "sans-clé", max_retries=1
+            base_url=base_url or None,
+            api_key=api_key or os.environ.get("OPENAI_API_KEY") or "sans-clé",
+            max_retries=1,
         )
         self._clock = clock
 
@@ -135,6 +146,9 @@ class OpenAIBrain:
                             slot["args"] += tc.function.arguments
                     if choice.finish_reason:
                         finish = choice.finish_reason
+        except openai.BadRequestError as e:
+            log.error("%s : requête refusée (400) : %s", self.model, e)
+            raise BrainError(f"{self.model} : 400 {e}", retryable=False) from e
         except (openai.RateLimitError, openai.APIStatusError, openai.APIConnectionError) as e:
             raise BrainError(f"{self.model} : {e}") from e
 

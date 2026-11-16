@@ -1,8 +1,16 @@
 # SPDX-License-Identifier: MIT
-"""Cerveau de dernier recours : Assist de Home Assistant (gratuit, local, sans outils)."""
+"""Cerveau de dernier recours : Assist de Home Assistant (gratuit, local, sans outils).
+
+Assist agit directement sur les entités qui lui sont exposées dans Home Assistant, sans passer
+par la politique d'actions sensibles de LapiNou. Deux garde-fous :
+- toute phrase qui cite un mot de `safety.assist_blocked_keywords` est refusée sans appeler HA ;
+- dans Home Assistant (Paramètres > Assistants vocaux > Exposer), n'exposez à Assist aucune
+  entité sensible : serrures, alarme, portes, garage, portail, chauffage, four, plaques.
+"""
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -13,6 +21,7 @@ from .base import (
     BrainEvent,
     Conversation,
     Done,
+    Refused,
     TextDelta,
     ToolSpec,
     Usage,
@@ -25,8 +34,21 @@ TIMEOUT_S = 15.0
 
 class AssistBrain:
     name = "assist"
+    kind = "homeassistant"
+    model = "assist"
+    paid = False
 
-    def __init__(self, ha_url: str, token: str, *, client: httpx2.AsyncClient | None = None):
+    def __init__(
+        self,
+        ha_url: str,
+        token: str,
+        *,
+        blocked_keywords: list[str] | None = None,
+        client: httpx2.AsyncClient | None = None,
+    ):
+        self.blocked_keywords = list(blocked_keywords or [])
+        words = "|".join(re.escape(k.lower()) for k in self.blocked_keywords)
+        self._blocked = re.compile(rf"\b(?:{words})[sx]?\b") if words else None
         self.url = ha_url.rstrip("/") + "/api/conversation/process"
         self._token = token
         self._client = client
@@ -43,7 +65,11 @@ class AssistBrain:
     async def respond(
         self, conv: Conversation, tools: list[ToolSpec]
     ) -> AsyncIterator[BrainEvent]:
-        payload: dict[str, Any] = {"text": last_user_text(conv), "language": "fr"}
+        text = last_user_text(conv)
+        if self._blocked is not None and self._blocked.search(text.lower()):
+            yield Refused("sensitive")
+            return
+        payload: dict[str, Any] = {"text": text, "language": "fr"}
         if conv.rabbit_id in self._conversation_ids:
             payload["conversation_id"] = self._conversation_ids[conv.rabbit_id]
         try:
