@@ -298,3 +298,78 @@ async def test_ha_mcp_unavailable_is_a_spoken_error(tmp_path):
     result = await ToolBox(tools.tools()).call("ha_get_state", {"entity_id": "light.x"}, CTX)
     assert result.is_error and "Home Assistant" in result.content
     await tools.close()
+
+
+# --- Correction 2 : contenu des scripts et scènes par liste blanche --------------------
+
+
+@pytest.mark.parametrize("entity", [
+    "script.zone_garage",       # cover.open_cover sur une zone (area_id)
+    "script.tout_allumer",      # homeassistant.turn_on sur une zone
+    "script.service_modele",    # service calculé par un modèle
+    "script.ancien_modele",     # service_template
+    "script.liste_modele",      # liste d'entités calculée par un modèle
+    "script.evenement",         # événement
+    "script.declencheur",       # automation.trigger
+    "script.commande",          # shell_command
+    "script.appareil",          # action d'appareil (device_id)
+    "script.sans_cible",        # service sans cible
+    "script.choix_garage",      # if/then imbriqué vers le garage
+    "script.yaml_garage",       # configuration renvoyée en YAML
+    "script.chaine_appareil",   # configuration en chaîne JSON échappée
+    "scene.chaud",              # scène qui chauffe hors de la plage
+])
+async def test_script_or_scene_outside_allow_list_is_refused(ha, entity):
+    tools, log, _ = ha
+    result = await call(tools, entity.split(".")[0], "turn_on", entity)
+    assert result.is_error, result.content
+    assert service_calls(log) == []
+
+
+@pytest.mark.parametrize("entity", [
+    "script.lumiere", "script.choix", "script.yaml_sur", "script.chaine_sure",
+])
+async def test_literal_safe_script_still_allowed(ha, entity):
+    tools, log, _ = ha
+    result = await call(tools, "script", "turn_on", entity)
+    assert not result.is_error, result.content
+    assert [c["entity_id"] for c in service_calls(log)] == [entity]
+
+
+async def test_cache_expires_after_30_s(ha):
+    tools, log, _ = ha
+    await call(tools, "script", "turn_on", "script.bonne_nuit")
+    tools.test_clock.t += 31
+    await call(tools, "script", "turn_on", "script.bonne_nuit")
+    reads = [c for c in calls(log) if c["tool"] == "ha_config_get_script"]
+    assert len(reads) == 2
+
+
+async def test_cache_cleared_on_reconnect(ha):
+    tools, log, _ = ha
+    await call(tools, "script", "turn_on", "script.bonne_nuit")
+    await tools.close()
+    await tools.start()
+    await call(tools, "script", "turn_on", "script.bonne_nuit")
+    reads = [c for c in calls(log) if c["tool"] == "ha_config_get_script"]
+    assert len(reads) == 2
+
+
+@pytest.mark.safety(allowed_entities=["lock.porte_entree", "lock.porte_arriere"], pin="1234")
+async def test_global_pin_lockout_after_five_failures(ha):
+    tools, log, _ = ha
+    box = ToolBox(tools.tools())
+    unlock_a = args("lock", "unlock", "lock.porte_entree")
+    unlock_b = args("lock", "unlock", "lock.porte_arriere")
+    # 5 codes faux répartis : jamais 3 pour une même paire (lapin, entité).
+    for rabbit, request in [("l1", unlock_a), ("l1", unlock_a), ("l2", unlock_a),
+                            ("l2", unlock_b), ("l3", unlock_b)]:
+        r = await box.call("ha_call_service", request, ToolContext(rabbit_id=rabbit))
+        assert not r.is_error, r.content
+        await tools.confirm(rabbit, "9 9 9 9")
+    blocked = await box.call("ha_call_service", unlock_b, ToolContext(rabbit_id="l4"))
+    assert blocked.is_error and tools.pending("l4") is None
+    tools.test_clock.t += 601
+    again = await box.call("ha_call_service", unlock_b, ToolContext(rabbit_id="l4"))
+    assert not again.is_error
+    assert service_calls(log) == []

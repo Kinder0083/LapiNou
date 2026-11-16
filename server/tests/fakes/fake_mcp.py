@@ -60,12 +60,56 @@ SCRIPTS: dict[str, dict[str, Any]] = {
                                "target": {"entity_id": "cover.garage"}}]},
     "relais": {"sequence": [{"action": "script.turn_on",
                              "target": {"entity_id": "script.surprise"}}]},
+    "lumiere": {"alias": "Lumière", "mode": "single",
+                "sequence": [{"action": "light.turn_on", "target": {"entity_id": "light.salon"},
+                              "data": {"brightness_pct": 40}}]},
+    "choix": {"sequence": [{"choose": [{"conditions": [{"condition": "state",
+                                                        "entity_id": "light.salon",
+                                                        "state": "off"}],
+                                        "sequence": [{"action": "light.turn_on",
+                                                      "target": {"entity_id": ["light.salon"]}}]}],
+                            "default": [{"delay": {"seconds": 1}}]}]},
+    "choix_garage": {"sequence": [{"if": [{"condition": "state", "entity_id": "light.salon",
+                                           "state": "off"}],
+                                   "then": [{"action": "cover.open_cover",
+                                             "target": {"entity_id": "cover.garage"}}]}]},
+    "zone_garage": {"sequence": [{"action": "cover.open_cover",
+                                  "target": {"area_id": "garage"}}]},
+    "tout_allumer": {"sequence": [{"action": "homeassistant.turn_on",
+                                   "target": {"area_id": "salon"}}]},
+    "service_modele": {"variables": {"svc": "lock.unlock"},
+                       "sequence": [{"action": "{{ svc }}",
+                                     "target": {"entity_id": "light.salon"}}]},
+    "ancien_modele": {"sequence": [{"service_template": "light.turn_on",
+                                    "entity_id": "light.salon"}]},
+    "liste_modele": {"sequence": [{"action": "light.turn_on", "target": {
+        "entity_id": "{{ states.lock | map(attribute='entity_id') | list }}"}}]},
+    "evenement": {"sequence": [{"event": "ouvrir_tout", "event_data": {}}]},
+    "declencheur": {"sequence": [{"action": "automation.trigger",
+                                  "target": {"entity_id": "automation.ouvrir"}}]},
+    "commande": {"sequence": [{"action": "shell_command.ouvrir"}]},
+    "appareil": {"sequence": [{"device_id": "abc123", "domain": "cover", "type": "open"}]},
+    "sans_cible": {"sequence": [{"action": "light.turn_off"}]},
+    # Formats de réponse : YAML brut, ou configuration en chaîne JSON échappée.
+    "yaml_garage": "sequence:\n  - action: cover.open_cover\n    target:\n      area_id: garage\n",
+    "yaml_sur": "sequence:\n  - action: light.turn_on\n    target:\n      entity_id: light.salon\n",
+    "chaine_appareil": {"__string__": {"sequence": [
+        {"device_id": "abc123", "domain": "cover", "type": "open"}]}},
+    "chaine_sure": {"__string__": {"sequence": [
+        {"action": "light.turn_on", "target": {"entity_id": "light.salon"}}]}},
 }
 SCENES: dict[str, dict[str, Any]] = {
     "soiree": {"entities": {"light.salon": {"state": "on", "brightness": 120}}},
     "depart": {"entities": {"light.salon": {"state": "off"},
                             "lock.porte_entree": {"state": "locked"}}},
+    "chaud": {"entities": {"climate.salon": {"state": "heat", "temperature": 28}}},
 }
+
+for _key in SCRIPTS:
+    STATES.setdefault(f"script.{_key}", {"state": "off", "attributes": {"friendly_name": _key}})
+for _key in SCENES:
+    STATES.setdefault(f"scene.{_key}", {"state": "unknown", "attributes": {"friendly_name": _key}})
+STATES.setdefault("climate.salon", {"state": "heat", "attributes": {"friendly_name": "Salon"}})
 
 server = MCPServer("fake-ha-mcp")
 
@@ -124,7 +168,13 @@ def ha_config_get_script(script_id: str) -> str:
     key = script_id.removeprefix("script.")
     if key not in SCRIPTS:
         raise ValueError(f"script not found: {script_id}")
-    return json.dumps({"success": True, "script_id": key, "config": SCRIPTS[key]})
+    config = SCRIPTS[key]
+    if isinstance(config, str):
+        return config  # YAML brut
+    if "__string__" in config:
+        return json.dumps({"success": True, "script_id": key,
+                           "config": json.dumps(config["__string__"])})
+    return json.dumps({"success": True, "script_id": key, "config": config})
 
 
 @server.tool()
