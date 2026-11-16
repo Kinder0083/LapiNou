@@ -61,11 +61,11 @@ $(LIBDIR)/libkarotz-common.so: $(COMMON_SRC) $(wildcard $(S)/src/usr/libkarotz-c
 # Each daemon's server glue is generated from its D-Bus interface, with the
 # GObject prefix the daemon's methods use.
 DAEMONS := button-daemon ears-daemon led-daemon rfid-daemon scheduler-daemon webcam-daemon \
-           serial-daemon controller multimedia-daemon voice-daemon k2k-daemon karotzVM lapinou-mic
+           serial-daemon controller multimedia-daemon voice-daemon k2k-daemon karotzVM lapinou-mic lapinou-mqtt
 
-# These need libmpd 0.17, protobuf 2.3, linphone 3.4 or V8 2.5, which only
+# These need libmpd 0.17, protobuf 2.3, linphone 3.4, V8 2.5 or Paho MQTT, which only
 # the system build has: they are built for the rabbit, not for the host.
-ARM_ONLY := multimedia-daemon voice-daemon k2k-daemon karotzVM
+ARM_ONLY := multimedia-daemon voice-daemon k2k-daemon karotzVM lapinou-mqtt
 
 # Per daemon: <name>_PREFIX (dbus-binding-tool --prefix, from the GObject
 # type name), <name>_CFLAGS and <name>_LIBS (extra pkg-config flags/libs; 2010-era
@@ -82,6 +82,7 @@ voice-daemon_PREFIX      := voice_object
 controller_PREFIX        := controller_object
 k2k-daemon_PREFIX        := k2k_object
 lapinou-mic_PREFIX       := lapinou_mic_object
+lapinou-mqtt_PREFIX      := lapinou_mqtt_object
 
 ears-daemon_LIBS       :=
 led-daemon_LIBS        :=
@@ -90,6 +91,7 @@ scheduler-daemon_LIBS  :=
 webcam-daemon_LIBS     := $(shell $(PKG_CONFIG) --libs libcurl) $(shell $(PKG_CONFIG) --libs libjpeg 2>/dev/null || echo -ljpeg)
 serial-daemon_LIBS     :=
 lapinou-mic_LIBS       := -lm
+lapinou-mqtt_LIBS      := -lpaho-mqtt3a -lm
 multimedia-daemon_LIBS := $(shell $(PKG_CONFIG) --libs libmpd gthread-2.0)
 multimedia-daemon_CFLAGS := $(shell $(PKG_CONFIG) --cflags libmpd)
 voice-daemon_LIBS      := $(shell $(PKG_CONFIG) --cflags --libs libcurl libxml-2.0 protobuf uuid)

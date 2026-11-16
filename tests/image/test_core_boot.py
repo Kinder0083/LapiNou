@@ -805,6 +805,17 @@ class S40Test(unittest.TestCase):
         self.assertTrue((self.sb / "var/run/karotz/lapinou-mic.pid").is_file())
         self.run_s40("stop")
 
+    def test_mqtt_bridge_after_the_daemons_it_drives(self):
+        # lapinou-mqtt (the program itself) once, after the daemons it calls.
+        self.run_s40("start")
+        started = self.started()
+        self.assertEqual(started.count("lapinou-mqtt"), 1)
+        for daemon in ("led-daemon", "ears-daemon", "multimedia-daemon", "voice-daemon", "webcam-daemon"):
+            self.assertLess(started.index(daemon), started.index("lapinou-mqtt"))
+        self.assertIn(f"immortaldog lapinou-mqtt {self.sb}/usr/karotz/bin/lapinou-mqtt", self.log.read_text().splitlines())
+        self.assertTrue((self.sb / "var/run/karotz/lapinou-mqtt.pid").is_file())
+        self.run_s40("stop")
+
     def test_stop_ends_the_listener(self):
         self.run_s40("start")
         pid = (self.sb / "var/run/karotz/tag_listener.pid").read_text().strip()

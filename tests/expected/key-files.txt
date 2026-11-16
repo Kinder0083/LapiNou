@@ -569,6 +569,7 @@ usr:karotz/bin/immortaldog f 0755 0:0
 usr:karotz/bin/k2k-daemon f 0755 0:0
 usr:karotz/bin/karotzVM f 0755 0:0
 usr:karotz/bin/lapinou-mic f 0755 0:0
+usr:karotz/bin/lapinou-mqtt f 0755 0:0
 usr:karotz/bin/led-daemon f 0755 0:0
 usr:karotz/bin/multimedia-daemon f 0755 0:0
 usr:karotz/bin/rfid-daemon f 0755 0:0
