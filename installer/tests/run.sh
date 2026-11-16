@@ -55,7 +55,8 @@ new_case() {
     unset FAKE_RC
     export STUB_DIR="$T" STUB_LOG="$T/log"
     GH_IN="$GH_TOKEN_IN" ID_IN="" NET_IN=1 PROVIDER_IN=1 CONFIRM_IN="o" PREFIX_IN=() MQTT_USER_IN="mqttuser"
-    MQTT_PORT_IN=""
+    MQTT_PORT_IN="" LMS_IN="192.168.1.20" REINSTALL_IN=0 MQTT_HOST_IN="127.0.0.1"
+    HA_TOKEN_ANS="$HA_TOKEN_IN" RAM_IN="" IP_IN=""
 }
 
 check() {  # check "description" commande...
@@ -101,12 +102,14 @@ closed_port() {  # un port local où rien n'écoute
 answers() {
     local a=("${PREFIX_IN[@]}")
     a+=("" "" "$GH_IN")                 # dépôt, branche, jeton
-    a+=("$ID_IN" "" "" "" "")           # ID, nom, RAM, cœurs, disque
-    if [ "$NET_IN" = 2 ]; then a+=("2"); else a+=("" "" "" ""); fi  # mode, IP, masque, passerelle
-    a+=("127.0.0.1" "$MQTT_PORT_IN" "$MQTT_USER_IN")
+    [ "$REINSTALL_IN" = 1 ] || a+=("$ID_IN")  # ID (pas demandé à la réinstallation)
+    a+=("" "$RAM_IN" "" "")             # nom, RAM, cœurs, disque
+    if [ "$NET_IN" = 2 ]; then a+=("2"); else a+=("" "$IP_IN" "" ""); fi  # mode, IP, masque, passerelle
+    a+=("$MQTT_HOST_IN" "$MQTT_PORT_IN" "$MQTT_USER_IN")
     [ -n "$MQTT_USER_IN" ] && a+=("$MQTT_PASS_IN")
-    a+=("http://192.168.1.20:8123" "$HA_TOKEN_IN")
-    a+=("" "")                          # Lyrion (défaut : hôte de HA), port
+    a+=("http://192.168.1.20:8123" "$HA_TOKEN_ANS")
+    a+=("$LMS_IN")                      # Lyrion (vide ou - : sans)
+    if [ -n "$LMS_IN" ] && [ "$LMS_IN" != "-" ]; then a+=(""); fi  # port
     case "$PROVIDER_IN" in
         1) a+=("" "$ANTH_KEY_IN") ;;
         2) a+=("2" "mistral" "https://api.mistral.ai/v1" "mistral-small-latest" "$OAI_KEY_IN") ;;
@@ -262,27 +265,59 @@ check "pas de pct create" log_lacks "pct create"
 
 new_case "conteneur existant : mise à jour proposée"
 export STUB_EXISTING=105 STUB_CT_TOKEN="$GH_TOKEN_IN"
-printf '\n' > "$T/tty"
+printf '\n\n\n\n' > "$T/tty"     # choix 1, dépôt et branche gardés, confirmation
 PATH="$STUBS:$PATH" TMPDIR="$T/tmp" LAPINOU_TTY="$T/tty" bash "$INSTALLER/lapinou-install.sh" > "$T/out" 2>&1 < /dev/null
 RC=$?
 check "se termine sans erreur" rc_is 0
 check "propose la mise à jour" out_has "1) Mettre à jour"
 check "signale le conteneur existant" out_has "Un conteneur LapiNou existe déjà : 105"
-check "lance provision.sh --update" log_has "pct exec 105 -- bash /root/lapinou-setup/provision.sh --update"
+check "lance provision.sh --update avec le dépôt d'install.conf" log_has "pct exec 105 -- bash /root/lapinou-setup/provision.sh --update Kinder0083/LapiNou main"
+check "dépôt lu dans install.conf" out_has "Installation trouvée : Kinder0083/LapiNou, branche main (/usr/local/lib/lapinou/install.conf)"
+check "clone (modifiable par lapinou) jamais lu" log_lacks "/opt/lapinou/.git/"
+check "dépôt du clone modifié sans effet" bash -c '! grep -q evil "$1" "$2"' _ "$T/log" "$T/out"
+check "jeton lu sans suivre de lien" log_has "sh -c test ! -L /etc/lapinou/git-credentials"
 check "pas de pct create" log_lacks "pct create"
 check "pas de pct destroy" log_lacks "pct destroy"
 check "pas de fichier de réponses poussé" log_lacks "/root/lapinou-setup/answers"
 check "jeton du conteneur absent des arguments" no_secret_in "$T/log"
 check "réponses effacées de l'hôte" tmp_empty
 
+new_case "conteneur existant : sans install.conf"
+export STUB_EXISTING=105 STUB_NO_INSTALL_CONF=1
+printf '\n\n\n\n' > "$T/tty"
+PATH="$STUBS:$PATH" TMPDIR="$T/tmp" LAPINOU_TTY="$T/tty" bash "$INSTALLER/lapinou-install.sh" > "$T/out" 2>&1 < /dev/null
+RC=$?
+check "se termine sans erreur" rc_is 0
+check "le signale" out_has "Pas de /usr/local/lib/lapinou/install.conf lisible"
+check "dépôt par défaut, pas celui du clone" log_has "provision.sh --update Kinder0083/LapiNou main"
+check "clone jamais lu" log_lacks "/opt/lapinou/.git/"
+
+new_case "conteneur existant : autre dépôt retapé"
+export STUB_EXISTING=105
+printf '\nautre/depot\ndev\n\n' > "$T/tty"
+PATH="$STUBS:$PATH" TMPDIR="$T/tmp" LAPINOU_TTY="$T/tty" bash "$INSTALLER/lapinou-install.sh" > "$T/out" 2>&1 < /dev/null
+RC=$?
+check "se termine sans erreur" rc_is 0
+check "le signale" out_has "Nouveau dépôt ou branche : autre/depot (dev)"
+check "provision.sh reçoit le dépôt tapé" log_has "provision.sh --update autre/depot dev"
+
+new_case "conteneur existant : mise à jour refusée"
+export STUB_EXISTING=105
+printf '\n\n\nn\n' > "$T/tty"
+PATH="$STUBS:$PATH" TMPDIR="$T/tmp" LAPINOU_TTY="$T/tty" bash "$INSTALLER/lapinou-install.sh" > "$T/out" 2>&1 < /dev/null
+RC=$?
+check "s'arrête" rc_not0
+check "rien de lancé" log_lacks "provision.sh"
+
 new_case "conteneur existant : réinstallation"
 start_broker 0
 export STUB_EXISTING=105
-PREFIX_IN=("2" "105")
+PREFIX_IN=("2" "105") REINSTALL_IN=1
 run_install
 check "se termine sans erreur" rc_is 0
 check "efface l'ancien conteneur" log_has "pct destroy 105 --purge"
 check "recrée le conteneur sous le même ID" log_has "pct create 105 "
+check "ID imposé, affiché" out_has "ID du conteneur : 105 (réinstallation)"
 check "lance provision.sh --install" log_has "provision.sh --install"
 
 new_case "conteneur existant : réinstallation non confirmée"
@@ -292,6 +327,65 @@ PATH="$STUBS:$PATH" TMPDIR="$T/tmp" LAPINOU_TTY="$T/tty" bash "$INSTALLER/lapino
 RC=$?
 check "s'arrête" rc_not0
 check "pas de pct destroy" log_lacks "pct destroy"
+
+new_case "Lyrion : réponse vide"
+start_broker 0
+LMS_IN=""
+run_install
+check "se termine sans erreur" rc_is 0
+check "sans Lyrion" answer_is "$T/pushed/answers" LMS_HOST ""
+check "Lyrion pas testé" log_lacks "jsonrpc.js"
+
+new_case "Lyrion : « - »"
+start_broker 0
+LMS_IN="-"
+run_install
+check "se termine sans erreur" rc_is 0
+check "sans Lyrion" answer_is "$T/pushed/answers" LMS_HOST ""
+check "Lyrion pas testé" log_lacks "jsonrpc.js"
+
+new_case "Lyrion protégé (401)"
+start_broker 0
+export STUB_LMS_CODE=401
+run_install
+check "se termine sans erreur" rc_is 0
+check "avertit" out_has "Lyrion : joignable mais protégé par mot de passe"
+check "continue jusqu'à pct create" log_has "pct create 105 "
+check "Lyrion gardé" answer_is "$T/pushed/answers" LMS_HOST "192.168.1.20"
+
+new_case "MQTT muet (connexion ouverte, aucune réponse)"
+start_broker -1
+run_install
+check "échoue" rc_not0
+check "délai clair" out_has "pas de réponse en 8 s"
+check "arrêt avant pct create" log_lacks "pct create"
+
+new_case "IP : octet > 255"
+IP_IN="192.168.1.300"
+run_install
+check "échoue" rc_not0
+check "message clair" out_has "Adresse, masque ou passerelle invalide"
+check "pas de pct create" log_lacks "pct create"
+
+new_case "RAM nulle"
+RAM_IN="0"
+run_install
+check "échoue" rc_not0
+check "message clair" out_has "RAM invalide"
+
+new_case "adresse MQTT invalide"
+MQTT_HOST_IN="broker;rm -rf"
+run_install
+check "échoue" rc_not0
+check "message clair" out_has "Adresse du broker MQTT invalide"
+check "pas de pct create" log_lacks "pct create"
+
+new_case "jeton HA avec guillemet"
+HA_TOKEN_ANS='abc"def'
+run_install
+check "échoue" rc_not0
+check "message clair" out_has "Jeton de Home Assistant invalide"
+check "rien envoyé à HA" bash -c '! grep -q "/api/" "$1"' _ "$T/log"
 
 ###############################################################################
 echo "== provision.sh (dans le conteneur, racine simulée)"
@@ -354,7 +448,7 @@ check "se termine sans erreur" rc_is 0
 check "paquets : ffmpeg, libspeexdsp-dev, python3-dev, gcc, polkit" \
     log_has "apt-get install -y -qq --no-install-recommends ca-certificates curl git ffmpeg protobuf-compiler libspeexdsp-dev python3 python3-dev python3-venv gcc libc6-dev dbus polkitd"
 check "utilisateur système lapinou" log_has "useradd --system --user-group --home-dir /var/lib/lapinou --shell /usr/sbin/nologin lapinou"
-check "dossiers à lapinou" log_has "chown lapinou:lapinou $R/etc/lapinou $R/var/lib/lapinou"
+check "dossiers à lapinou" log_has "chown -h lapinou:lapinou $R/etc/lapinou $R/var/lib/lapinou"
 check "/etc/lapinou en 0750" mode_is "$R/etc/lapinou" 750
 check "identifiants git en 0600" mode_is "$R/etc/lapinou/git-credentials" 600
 check "identifiants git : le jeton" file_has "$R/etc/lapinou/git-credentials" "https://x-access-token:$GH_TOKEN_IN@github.com"
@@ -383,6 +477,21 @@ check "service activé" log_has "systemctl enable -q lapinou"
 check "service démarré" log_has "systemctl restart lapinou"
 check "pas de surcharge sans besoin" missing "$R/etc/systemd/system/lapinou.service.d/lxc.conf"
 check "santé vérifiée" log_has "http://127.0.0.1:8080/health"
+check "install.conf : dépôt et branche" file_has "$R/usr/local/lib/lapinou/install.conf" "REPO=Kinder0083/LapiNou"
+check "install.conf : branche" file_has "$R/usr/local/lib/lapinou/install.conf" "BRANCH=main"
+check "install.conf en 0644, à root" mode_is "$R/usr/local/lib/lapinou/install.conf" 644
+check "install.conf passé à root" log_has "chown root:root $R/usr/local/lib/lapinou/install.conf.new"
+
+new_case "installation : dossier en lien symbolique"
+setup_root
+mkdir -p "$R/etc" "$T/outside"
+chmod 0700 "$T/outside"
+ln -s "$T/outside" "$R/etc/lapinou"
+run_provision --install "$T/setup/answers"
+check "refusée" rc_not0
+check "message clair" out_has "est un lien symbolique : refusé"
+check "rien changé hors du lien" mode_is "$T/outside" 700
+check "pas de chown" log_lacks "chown"
 
 new_case "226/NAMESPACE : surcharge palier 1"
 setup_root
@@ -454,16 +563,60 @@ fi
 
 new_case "mise à jour (--update)"
 setup_root
-mkdir -p "$R/opt/lapinou/.git"
+mkdir -p "$R/opt/lapinou/.git" "$R/etc/lapinou" "$R/var/lib/lapinou/update"
 export STUB_USER_EXISTS=1
-run_provision --update
+run_provision --update Kinder0083/LapiNou main
 check "se termine sans erreur" rc_is 0
-check "git pull" log_has "pull -q --ff-only"
+check "remote remis sur le dépôt noté" log_has "remote set-url origin https://github.com/Kinder0083/LapiNou.git"
+check "git fetch de la branche" log_has "fetch -q origin main"
+check "avance rapide seulement" log_has "merge -q --ff-only FETCH_HEAD"
+check "dossiers existants non retouchés en root" log_lacks "chown -h lapinou"
+check "install.conf réécrit" file_has "$R/usr/local/lib/lapinou/install.conf" "REPO=Kinder0083/LapiNou"
 check "pas de clone" log_lacks " clone "
 check "réglages non réécrits" bash -c '! ls "$1"/py-stdin.* >/dev/null 2>&1 || ! grep -l MQTT_PASS "$1"/py-stdin.*' _ "$T"
 check "pas de nouvel utilisateur" log_lacks "useradd"
 check "unités réinstallées" file_has "$R/etc/systemd/system/lapinou-update.service" "post-update.sh --root"
 check "service redémarré" log_has "systemctl restart lapinou"
+
+new_case "mise à jour : autre branche"
+setup_root
+mkdir -p "$R/opt/lapinou/.git" "$R/etc/lapinou" "$R/var/lib/lapinou/update"
+export STUB_USER_EXISTS=1 STUB_GIT_BRANCH=main
+run_provision --update autre/depot dev
+check "se termine sans erreur" rc_is 0
+check "remote sur le dépôt tapé" log_has "remote set-url origin https://github.com/autre/depot.git"
+check "passe à la branche" log_has "checkout -q -B dev FETCH_HEAD"
+check "install.conf mis à jour" file_has "$R/usr/local/lib/lapinou/install.conf" "BRANCH=dev"
+
+new_case "mise à jour : update/ en lien symbolique"
+setup_root
+mkdir -p "$R/opt/lapinou/.git" "$R/etc/lapinou" "$R/var/lib/lapinou" "$T/outside"
+echo "garde" > "$T/outside/fichier"
+chmod 0700 "$T/outside"
+ln -s "$T/outside" "$R/var/lib/lapinou/update"
+export STUB_USER_EXISTS=1
+run_provision --update Kinder0083/LapiNou main
+check "refusée" rc_not0
+check "message clair" out_has "update n'est pas un dossier (lien symbolique ?) : mise à jour refusée"
+check "rien changé hors du lien (droits)" mode_is "$T/outside" 700
+check "rien changé hors du lien (contenu)" file_has "$T/outside/fichier" "garde"
+check "aucune commande root sur le lien" log_lacks "$T/outside"
+check "pas de chown" log_lacks "chown"
+check "rien installé" missing "$R/etc/systemd/system/lapinou-update.service"
+
+new_case "mise à jour : /etc/lapinou en lien symbolique"
+setup_root
+mkdir -p "$R/opt/lapinou/.git" "$R/etc" "$R/var/lib/lapinou/update" "$T/outside"
+ln -s "$T/outside" "$R/etc/lapinou"
+export STUB_USER_EXISTS=1
+run_provision --update Kinder0083/LapiNou main
+check "refusée" rc_not0
+check "pas de chown" log_lacks "chown"
+
+new_case "mise à jour : dépôt invalide"
+setup_root
+run_provision --update "../x" main
+check "refusée" rc_not0
 
 new_case "dépendances seules (--post-update)"
 setup_root
@@ -475,7 +628,18 @@ check "uv sync" log_has "sync -q --frozen --no-dev"
 check "pas de git pull (fait par la page)" log_lacks "pull"
 check "pas de redémarrage (fait par la page)" log_lacks "systemctl restart lapinou"
 check "unité du dépôt non installée en root" file_has "$R/etc/systemd/system/lapinou.service" "ancienne unité"
-check "signale l'unité modifiée" out_has "relancez l'installateur"
+check "signale l'unité modifiée" out_has "lapinou.service"
+check "signale les scripts modifiés" out_has "provision.sh post-update.sh : changé dans le dépôt"
+
+new_case "dépendances seules, rien de changé"
+setup_root
+mkdir -p "$R/opt/lapinou/.git" "$R/opt/lapinou/installer" "$R/etc/systemd/system" "$R/usr/local/lib/lapinou"
+cp "$INSTALLER/provision.sh" "$INSTALLER/post-update.sh" "$R/opt/lapinou/installer/"
+cp "$INSTALLER/provision.sh" "$INSTALLER/post-update.sh" "$R/usr/local/lib/lapinou/"
+cp "$REPO/server/systemd/lapinou.service" "$R/etc/systemd/system/"
+run_provision --post-update
+check "se termine sans erreur" rc_is 0
+check "aucun avertissement" bash -c '! grep -q "relancez" "$1"' _ "$T/out"
 
 ###############################################################################
 echo "== post-update.sh (bouton « Mettre à jour »)"

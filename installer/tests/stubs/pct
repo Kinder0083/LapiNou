@@ -28,10 +28,14 @@ case "$cmd" in
         case "$*" in
             "getent hosts"*) exit "${STUB_DNS_RC:-0}" ;;
             "test -d /opt/lapinou/.git") exit "${STUB_CT_HAS_OPT:-0}" ;;
+            # Clone modifié par lapinou : l'installateur ne doit jamais le lire.
             "git config --file /opt/lapinou/.git/config --get remote.origin.url")
-                echo "https://github.com/Kinder0083/LapiNou.git" ;;
-            "cat /opt/lapinou/.git/HEAD") echo "ref: refs/heads/main" ;;
-            "cat /etc/lapinou/git-credentials")
+                echo "https://github.com/evil/repo.git" ;;
+            "cat /opt/lapinou/.git/HEAD") echo "ref: refs/heads/evil" ;;
+            "cat /usr/local/lib/lapinou/install.conf")
+                [ "${STUB_NO_INSTALL_CONF:-0}" = 1 ] && exit 1
+                printf '# install.conf\nREPO=Kinder0083/LapiNou\nBRANCH=main\n' ;;
+            "sh -c test ! -L /etc/lapinou/git-credentials"*)
                 [ -n "${STUB_CT_TOKEN:-}" ] && echo "https://x-access-token:$STUB_CT_TOKEN@github.com" ;;
             "hostname -I") echo "192.168.1.77 fd00::77" ;;
             "bash /root/lapinou-setup/provision.sh"*)

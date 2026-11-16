@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Faux broker MQTT des tests de l'installateur : lit un CONNECT, note l'identifiant et le mot de
-passe reçus (JSON, en hexadécimal) et répond CONNACK avec le code donné.
+passe reçus (JSON, en hexadécimal) et répond CONNACK avec le code donné (négatif : ne répond
+jamais, la connexion reste ouverte).
 
 python3 fake_mqtt.py <fichier-port> <fichier-reçu> <code-connack>
 """
@@ -8,6 +9,7 @@ python3 fake_mqtt.py <fichier-port> <fichier-reçu> <code-connack>
 import json
 import socket
 import sys
+import time
 
 
 def read_exact(conn, n):
@@ -60,6 +62,9 @@ def main():
             with open(seen_file, "w") as f:
                 json.dump({"type": head[0], "proto": proto.decode(), "flags": flags,
                            "user": user.hex(), "password": password.hex()}, f)
+            if code < 0:
+                time.sleep(30)
+                continue
             conn.sendall(bytes([0x20, 2, 0, code]))
 
 
