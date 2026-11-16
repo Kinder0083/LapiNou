@@ -41,7 +41,7 @@ status=0
 
 SCENARIOS="button_daemon ears_daemon led_daemon rfid_daemon scheduler_daemon webcam_daemon webcam_capture serial_daemon
            controller controller_platform controller_webcam_direct controller_message_query controller_schedule_gone
-           controller_k2k_no_config controller_bad_descriptor app_server
+           controller_k2k_no_config controller_bad_descriptor controller_standalone controller_no_server app_server
            multimedia_daemon voice_daemon k2k_daemon karotzVM lapinou_mic lapinou_shared_mic lapinou_play_marks lapinou_mic_restart lapinou_mqtt"
 AGGRESSIVE=$(cd "$T/aggressive" && ls [a-z]*.py | sed 's/\.py$//')
 

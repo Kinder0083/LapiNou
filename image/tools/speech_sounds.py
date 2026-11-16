@@ -78,6 +78,8 @@ SOUNDS = {
     "fr_tag_no_action.mp3": ("fr", "Je connais cet objet, mais il n'a pas encore d'action."),
     "de_tag_no_action.mp3": ("de", "Ich kenne dieses Objekt, aber es hat noch keine Aktion."),
     "es_tag_no_action.mp3": ("es", "Conozco este objeto, pero todavía no tiene ninguna acción."),
+    # LapiNou: the long press with no LapiNou server and no cloud services to listen (the controller).
+    "lapinou-no-server.mp3": ("fr", "Je n'arrive pas à joindre mon serveur."),
 }
 # The key's install prompts, in English: their texts and file names are install_prompts.py's.
 INSTALL = {name: ("en", text) for name, text in PROMPTS.items()}

@@ -215,4 +215,12 @@ int webcam_take_snapshot(void **jpeg, unsigned long *size);
 /* md5.cc */
 void md5_hex(const char *text, char hex[33]);
 
+/* lapinou.cc: LapiNou's standalone mode (no platform) and long press, from lapinou.conf. */
+void lapinou_load_settings(void);
+gboolean lapinou_standalone(void);
+void lapinou_standalone_online(ControllerObject *controller);
+void lapinou_watch_cloud(DBusGConnection *bus);
+void lapinou_long_press_start(ControllerObject *controller);
+void lapinou_long_press_stop(ControllerObject *controller);
+
 #endif

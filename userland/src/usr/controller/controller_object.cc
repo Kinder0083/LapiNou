@@ -664,5 +664,6 @@ static void controller_object_init(ControllerObject *controller)
     controller->account_conf = g_key_file_new();
     controller->karotz_conf = g_key_file_new();
     controller_init_config(controller);
+    lapinou_load_settings();
     dbus_g_object_type_install_info(CONTROLLER_TYPE_OBJECT, &dbus_glib_controller_object_object_info);
 }

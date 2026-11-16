@@ -1,0 +1,57 @@
+== registered: True
+== start-up
+call Ears reset("", "B")
+call Multimedia stop("", 0)
+call Voice tts_stop("", 0)
+call Voice asr_stop("", 0)
+call Multimedia play("", "lock::yes", 0)
+call K2k k2k_hangup()
+call Led pulse("", "00FF00", "000000", 1600, -1)
+call Ears move("", 14, 30, 14, 30)
+get_status(): int32 16 | int32 2 | int32 0
+/etc/TZ: b'CET-1CEST,M3.5.0,M10.5.0/3\n'
+== long press, LapinouCloud absent: the no-server sound, orange
+call Multimedia play("", "/usr/karotz/sounds/lapinou-no-server.mp3", 1)
+call Led light("", "FFA500")
+== release
+== 3 s after the press: the status LED again
+call Led pulse("", "00FF00", "000000", 1600, -1)
+== LapinouCloud on the bus: True
+== long press, LapinouCloud present: start_listening
+call LapinouCloud /com/mindscape/karotz/LapinouCloud com.mindscape.karotz.LapinouCloud.start_listening()
+== release: stop_listening
+call LapinouCloud /com/mindscape/karotz/LapinouCloud com.mindscape.karotz.LapinouCloud.stop_listening()
+== LapinouCloud gone: True
+== long press, LapinouCloud gone: the no-server sound again
+call Multimedia play("", "/usr/karotz/sounds/lapinou-no-server.mp3", 1)
+call Led light("", "FFA500")
+call Led pulse("", "00FF00", "000000", 1600, -1)
+== click
+== triple click
+call Ears reset("", "B")
+call Multimedia stop("", 0)
+call Voice tts_stop("", 0)
+call Voice asr_stop("", 0)
+call Multimedia play("", "lock::yes", 0)
+call K2k k2k_hangup()
+call Ears move("", 14, 30, 14, 30)
+call Led pulse("", "00FF00", "000000", 1600, -1)
+has_tag_app('string:e0040100c0ffee42',): boolean false
+== a tag
+get_status(): int32 16 | int32 2 | int32 0
+== signals
+com.mindscape.karotz.KarotzInterface.registered()
+com.mindscape.karotz.KarotzInterface.karotz_status_changed(int32 16)
+com.mindscape.karotz.KarotzInterface.lclick_start()
+com.mindscape.karotz.KarotzInterface.lclick_stop()
+com.mindscape.karotz.KarotzInterface.lclick_start()
+com.mindscape.karotz.KarotzInterface.lclick_stop()
+com.mindscape.karotz.KarotzInterface.lclick_start()
+com.mindscape.karotz.KarotzInterface.lclick_stop()
+com.mindscape.karotz.KarotzInterface.click()
+com.mindscape.karotz.KarotzInterface.tclick()
+com.mindscape.karotz.KarotzInterface.tag_in(string "e0040100c0ffee42", string "content", int32 3, int32 1, int32 4, int32 2)
+com.mindscape.karotz.KarotzInterface.tag_out(string "e0040100c0ffee42")
+== device I/O
+system killall karotzVM
+== daemon still running: True
