@@ -399,6 +399,7 @@ usr:karotz/bin/k2k-daemon f 0755 0:0 own
 usr:karotz/bin/karotzVM f 0755 0:0 own
 usr:karotz/bin/lapinou-mic f 0755 0:0 own  # LapiNou: the microphone to the server and to mic.sock
 usr:karotz/bin/lapinou-mqtt f 0755 0:0 own  # LapiNou: the rabbit in Home Assistant (MQTT)
+usr:karotz/bin/lapinou-cloud f 0755 0:0 own  # LapiNou: the mode without a server (speech to text, a language model, text to speech in the cloud)
 usr:karotz/bin/led-daemon f 0755 0:0 own
 usr:karotz/bin/multimedia-daemon f 0755 0:0 own
 usr:karotz/bin/rfid-daemon f 0755 0:0 own
@@ -1383,6 +1384,7 @@ usr:share/lapinlibre/web-media.sh f 0644 0:0 core  # the web API's sounds, voice
 usr:share/lapinlibre/web-hw.sh f 0644 0:0 core  # the web API's signal watches, ears and camera, read by web.sh when needed
 usr:share/lapinlibre/web-tags.sh f 0644 0:0 core  # the web API's URL actions and RFID tag store, read by web.sh when needed
 usr:share/lapinou d 0755 0:0
+usr:share/lapinou/persona_fr_court.txt f 0644 0:0 core  # LapiNou: lapinou-cloud's system prompt for the language model
 usr:share/lapinou/conf.sh f 0644 0:0 core  # LapiNou's settings (lapinou.conf, lapinou.secrets) for shell programs: lapinou_get, lapinou_set, lapinou_secret_get, lapinou_secret_set
 usr:sbin/mdnsd f 0755 0:0 target  # mDNS: <host name>.local, and SSH advertised
 usr:lib/libmdnsd.so.1 l libmdnsd.so.1.0.0

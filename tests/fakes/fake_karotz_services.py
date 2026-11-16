@@ -1,18 +1,19 @@
 # SPDX-License-Identifier: MIT
-"""Fake Karotz daemons on a test bus, for lapinou-mqtt's scenario (tests/scenarios/lapinou_mqtt.py).
+"""Fake Karotz daemons on a test bus, for lapinou-mqtt's and lapinou-cloud's scenarios
+(tests/scenarios/lapinou_mqtt.py, tests/scenarios/lapinou_cloud.py).
 
     fake_karotz_services.py BUS_ADDRESS LOG [--cloud]
 
-Owns com.mindscape.karotz.{Led,Ears,Button,Rfid,Voice,Controller} (each at
+Owns com.mindscape.karotz.{Led,Ears,Button,Rfid,Voice,Controller,Multimedia} (each at
 /com/mindscape/karotz/<Name>, interface com.mindscape.karotz.KarotzInterface, with the methods of
-userland/dbus/*.xml that lapinou-mqtt calls), or, with --cloud, com.mindscape.karotz.LapinouCloud
-alone (say(s) on interface com.mindscape.karotz.LapinouCloud). Every call is logged to LOG as one
-line "Name.method(args)" and answered TRUE (Controller.get_status: 1, 0, 0). (The sound, the
-camera and sleep go through the web API's programs, whose dbus-send is the web API test's stub.)
-The scenario makes the fakes emit their signals through
-com.lapinou.TestControl.emit(s name, s member, s json_args) on any of the objects
-(Button.click, Rfid.tag_in, Controller.karotz_status_changed). Writes "ready" to LOG's directory
-(ready or ready-cloud) once every name is owned.
+userland/dbus/*.xml that lapinou-mqtt and lapinou-cloud call), or, with --cloud,
+com.mindscape.karotz.LapinouCloud alone (say(s) on interface com.mindscape.karotz.LapinouCloud).
+Every call is logged to LOG as one line "Name.method(args)" and answered TRUE
+(Controller.get_status: 1, 0, 0). (The sound, the camera and sleep go through the web API's
+programs, whose dbus-send is the web API test's stub.) The scenario makes the fakes emit their
+signals through com.lapinou.TestControl.emit(s name, s member, s json_args) on any of the objects
+(Button.click, Rfid.tag_in, Controller.karotz_status_changed, Multimedia.multi_playfinished).
+Writes "ready" to LOG's directory (ready or ready-cloud) once every name is owned.
 """
 
 import json
@@ -127,6 +128,22 @@ class Controller(Fake):
         pass
 
 
+class Multimedia(Fake):
+    @dbus.service.method(IFACE, in_signature="ssi", out_signature="b")
+    def play(self, id_, url, behaviour):
+        self.called("play", id_, url, behaviour)
+        return True
+
+    @dbus.service.method(IFACE, in_signature="si", out_signature="b")
+    def stop(self, id_, behaviour):
+        self.called("stop", id_, behaviour)
+        return True
+
+    @dbus.service.signal(IFACE, signature="si")
+    def multi_playfinished(self, id_, reason):
+        pass
+
+
 class Cloud(Fake):
     def __init__(self, bus):
         self.name = "LapinouCloud"
@@ -150,7 +167,7 @@ def main():
         objects["LapinouCloud"] = Cloud(bus)
         names.append(dbus.service.BusName("com.mindscape.karotz.LapinouCloud", bus))
     else:
-        for cls in (Led, Ears, Button, Rfid, Voice, Controller):
+        for cls in (Led, Ears, Button, Rfid, Voice, Controller, Multimedia):
             objects[cls.__name__] = cls(bus, cls.__name__)
             names.append(dbus.service.BusName(f"com.mindscape.karotz.{cls.__name__}", bus))
     open(os.path.join(os.path.dirname(log), "ready-cloud" if cloud else "ready"), "w").close()

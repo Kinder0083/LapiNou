@@ -568,6 +568,7 @@ usr:karotz/bin/ears-daemon f 0755 0:0
 usr:karotz/bin/immortaldog f 0755 0:0
 usr:karotz/bin/k2k-daemon f 0755 0:0
 usr:karotz/bin/karotzVM f 0755 0:0
+usr:karotz/bin/lapinou-cloud f 0755 0:0
 usr:karotz/bin/lapinou-mic f 0755 0:0
 usr:karotz/bin/lapinou-mqtt f 0755 0:0
 usr:karotz/bin/led-daemon f 0755 0:0
@@ -1499,6 +1500,7 @@ usr:share/lapinlibre/web-tags.sh f 0644 0:0
 usr:share/lapinlibre/web.sh f 0644 0:0
 usr:share/lapinou d 0755 0:0
 usr:share/lapinou/conf.sh f 0644 0:0
+usr:share/lapinou/persona_fr_court.txt f 0644 0:0
 usr:www d 0755 0:0
 usr:www/app.js f 0644 0:0
 usr:www/cgi-bin d 0755 0:0
