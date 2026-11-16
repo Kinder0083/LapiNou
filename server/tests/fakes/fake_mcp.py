@@ -69,11 +69,11 @@ SCRIPTS: dict[str, dict[str, Any]] = {
                                         "sequence": [{"action": "light.turn_on",
                                                       "target": {"entity_id": ["light.salon"]}}]}],
                             "default": [{"delay": {"seconds": 1}}]}]},
-    "choix_garage": {"sequence": [{"if": [{"condition": "state", "entity_id": "light.salon",
+    "choix_ouvrir": {"sequence": [{"if": [{"condition": "state", "entity_id": "light.salon",
                                            "state": "off"}],
                                    "then": [{"action": "cover.open_cover",
                                              "target": {"entity_id": "cover.garage"}}]}]},
-    "zone_garage": {"sequence": [{"action": "cover.open_cover",
+    "zone_volets": {"sequence": [{"action": "cover.open_cover",
                                   "target": {"area_id": "garage"}}]},
     "tout_allumer": {"sequence": [{"action": "homeassistant.turn_on",
                                    "target": {"area_id": "salon"}}]},
@@ -91,7 +91,7 @@ SCRIPTS: dict[str, dict[str, Any]] = {
     "appareil": {"sequence": [{"device_id": "abc123", "domain": "cover", "type": "open"}]},
     "sans_cible": {"sequence": [{"action": "light.turn_off"}]},
     # Formats de réponse : YAML brut, ou configuration en chaîne JSON échappée.
-    "yaml_garage": "sequence:\n  - action: cover.open_cover\n    target:\n      area_id: garage\n",
+    "yaml_zone": "sequence:\n  - action: cover.open_cover\n    target:\n      area_id: garage\n",
     "yaml_sur": "sequence:\n  - action: light.turn_on\n    target:\n      entity_id: light.salon\n",
     "chaine_appareil": {"__string__": {"sequence": [
         {"device_id": "abc123", "domain": "cover", "type": "open"}]}},

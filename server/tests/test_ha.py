@@ -304,7 +304,7 @@ async def test_ha_mcp_unavailable_is_a_spoken_error(tmp_path):
 
 
 @pytest.mark.parametrize("entity", [
-    "script.zone_garage",       # cover.open_cover sur une zone (area_id)
+    "script.zone_volets",       # cover.open_cover sur une zone (area_id)
     "script.tout_allumer",      # homeassistant.turn_on sur une zone
     "script.service_modele",    # service calculé par un modèle
     "script.ancien_modele",     # service_template
@@ -314,8 +314,8 @@ async def test_ha_mcp_unavailable_is_a_spoken_error(tmp_path):
     "script.commande",          # shell_command
     "script.appareil",          # action d'appareil (device_id)
     "script.sans_cible",        # service sans cible
-    "script.choix_garage",      # if/then imbriqué vers le garage
-    "script.yaml_garage",       # configuration renvoyée en YAML
+    "script.choix_ouvrir",      # if/then imbriqué vers le garage
+    "script.yaml_zone",       # configuration renvoyée en YAML
     "script.chaine_appareil",   # configuration en chaîne JSON échappée
     "scene.chaud",              # scène qui chauffe hors de la plage
 ])
