@@ -68,7 +68,7 @@ class BudgetConfig(_Section):
 class VoiceConfig(_Section):
     tts_engine: str = "piper"
     voice: str = "fr_FR-siwis-medium"
-    wake_threshold: float = 0.5
+    wake_threshold: float = 0.9  # validé : tools/train_wakeword/README.md
     vad_silence_ms: int = 700
     followup_s: int = 5
 

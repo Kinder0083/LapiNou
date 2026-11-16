@@ -61,27 +61,32 @@ OWW=https://huggingface.co/datasets/davidscripka/openwakeword_features/resolve/m
 curl -sSL -o data/validation_set_features.npy $OWW/validation_set_features.npy
 curl -sSL -r 0-1572864127 -o data/acav_part.bin $OWW/openwakeword_features_ACAV100M_2000_hrs_16bit.npy
 
-# Depuis server/ d'une copie du dépôt
+# Depuis server/ d'une copie du dépôt. Mémoire plafonnée (la machine de développement
+# partage l'hôte avec d'autres VM) : chaque étape dans un scope systemd à 4,5 Go sans swap.
 uv run python -m lapinou.voice.wakeword download     # modèles de caractéristiques
-T="$HOME/wakeword-train/.venv/bin/python tools/train_wakeword/train.py --jobs 3"
-$T generate --voices ~/wakeword-train/voices         # synthèse (≈ 2 h 30)
-$T features                                          # augmentation + plongements (≈ 1 h)
-$T train --acav ~/wakeword-train/data/acav_part.bin  # classifieur (≈ 30 min)
+T="sudo systemd-run --scope -q --uid=$USER -p MemoryMax=4500M -p MemorySwapMax=0    $HOME/wakeword-train/.venv/bin/python tools/train_wakeword/train.py --jobs 3"
+$T generate --voices ~/wakeword-train/voices --mix-positives 9000   # synthèse (≈ 9 h, pic 1,3 Go)
+$T features                                          # augmentation + plongements (≈ 1 h, pic 2,9 Go)
+$T train --acav ~/wakeword-train/data/acav_part.bin --dropout 0.3 --noise 0.3 --neg-weight 20  # ≈ 20 min, pic 3,9 Go
 $T evaluate --validation ~/wakeword-train/data/validation_set_features.npy
 $T export-tests --voices ~/wakeword-train/voices     # server/tests/data/*.wav
 uv run pytest -q tests/test_wakeword.py
 ```
 
 `train` écrit `server/models/lapinou_fr.onnx`. Choisir ensuite le seuil d'après
-`evaluate` (rappel sur les voix réservées contre fausses détections par heure) et le
-reporter dans `VoiceConfig.wake_threshold` (`server/lapinou/config.py`) et `tests/test_config.py`.
+`evaluate` (règle utilisée : le plus bas seuil à ≤ 5 fausses détections par heure sur la
+validation openWakeWord) et le reporter dans `VoiceConfig.wake_threshold`
+(`server/lapinou/config.py`) et `VALIDATED_THRESHOLD` (`tests/test_wakeword.py`).
 
 ### Ce que fait chaque étape
 
 - **generate** : synthèse Piper. Positifs : « Lapinou » seul ou après un mot (« Hé
   Lapinou », « Dis Lapinou », « Il a dit Lapinou. »…), quelques graphies (« Lâpinou »,
   « Lapinoû ») ; débit (`length_scale` 0,75 à 1,4), bruit du générateur, durée des
-  phonèmes et hauteur (± 10 %, par rééchantillonnage) tirés au hasard. Négatifs : mots
+  phonèmes et hauteur (± 10 %, par rééchantillonnage) tirés au hasard. **Voix mélangées** :
+  3 000 locuteurs nouveaux obtenus en interpolant deux à deux les plongements de locuteur
+  des 117 locuteurs MLS d'entraînement (lignes ajoutées à `emb_g.weight`, comme
+  piper-sample-generator) ; fichiers `mix_*.npz`. Négatifs : mots
   proches (« lapin », « lapereau », « papinou », « lapinot », « minou », « pinou »,
   « la pinède »…) et ≈ 3 100 phrases (une liste écrite à la main + des phrases
   combinées), une sur cinq réservée au test. Les voix low et MLS dérapent souvent
@@ -89,13 +94,14 @@ reporter dans `VoiceConfig.wake_threshold` (`server/lapinou/config.py`) et `test
   servent à couper chaque extrait à la fin du dernier phonème et à refuser ceux dont
   « Lapinou » ne dure pas 0,25 à 0,95 s.
 - **features** : chaque extrait est posé sur un fond (silence numérique, bruit blanc/rose/brun,
-  ronflement secteur, paroles lointaines), avec réverbération synthétique (40 %),
+  ronflement secteur, paroles lointaines) à un rapport signal/bruit de 10 à 40 dB (8 à 25 dB
+  pour les paroles), avec réverbération synthétique (40 %),
   filtrage passe-haut/passe-bas (50 %), niveau de −32 à −2 dBFS et aller-retour mu-law
   8 bits (70 %, le format du flux des lapins). Les plongements sont calculés par le code
   du serveur (`lapinou.voice.wakeword.clip_features`), donc exactement comme en service.
   Positifs : les 4 fenêtres qui finissent 0 à 240 ms après la fin du mot. Négatifs :
-  toutes les fenêtres (pas de 160 ms) des phrases, des fonds seuls, et les fenêtres
-  autour de la fin des mots proches.
+  toutes les fenêtres (pas de 160 ms) des phrases, des fonds seuls, les fenêtres
+  autour de la fin des mots proches et de phrases isolées suivies de silence.
 - **train** : réseau dense 1536 → 128 → 128 → 1 (LayerNorm, ReLU, dropout), lots moitié
   positifs moitié négatifs, poids des négatifs croissant de 1 à 20, puis moitié des
   négatifs pris parmi les plus difficiles. Négatifs : nos phrases et mots proches + 300 000
@@ -139,6 +145,37 @@ réverbérantes qu'un modèle entraîné sur de vraies voix ; à reprendre avec 
 enregistrements réels des lapins (`record_negatives.py`, et des « Lapinou » réels comme
 positifs).
 
-## Résultats du modèle livré
+## Résultats du modèle livré (2026-11-16) : objectifs NON atteints
 
-(à remplir)
+Données : 6 158 positifs (3 316 voix d'origine + 2 842 voix mélangées), 3 029 mots proches,
+4 973 phrases (≈ 5 h 30), 300 000 fenêtres ACAV100M. Modèle : 1536 → 128 → 128 → 1,
+dropout 0,3, bruit 0,3 sur les plongements, poids des négatifs 20, 30 000 pas.
+
+`evaluate` (voix réservées, extraits augmentés ; validation openWakeWord ≈ 11 h) :
+
+| seuil | rappel voix réservées | mots proches déclenchés | phrases réservées (FD/h) | validation oWW (FD/h) |
+|---|---|---|---|---|
+| 0,5 | 0,39 | 0,12 | 95 | 66 |
+| 0,7 | 0,25 | 0,03 | 34 | 24 |
+| 0,8 | 0,22 | 0,02 | 20 | 14 |
+| **0,9 (défaut)** | 0,22 | 0,01 | 5,1 | 5,0 |
+| 0,95 | 0,18 | 0 | 1,7 | 1,9 |
+
+Fichiers de test (`tests/data`, voix réservées, 12,1 min de négatifs) : seuil 0,5 → 5/10
+positifs, 17 fausses détections ; 0,8 → 5/10, 4 ; **0,9 → 4/10, 3** ; 0,95 → 2/10, 1.
+Objectif (≥ 9/10 et 0 fausse détection) non atteint : les deux tests correspondants sont
+`xfail(strict=True)`.
+
+Diagnostic : le classifieur apprend les locuteurs, pas le mot. Sur des voix jamais vues
+(locuteurs MLS réservés, voix mélangées, gilles, mls_1840), « Lapinou » et les mots
+proches — même très différents (« lavabo », « nounours ») — reçoivent des scores
+semblables. Une sonde linéaire sur les plongements d'extraits propres sépare « Lapinou »
+des mots distincts à ≈ 0,97 sur les voix d'entraînement mais ≈ 0,72 sur des voix
+nouvelles. Ni la régularisation (taille 32 à 128, dropout 0,5, bruit), ni les 3 000 voix
+mélangées, ni les négatifs « phrase isolée », ni le rapport signal/bruit corrigé n'ont
+changé cet ordre de grandeur. Hypothèses : voix Piper françaises trop peu nombreuses et
+de qualité inégale (MLS : 70 % des « Lapinou » refusés par le contrôle d'alignement),
+plongement openWakeWord (appris sur de l'anglais) peu discriminant pour ces voix. Pistes :
+vrais enregistrements de « Lapinou » (plusieurs personnes) et négatifs réels du lapin
+(`record_negatives.py`, tâche 27), filtrage des extraits par reconnaissance vocale,
+beaucoup plus de positifs.
