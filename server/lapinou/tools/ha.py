@@ -128,7 +128,7 @@ class HomeAssistantTools:
         self._runner = asyncio.create_task(self._run(ready, self._stop))
         try:
             await asyncio.wait_for(asyncio.shield(ready), timeout=30.0)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - ha-mcp absent ne doit pas arrêter le serveur
             log.warning("ha-mcp injoignable (%s) : %s", self._cmd[0], type(e).__name__)
             await self._disconnect()
 
@@ -137,26 +137,28 @@ class HomeAssistantTools:
         # même tâche : celle-ci les tient ouverts jusqu'à `stop`.
         params = StdioServerParameters(command=self._cmd[0], args=self._cmd[1:], env=self._env)
         try:
-            async with stdio_client(params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    names: set[str] = set()
-                    cursor = None
-                    while True:
-                        page = await session.list_tools(
-                            params=None if cursor is None
-                            else types.PaginatedRequestParams(cursor=cursor)
-                        )
-                        names.update(t.name for t in page.tools)
-                        cursor = page.next_cursor
-                        if not cursor:
-                            break
-                    self.server_tools = names
-                    self._session = session
-                    if not ready.done():
-                        ready.set_result(None)
-                    await stop.wait()
-        except Exception as e:
+            async with (
+                stdio_client(params) as (read, write),
+                ClientSession(read, write) as session,
+            ):
+                await session.initialize()
+                names: set[str] = set()
+                cursor = None
+                while True:
+                    page = await session.list_tools(
+                        params=None if cursor is None
+                        else types.PaginatedRequestParams(cursor=cursor)
+                    )
+                    names.update(t.name for t in page.tools)
+                    cursor = page.next_cursor
+                    if not cursor:
+                        break
+                self.server_tools = names
+                self._session = session
+                if not ready.done():
+                    ready.set_result(None)
+                await stop.wait()
+        except Exception as e:  # noqa: BLE001 - transmis à start() ou journalisé
             if not ready.done():
                 ready.set_exception(e)
             else:
@@ -196,7 +198,7 @@ class HomeAssistantTools:
             raise HaUnavailable()
         try:
             result = await asyncio.wait_for(session.call_tool(name, arguments), self.timeout_s)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - toute panne devient HaUnavailable
             log.warning("ha-mcp : %s en échec : %s", name, type(e).__name__)
             if isinstance(e, (TimeoutError, OSError)) or self._session is None:
                 async with self._lock:

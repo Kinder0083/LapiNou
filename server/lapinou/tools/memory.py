@@ -22,11 +22,12 @@ log = logging.getLogger(__name__)
 
 INJECTED = 20
 MAX_TEXT = 300
-_STOP = set(
+_STOP_WORDS = (
     "les des une est son ses mes tes nos vos leur leurs sur dans pour par avec sans que qui "
     "quoi elle ils elles nous vous mon ton notre votre cette ces aux pas plus tres bien aime "
-    "adore etre avoir fait faire comme mais donc car tout tous toute".split()
+    "adore etre avoir fait faire comme mais donc car tout tous toute"
 )
+_STOP = set(_STOP_WORDS.split())
 
 
 @dataclass(frozen=True)
