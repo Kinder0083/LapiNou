@@ -5,6 +5,9 @@ Audio : les synthèses françaises de server/tests/data et l'enregistrement fr.w
 
 from __future__ import annotations
 
+import asyncio
+import time
+
 import numpy as np
 import pytest
 from test_wake_asr import SR, read_pcm16
@@ -26,11 +29,15 @@ class FakeSegmenter:
     def __init__(self, *, start=None, end=0, tail=None):
         self.start, self.end, self.tail, self.fed, self.flushed = start, end, tail, 0, False
 
+    delay = 0.0
+
     @property
     def speaking(self):
         return self.start is not None and self.start <= self.fed <= self.end
 
     def feed(self, pcm):
+        if self.delay:
+            time.sleep(self.delay)
         self.fed += len(pcm)
         if self.tail is not None and self.fed >= self.tail:
             return [(self.start, np.ones(8000, np.float32))]
@@ -84,6 +91,97 @@ async def test_stream_ending_during_speech_flushes_the_vad(monkeypatch):
     seg = FakeSegmenter(start=SR // 2, end=10 * SR)
     assert await transcriber(monkeypatch, seg).transcribe_utterance(blocks(2)) == "allume le salon"
     assert seg.flushed
+
+
+async def test_a_blip_without_segment_does_not_keep_the_request_open(monkeypatch):
+    """Un clic (parole détectée puis abandonnée par le VAD, sans segment) n'arme pas le délai à vie."""
+    read: list[int] = []
+    seg = FakeSegmenter(start=SR, end=SR + SR // 4)  # 0,25 s de « parole », jamais de segment
+    assert await transcriber(monkeypatch, seg).transcribe_utterance(blocks(60, read)) is None
+    assert len(read) * BLOCK < 7.5 * SR  # 5 s après le clic, pas avant
+
+
+class Stalling:
+    """Un flux qui donne un bloc puis se tait sans se fermer (lapin déconnecté)."""
+
+    closed = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if getattr(self, "sent", False):
+            await asyncio.sleep(3600)
+        self.sent = True
+        return np.zeros(BLOCK, np.int16)
+
+    async def aclose(self):
+        self.closed = True
+
+
+async def test_a_stalled_stream_times_out_with_none_and_is_closed(monkeypatch):
+    stream = Stalling()
+    t = transcriber(monkeypatch, FakeSegmenter())
+    started = time.monotonic()
+    assert await t.transcribe_utterance(stream, idle_timeout_s=0.2) is None
+    assert time.monotonic() - started < 2
+    assert stream.closed
+
+
+async def test_cancellation_returns_promptly_and_closes_the_stream(monkeypatch):
+    closed = []
+
+    async def gen():
+        try:
+            while True:
+                yield np.zeros(BLOCK, np.int16)
+        finally:
+            closed.append(True)
+
+    seg = FakeSegmenter()
+    seg.delay = 0.5  # VAD bloquant (dans un fil)
+    task = asyncio.create_task(transcriber(monkeypatch, seg).transcribe_utterance(gen()))
+    await asyncio.sleep(0.1)
+    started = time.monotonic()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert time.monotonic() - started < 0.3
+    assert closed
+
+
+async def test_stream_is_closed_after_speech_and_on_error(monkeypatch):
+    closed = []
+
+    async def gen(dtype):
+        try:
+            while True:
+                yield np.zeros(BLOCK, dtype)
+        finally:
+            closed.append(dtype)
+
+    seg = FakeSegmenter(start=SR, end=2 * SR, tail=3 * SR)
+    assert await transcriber(monkeypatch, seg).transcribe_utterance(gen(np.int16)) == "allume le salon"
+    with pytest.raises(ValueError):
+        await transcriber(monkeypatch, FakeSegmenter()).transcribe_utterance(gen(np.float32))
+    assert closed == [np.int16, np.float32]
+
+
+async def test_only_the_first_segment_is_transcribed(monkeypatch):
+    heard = []
+
+    class Rec:
+        def transcribe(self, samples):
+            heard.append(len(samples))
+            return "un"
+
+    class Two(FakeSegmenter):
+        def feed(self, pcm):
+            return [(0, np.ones(8000, np.float32)), (SR, np.ones(16000, np.float32))]
+
+    monkeypatch.setattr(vad, "SileroSegmenter", lambda *a, **k: Two())
+    assert await asr.Transcriber(recogniser=Rec()).transcribe_utterance(blocks(1)) == "un"
+    assert heard == [8000 + 2 * int(vad.PAD_S * SR)]
 
 
 async def test_wrong_pcm_format_is_refused(monkeypatch):
