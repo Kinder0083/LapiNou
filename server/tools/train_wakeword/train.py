@@ -632,58 +632,79 @@ NEAR_OFFSETS = [-2, -1, 0, 1, 2, 3, 4]
 
 
 def cmd_features(args: argparse.Namespace) -> None:
+    """Mémoire bornée : extraits chargés étape par étape, tâches envoyées au fil de l'eau
+    (imap), résultats recopiés dans un .npy projeté plutôt que concaténés en mémoire."""
     work = Path(args.work)
     clips = work / "clips"
     out = work / "features"
     out.mkdir(exist_ok=True)
+
     def train_clips(kind: str) -> list[np.ndarray]:
         """Extraits d'entraînement : voix d'origine puis voix mélangées (si générées)."""
         mix = clips / f"mix_{kind}.npz"
         return load_clips(clips / f"train_{kind}.npz") + (load_clips(mix) if mix.exists() else [])
 
-    babble = load_clips(clips / "train_sentence.npz")
-    babble_test = load_clips(clips / "test_sentence.npz")
-    sub, sub_t = "train", "test"
-    for split, clips_list in (("train", babble), ("test", babble_test)):
+    for split in ("train", "test"):
         if not (clips / f"babble_{split}.npz").exists():  # une phrase sur sept pour les fonds
-            save_clips(clips / f"babble_{split}.npz", clips_list[::7], [""] * len(clips_list[::7]))
+            sentences_ = load_clips(clips / f"{split}_sentence.npz")[::7]
+            save_clips(clips / f"babble_{split}.npz", sentences_, [""] * len(sentences_))
+            del sentences_
 
-    def run(name: str, fn, tasks: list) -> None:
+    def run(name: str, fn, tasks) -> None:
         target = out / f"{name}.npy"
         if target.exists():
             return
         t0 = time.time()
         with Pool(args.jobs, _feat_init, (args.feature_dir, str(clips))) as pool:
-            parts = pool.map(fn, tasks, chunksize=4)
-        data = np.concatenate([p for p in parts if len(p)])
-        np.save(target, data)
-        print(f"{name}: {data.shape} en {time.time() - t0:.0f} s", flush=True)
+            parts = [p for p in pool.imap(fn, tasks, chunksize=4) if len(p)]
+        data = np.lib.format.open_memmap(
+            target.with_suffix(".part.npy"), "w+", np.float16,
+            (sum(len(p) for p in parts), ww.N_FEATURES, 96))
+        row = 0
+        while parts:
+            part = parts.pop(0)
+            data[row : row + len(part)] = part
+            row += len(part)
+        data.flush()
+        shape = data.shape
+        del data
+        target.with_suffix(".part.npy").replace(target)
+        print(f"{name}: {shape} en {time.time() - t0:.0f} s", flush=True)
 
-    pos = train_clips("positive")
-    run("train_pos", _word_task,
-        [(w, 1000 + i * 10 + k, sub, POS_OFFSETS) for i, w in enumerate(pos)
-         for k in range(args.pos_aug)])
-    near = train_clips("near")
-    run("train_near", _word_task,
-        [(w, 500000 + i * 10 + k, sub, NEAR_OFFSETS) for i, w in enumerate(near)
-         for k in range(2)])
-    speech = train_clips("sentence")
-    groups = [speech[i : i + 12] for i in range(0, len(speech), 12)]
-    run("train_speech", _stream_task,
-        [(g, 900000 + i * 10 + k, sub, 2) for i, g in enumerate(groups) for k in range(2)])
-    run("train_noise", _noise_task, [(30.0, 1300000 + i, sub, 2) for i in range(args.noise_min * 2)])
+    sub, sub_t = "train", "test"
+    if not (out / "train_pos.npy").exists():
+        pos = train_clips("positive")
+        run("train_pos", _word_task,
+            ((w, 1000 + i * 10 + k, sub, POS_OFFSETS) for i, w in enumerate(pos)
+             for k in range(args.pos_aug)))
+        del pos
+    if not (out / "train_near.npy").exists():
+        near = train_clips("near")
+        run("train_near", _word_task,
+            ((w, 500000 + i * 10 + k, sub, NEAR_OFFSETS) for i, w in enumerate(near)
+             for k in range(2)))
+        del near
+    if not (out / "train_speech.npy").exists():
+        speech = train_clips("sentence")
+        groups = [speech[i : i + 12] for i in range(0, len(speech), 12)]
+        run("train_speech", _stream_task,
+            ((g, 900000 + i * 10 + k, sub, 2) for i, g in enumerate(groups) for k in range(2)))
+        del speech, groups
+    run("train_noise", _noise_task, ((30.0, 1300000 + i, sub, 2) for i in range(args.noise_min * 2)))
     if args.real_negatives:
         wavs = sorted(Path(args.real_negatives).glob("*.wav"))
-        run("train_real", _real_task, [(str(p), 1) for p in wavs])
+        run("train_real", _real_task, ((str(p), 1) for p in wavs))
 
     # Test (voix réservées) : positifs au propre et augmentés, phrases et mots proches.
     test_pos = load_clips(clips / "test_positive.npz")
-    run("test_pos", _word_task, [(w, 2000000 + i, sub_t, [0, 1, 2, 3]) for i, w in enumerate(test_pos)])
+    run("test_pos", _word_task, ((w, 2000000 + i, sub_t, [0, 1, 2, 3]) for i, w in enumerate(test_pos)))
     test_near = load_clips(clips / "test_near.npz")
     run("test_near", _word_task,
-        [(w, 2100000 + i, sub_t, NEAR_OFFSETS) for i, w in enumerate(test_near)])
-    groups_t = [babble_test[i : i + 12] for i in range(0, len(babble_test), 12)]
-    run("test_speech", _stream_task, [(g, 2200000 + i, sub_t, 1) for i, g in enumerate(groups_t)])
+        ((w, 2100000 + i, sub_t, NEAR_OFFSETS) for i, w in enumerate(test_near)))
+    if not (out / "test_speech.npy").exists():
+        speech_t = load_clips(clips / "test_sentence.npz")
+        groups_t = [speech_t[i : i + 12] for i in range(0, len(speech_t), 12)]
+        run("test_speech", _stream_task, ((g, 2200000 + i, sub_t, 1) for i, g in enumerate(groups_t)))
 
 
 # ---------------------------------------------------------------- entraînement
