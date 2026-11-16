@@ -53,7 +53,7 @@ $(LIBDIR)/libkarotz-messages.so: $(S)/src/usr/libkarotz-messages/karotz-messages
 	$(CC) $(CFLAGS) -fPIC -shared $(DBUS_CFLAGS) $(INCLUDES) -o $@ $< $(LDFLAGS) $(DBUS_LIBS)
 
 COMMON_SRC := $(wildcard $(S)/src/usr/libkarotz-common/*.c)
-$(LIBDIR)/libkarotz-common.so: $(COMMON_SRC) $(S)/src/usr/libkarotz-common/karotz-common.h
+$(LIBDIR)/libkarotz-common.so: $(COMMON_SRC) $(wildcard $(S)/src/usr/libkarotz-common/*.h)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -fPIC -shared $(DBUS_CFLAGS) $(INCLUDES) -o $@ $(COMMON_SRC) $(LDFLAGS) $(DBUS_LIBS) -luuid
 

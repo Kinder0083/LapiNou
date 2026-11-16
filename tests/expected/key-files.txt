@@ -1491,6 +1491,8 @@ usr:share/lapinlibre/web-info.sh f 0644 0:0
 usr:share/lapinlibre/web-media.sh f 0644 0:0
 usr:share/lapinlibre/web-tags.sh f 0644 0:0
 usr:share/lapinlibre/web.sh f 0644 0:0
+usr:share/lapinou d 0755 0:0
+usr:share/lapinou/conf.sh f 0644 0:0
 usr:www d 0755 0:0
 usr:www/app.js f 0644 0:0
 usr:www/cgi-bin d 0755 0:0

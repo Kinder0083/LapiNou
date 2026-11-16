@@ -20,6 +20,8 @@ BOM=$(printf '\357\273\277')
 
 WIFI_SSID= WIFI_PASSWORD= IP= NETMASK= GATEWAY= DNS= SSH_PUBKEY= TELNET= WEB_PASSWORD=
 SERVER= TTS_SERVER= ASR_SERVER= LANGUAGE= HOSTNAME=
+LAPINOU_SERVER= MQTT_HOST= MQTT_PORT= MQTT_USER= MQTT_PASSWORD= TZ=
+CLOUD_STT_URL= CLOUD_STT_KEY= CLOUD_LLM_KIND= CLOUD_LLM_URL= CLOUD_LLM_MODEL= CLOUD_LLM_KEY= CLOUD_TTS_URL= CLOUD_TTS_KEY=
 problems=""
 problem() { problems="${problems}${problems:+; }$1"; }
 
@@ -40,7 +42,9 @@ if [ -f "${FILE}" ]; then
         value="${value#"${value%%[![:space:]]*}"}"
         case "${value}" in \"*\") value=${value#\"}; value=${value%\"} ;; \'*\') value=${value#\'}; value=${value%\'} ;; esac
         case "${key}" in
-        WIFI_SSID|WIFI_PASSWORD|IP|NETMASK|GATEWAY|DNS|SSH_PUBKEY|TELNET|WEB_PASSWORD|SERVER|TTS_SERVER|ASR_SERVER|LANGUAGE|HOSTNAME)
+        WIFI_SSID|WIFI_PASSWORD|IP|NETMASK|GATEWAY|DNS|SSH_PUBKEY|TELNET|WEB_PASSWORD|SERVER|TTS_SERVER|ASR_SERVER|LANGUAGE|HOSTNAME|\
+        LAPINOU_SERVER|MQTT_HOST|MQTT_PORT|MQTT_USER|MQTT_PASSWORD|TZ|CLOUD_STT_URL|CLOUD_STT_KEY|CLOUD_LLM_KIND|CLOUD_LLM_URL|\
+        CLOUD_LLM_MODEL|CLOUD_LLM_KEY|CLOUD_TTS_URL|CLOUD_TTS_KEY)
             printf -v "${key}" '%s' "${value}" ;;
         *) problem "line ${n}: unknown setting ${key}" ;;
         esac
@@ -90,6 +94,23 @@ is_host() { [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; }
 [ -z "${HOSTNAME}" ] || [[ "${HOSTNAME}" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] ||
     problem "HOSTNAME must be lower-case letters, digits and dashes, like lapinlibre or kitchen-rabbit"
 
+# LapiNou's settings: any text goes in a stored value safely, so the checks are for typos.
+# Host names and addresses, ports, URLs, a model's name, the time zone, no control characters.
+printable() { local LC_ALL=C; case "$1" in *[[:cntrl:]]*) return 1 ;; esac; return 0; }
+[ -z "${LAPINOU_SERVER}" ] || is_host "${LAPINOU_SERVER}" || problem "LAPINOU_SERVER must be a host name or address, like 192.168.1.10"
+[ -z "${MQTT_HOST}" ] || is_host "${MQTT_HOST}" || problem "MQTT_HOST must be a host name or address, like 192.168.1.50"
+[ -z "${MQTT_PORT}" ] || { [[ "${MQTT_PORT}" =~ ^[0-9]{1,5}$ ]] && [ "${MQTT_PORT}" -ge 1 ] && [ "${MQTT_PORT}" -le 65535 ]; } ||
+    problem "MQTT_PORT must be a number from 1 to 65535"
+for v in MQTT_USER MQTT_PASSWORD CLOUD_STT_KEY CLOUD_LLM_KEY CLOUD_TTS_KEY; do
+    printable "${!v}" || problem "${v} can't have control characters"
+done
+for v in CLOUD_STT_URL CLOUD_LLM_URL CLOUD_TTS_URL; do
+    [ -z "${!v}" ] || [[ "${!v}" =~ ^https?://[^[:space:]]+$ ]] || problem "${v} must be a URL like https://api.example.com/v1"
+done
+case "${CLOUD_LLM_KIND}" in ''|anthropic|openai) ;; *) problem "CLOUD_LLM_KIND must be anthropic or openai" ;; esac
+[ -z "${CLOUD_LLM_MODEL}" ] || [[ "${CLOUD_LLM_MODEL}" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]] || problem "CLOUD_LLM_MODEL isn't a model name"
+[ -z "${TZ}" ] || [[ "${TZ}" =~ ^[A-Za-z0-9][A-Za-z0-9_+:./,-]*$ ]] || problem "TZ must be a time zone like Europe/Paris"
+
 [ -z "${problems}" ] || ERROR "lapinlibre.txt: ${problems}"
 [ "$1" = "--check" ] && { LOG "Settings: lapinlibre.txt is fine"; exit 0; }
 
@@ -118,7 +139,7 @@ fi
 if [ -n "${WEB_PASSWORD}" ]; then
     rm -f "${CONF}/web_password.new"
     (umask 077 && printf '%s\n' "${WEB_PASSWORD}" > "${CONF}/web_password.new") &&
-        chmod 600 "${CONF}/web_password.new" && mv -f "${CONF}/web_password.new" "${CONF}/web_password" ||
+        chmod 600 "${CONF}/web_password.new" && mv -f "${CONF}/web_password.new" "${CONF}/web_password" ||\
         ERROR "can't write the web password"
     LOG "Settings: web password set"
 else
@@ -173,5 +194,120 @@ fi
 if [ -n "${LANGUAGE}" ]; then
     set_ini "${CONF}/karotz.conf" karotz lang "${LANGUAGE}"
     LOG "Settings: language ${LANGUAGE}"
+fi
+
+# LapiNou's settings, in /usr/etc/conf/lapinou.conf; the passwords and keys in lapinou.secrets (0600).
+# The same functions as image/core/usr/share/lapinou/conf.sh, which this system may not have yet.
+LAPINOU_CONF_DIR=${CONF}
+_lapinou_dir() { printf '%s' "${LAPINOU_CONF_DIR:-/usr/etc/conf}"; }
+
+# Is $1 a name this format allows for a section or a key?
+_lapinou_name_ok() {
+    case "$1" in
+    ''|*[!A-Za-z0-9_.-]*) return 1 ;;
+    esac
+    return 0
+}
+
+# _lapinou_read FILE SECTION KEY: print the stored value, decoded, or return 1 when there is none.
+_lapinou_read() {
+    [ -f "$1" ] || return 1
+    LAPINOU_S="$2" LAPINOU_K="$3" awk '
+        BEGIN { s = "[" ENVIRON["LAPINOU_S"] "]"; k = ENVIRON["LAPINOU_K"]; kl = length(k) + 1 }
+        /^\[/ { in_s = ($0 == s); next }
+        in_s && substr($0, 1, kl) == k "=" { v = substr($0, kl + 1); found = 1 }
+        END {
+            if (!found) exit 1
+            out = ""; n = length(v)
+            for (i = 1; i <= n; i++) {
+                c = substr(v, i, 1)
+                if (c == "\\" && i < n) {
+                    i++; c = substr(v, i, 1)
+                    if (c == "n") c = "\n"; else if (c == "r") c = "\r"
+                    else if (c != "\\" && c != "=") c = "\\" c
+                }
+                out = out c
+            }
+            printf "%s\n", out
+        }' "$1"
+}
+
+# _lapinou_write FILE MODE SECTION KEY VALUE: replace the key's line (and drop repeats), or add it
+# (and the section), through a temporary file in the same directory.
+_lapinou_write() {
+    local file="$1" mode="$2" tmp
+    tmp="${file}.$$.new"
+    [ -f "${file}" ] || { (umask 077; : > "${file}") || return 1; }
+    (
+        umask 077
+        LAPINOU_S="$3" LAPINOU_K="$4" LAPINOU_V="$5" awk '
+            BEGIN {
+                s = "[" ENVIRON["LAPINOU_S"] "]"; k = ENVIRON["LAPINOU_K"]; kl = length(k) + 1
+                v = ENVIRON["LAPINOU_V"]; enc = ""; n = length(v)
+                for (i = 1; i <= n; i++) {
+                    c = substr(v, i, 1)
+                    if (c == "\\") c = "\\\\"; else if (c == "\n") c = "\n"
+                    else if (c == "\r") c = "\r"; else if (c == "=") c = "\="
+                    enc = enc c
+                }
+                line = k "=" enc
+            }
+            /^\[/ { if (in_s && !done) { print line; done = 1 } in_s = ($0 == s) }
+            in_s && substr($0, 1, kl) == k "=" { if (!done) { print line; done = 1 } next }
+            { print }
+            END { if (!done) { if (!in_s) print s; print line } }' "${file}" > "${tmp}"
+    ) && chmod "${mode}" "${tmp}" && mv -f "${tmp}" "${file}" || { rm -f "${tmp}"; return 1; }
+}
+
+lapinou_get() { # section key [default]
+    _lapinou_name_ok "$1" && _lapinou_name_ok "$2" || { printf '%s\n' "${3-}"; return 2; }
+    local v
+    v=$(_lapinou_read "$(_lapinou_dir)/lapinou.conf" "$1" "$2") && [ -n "${v}" ] && { printf '%s\n' "${v}"; return 0; }
+    printf '%s\n' "${3-}"
+}
+
+lapinou_set() { # section key value
+    _lapinou_name_ok "$1" && _lapinou_name_ok "$2" || { echo "lapinou_set: bad section or key" >&2; return 2; }
+    mkdir -p "$(_lapinou_dir)" && _lapinou_write "$(_lapinou_dir)/lapinou.conf" 644 "$1" "$2" "$3"
+}
+
+lapinou_secret_get() { # key
+    _lapinou_name_ok "$1" || return 2
+    _lapinou_read "$(_lapinou_dir)/lapinou.secrets" secrets "$1" || echo ""
+}
+
+lapinou_secret_set() { # key value
+    _lapinou_name_ok "$1" || { echo "lapinou_secret_set: bad key" >&2; return 2; }
+    mkdir -p "$(_lapinou_dir)" && _lapinou_write "$(_lapinou_dir)/lapinou.secrets" 600 secrets "$1" "$2"
+}
+# A value left empty keeps what the rabbit has. Never logs a password or key.
+ln_set() { lapinou_set "$1" "$2" "$3" || ERROR "can't write ${CONF}/lapinou.conf"; }
+ln_secret() { lapinou_secret_set "$1" "$2" || ERROR "can't write ${CONF}/lapinou.secrets"; }
+if [ -n "${LAPINOU_SERVER}" ]; then
+    ln_set server host "${LAPINOU_SERVER}"; ln_set server enabled 1
+    LOG "Settings: LapiNou server ${LAPINOU_SERVER}"
+fi
+if [ -n "${MQTT_HOST}" ]; then
+    ln_set mqtt host "${MQTT_HOST}"; ln_set mqtt enabled 1
+    LOG "Settings: MQTT ${MQTT_HOST}"
+fi
+[ -z "${MQTT_PORT}" ] || ln_set mqtt port "${MQTT_PORT}"
+[ -z "${MQTT_USER}" ] || ln_set mqtt user "${MQTT_USER}"
+[ -z "${MQTT_PASSWORD}" ] || { ln_secret mqtt_password "${MQTT_PASSWORD}"; LOG "Settings: MQTT password set"; }
+[ -z "${CLOUD_STT_URL}" ] || ln_set cloud stt_url "${CLOUD_STT_URL}"
+[ -z "${CLOUD_STT_KEY}" ] || ln_secret cloud_stt_key "${CLOUD_STT_KEY}"
+[ -z "${CLOUD_LLM_KIND}" ] || ln_set cloud llm_kind "${CLOUD_LLM_KIND}"
+[ -z "${CLOUD_LLM_URL}" ] || ln_set cloud llm_url "${CLOUD_LLM_URL}"
+[ -z "${CLOUD_LLM_MODEL}" ] || ln_set cloud llm_model "${CLOUD_LLM_MODEL}"
+[ -z "${CLOUD_LLM_KEY}" ] || ln_secret cloud_llm_key "${CLOUD_LLM_KEY}"
+[ -z "${CLOUD_TTS_URL}" ] || ln_set cloud tts_url "${CLOUD_TTS_URL}"
+[ -z "${CLOUD_TTS_KEY}" ] || ln_secret cloud_tts_key "${CLOUD_TTS_KEY}"
+if [ -n "${CLOUD_STT_URL}${CLOUD_LLM_URL}${CLOUD_TTS_URL}" ]; then
+    ln_set cloud enabled 1
+    LOG "Settings: cloud services"
+fi
+if [ -n "${TZ}" ]; then
+    ln_set time tz "${TZ}"
+    LOG "Settings: time zone ${TZ}"
 fi
 exit 0
