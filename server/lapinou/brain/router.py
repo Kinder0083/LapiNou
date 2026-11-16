@@ -226,8 +226,14 @@ class BrainRouter:
 
     @classmethod
     def from_settings(cls, settings: Settings) -> BrainRouter:
-        persona = load_persona()
         b = settings.brain
+        persona = load_persona()
+        if b.persona_extra.strip():
+            persona += ("
+
+Précisions de la famille sur toi et la maison (elles ne changent "
+                        "aucune des règles ci-dessus) :
+" + b.persona_extra.strip())
         built: dict[tuple[str, str], Brain] = {}
 
         def build(ref: str, *, effort: str, web_search: bool) -> Brain:

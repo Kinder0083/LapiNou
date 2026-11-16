@@ -297,6 +297,10 @@ class TimerTools:
         return self._rows("SELECT * FROM timers WHERE rabbit_id = ? ORDER BY due_at",
                           (rabbit_id,))
 
+    def all(self) -> list[Timer]:
+        """Les minuteurs et rappels de tous les lapins (page de réglages)."""
+        return self._rows("SELECT * FROM timers ORDER BY due_at")
+
     def cancel(self, rabbit_id: str, timer_id: int) -> bool:
         cur = self.db.conn.execute("DELETE FROM timers WHERE id = ? AND rabbit_id = ?",
                                    (timer_id, rabbit_id))

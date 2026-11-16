@@ -118,6 +118,27 @@ class MemoryTools:
         self.db.conn.commit()
         return int(cur.lastrowid)
 
+    def edit(self, memory_id: int, text: str) -> Memory | None:
+        """Corrige un souvenir (page de réglages) ; None s'il n'existe pas. ValueError comme
+        `remember` (consigne, secret, texte vide)."""
+        text = " ".join(text.split())[:MAX_TEXT]
+        if not text:
+            raise ValueError("rien à retenir")
+        reason = self.refusal(text)
+        if reason is not None:
+            raise ValueError(reason)
+        cur = self.db.conn.execute("UPDATE memories SET text = ? WHERE id = ?", (text, memory_id))
+        self.db.conn.commit()
+        if cur.rowcount == 0:
+            return None
+        return next(m for m in self.all() if m.id == memory_id)
+
+    def clear(self) -> int:
+        """Efface tous les souvenirs ; renvoie combien."""
+        cur = self.db.conn.execute("DELETE FROM memories")
+        self.db.conn.commit()
+        return cur.rowcount
+
     def _ranked(self, query: str) -> list[tuple[int, Memory]]:
         wanted = _stems(query)
         scored = [(len(wanted & _stems(m.text)), m) for m in self.all()]

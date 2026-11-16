@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import os
 import tempfile
+import threading
 import tomllib
 from pathlib import Path
 from typing import Any, Literal
@@ -29,6 +30,9 @@ class ServerConfig(_Section):
     asr_port: int = 8443
     # Fuseau des minuteurs, rappels et de l'heure dite (pas celui du système).
     timezone: str = "Europe/Paris"
+    # Adresse par laquelle les lapins joignent ce serveur (MP3 des réponses, clé USB), par
+    # exemple http://192.168.1.10:8080 ; vide : LAPINOU_BASE_URL, sinon l'adresse locale détectée.
+    public_url: str = ""
 
 
 class MqttConfig(_Section):
@@ -70,6 +74,8 @@ class BrainConfig(_Section):
     fallback_chain: list[str] = Field(default_factory=lambda: ["homeassistant"])
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     web_search: bool = True  # recherche web (outil serveur) pour le modèle principal
+    # Précisions du propriétaire ajoutées à la personnalité de Lapinou (page « Personnalité »).
+    persona_extra: str = Field(default="", max_length=2000)
 
 
 class ModelPrice(_Section):
@@ -171,6 +177,27 @@ class RabbitConfig(_Section):
     default_lms_player: str = ""
 
 
+class OtaConfig(_Section):
+    # Dépôt GitHub dont les versions (Releases) sont relayées aux lapins (R38).
+    repo: str = "Kinder0083/LapiNou"
+    # Jeton GitHub à grain fin, lecture seule de « Contents », pour un dépôt privé.
+    token: str = ""  # secret
+    dir: str = "/var/lib/lapinou/ota"
+    check_hours: float = 12.0  # 0 : seulement à la demande
+
+
+class UpdateConfig(_Section):
+    # Clone git du serveur (vide : celui d'où il tourne) et commande de redémarrage du service.
+    repo_dir: str = ""
+    restart_command: list[str] = Field(
+        default_factory=lambda: ["systemctl", "--no-block", "restart", "lapinou"]
+    )
+
+
+class AdminConfig(_Section):
+    password_hash: str = ""  # secret (argon2)
+
+
 class Settings(_Section):
     server: ServerConfig = Field(default_factory=ServerConfig)
     mqtt: MqttConfig = Field(default_factory=MqttConfig)
@@ -183,6 +210,9 @@ class Settings(_Section):
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     logs: LogsConfig = Field(default_factory=LogsConfig)
     rabbits: dict[str, RabbitConfig] = Field(default_factory=dict)
+    ota: OtaConfig = Field(default_factory=OtaConfig)
+    update: UpdateConfig = Field(default_factory=UpdateConfig)
+    admin: AdminConfig = Field(default_factory=AdminConfig)
 
     # Emplacement du config.toml d'origine (utilisé par save_settings).
     _path: Path | None = PrivateAttr(default=None)
@@ -190,6 +220,11 @@ class Settings(_Section):
     @property
     def path(self) -> Path | None:
         return self._path
+
+
+# Les secrets (section, clé), hors clés des fournisseurs (`brain.providers.<nom>.api_key`).
+SECRET_FIELDS = (("mqtt", "password"), ("ha", "token"), ("safety", "pin"), ("ota", "token"),
+                 ("admin", "password_hash"))
 
 
 def _secrets_path(config_path: Path) -> Path:
@@ -205,7 +240,7 @@ def _split_secrets(data: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]
     """Sépare un dict de réglages en (public, secrets)."""
     public = copy.deepcopy(data)
     secrets: dict[str, Any] = {}
-    for name, key in (("mqtt", "password"), ("ha", "token"), ("safety", "pin")):
+    for name, key in SECRET_FIELDS:
         taken = _take(public[name], key)
         if taken:
             secrets[name] = taken
@@ -270,3 +305,25 @@ def save_settings(s: Settings) -> None:
     public, secrets = _split_secrets(s.model_dump(mode="python"))
     _atomic_write(_secrets_path(s._path), tomli_w.dumps(secrets).encode(), 0o600)
     _atomic_write(s._path, tomli_w.dumps(public).encode(), 0o644)
+
+
+class SettingsStore:
+    """Les réglages en cours de la page web : relus, remplacés et enregistrés d'un bloc."""
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        self._lock = threading.Lock()
+
+    def get(self) -> Settings:
+        return self._settings
+
+    def replace(self, data: dict[str, Any]) -> Settings:
+        """Valide `data` (tous les réglages, secrets compris) puis l'enregistre s'il y a un
+        fichier ; pydantic.ValidationError sinon, et rien n'est changé."""
+        with self._lock:
+            new = Settings.model_validate(data)
+            new._path = self._settings._path
+            if new._path is not None:
+                save_settings(new)
+            self._settings = new
+            return new

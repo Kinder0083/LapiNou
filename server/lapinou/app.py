@@ -32,7 +32,16 @@ DEFAULT_DB_PATH = Path("/var/lib/lapinou/lapinou.db")
 _UNSET: Any = object()
 
 
-def create_app(settings: Settings, *, services: Services | None = None) -> FastAPI:
+def create_app(
+    settings: Settings, *, services: Services | None = None, web: Any = None
+) -> FastAPI:
+    """`web` (`WebContext`) : ce que la page de réglages montre ; sinon celui des services, ou
+    une page sans base (réglages et connexion seulement)."""
+    from . import ota
+    from .config import SettingsStore
+    from .web import routes
+
+
     lifespan = None
     if services is not None:
 
@@ -50,6 +59,13 @@ def create_app(settings: Settings, *, services: Services | None = None) -> FastA
     app.state.tts_store = tts.Mp3Store()  # MP3 des phrases, GET /tts/<id>.mp3
     app.state.services = services
     app.include_router(tts.router)
+    if web is None:
+        web = services.web if services is not None and services.web is not None else (
+            routes.WebContext(store=SettingsStore(settings)))
+    app.state.web = web
+    app.state.ota = web.ota  # GET /ota/manifest.json et ses fichiers, pour les lapins
+    app.include_router(ota.router)
+    routes.install(app)
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
@@ -71,6 +87,8 @@ class Services:
     ha: Any = None
     tool_sources: list[Any] = field(default_factory=list)
     tts_server: Any = None
+    ota: Any = None
+    web: Any = None
     _tts_thread: threading.Thread | None = None
 
     def refresh_tools(self) -> None:
@@ -95,9 +113,13 @@ class Services:
             target=self.tts_server.serve_forever, name="tts-compat", daemon=True
         )
         self._tts_thread.start()
+        if self.ota is not None:
+            await self.ota.start()
         log.info("serveur LapiNou démarré")
 
     async def close(self) -> None:
+        if self.ota is not None:
+            await self.ota.close()
         if self.tts_server is not None:
             await asyncio.to_thread(self.tts_server.shutdown)
             self.tts_server.server_close()
@@ -124,10 +146,10 @@ def _lan_address() -> str:
 
 
 def base_url(settings: Settings) -> str:
-    """Début des URL que le lapin utilise pour joindre ce serveur (MP3 des réponses)."""
-    return os.environ.get("LAPINOU_BASE_URL") or (
-        f"http://{_lan_address()}:{settings.server.http_port}"
-    )
+    """Début des URL que le lapin utilise pour joindre ce serveur (MP3 des réponses, clé USB) :
+    LAPINOU_BASE_URL, sinon `server.public_url`, sinon l'adresse locale détectée."""
+    configured = os.environ.get("LAPINOU_BASE_URL") or settings.server.public_url
+    return configured.rstrip("/") or f"http://{_lan_address()}:{settings.server.http_port}"
 
 
 def build_services(
@@ -204,10 +226,21 @@ def build_services(
         silence_ms=settings.voice.vad_silence_ms,
     )
     orchestrator.attach(registry, gateway)
+    from .config import SettingsStore
+    from .ota import OtaRelay
+    from .updater import Updater
+    from .web.routes import WebContext
+
+    relay = OtaRelay.from_settings(settings)
+    web = WebContext(
+        store=SettingsStore(settings), db=db, memory=memory, timers=timers,
+        budget=orchestrator.deps.budget, log=orchestrator.deps.log, registry=registry,
+        voice=voice, ota=relay, updater=Updater.from_settings(settings),
+    )
     return Services(
         settings=settings, db=db, registry=registry, gateway=gateway, voice=voice,
         orchestrator=orchestrator, timers=timers, state=orchestrator.deps.state, ha=ha,
-        tool_sources=sources,
+        tool_sources=sources, ota=relay, web=web,
     )
 
 
