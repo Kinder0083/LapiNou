@@ -52,8 +52,9 @@ dans `.local/bin` (dans le PATH du service).
   un LXC non privilégié, une option refusée par le noyau fait échouer le démarrage
   (`status=226/NAMESPACE`) : la retirer par un `systemctl edit lapinou`.
 
-À la charge de l'installateur : créer l'utilisateur et les dossiers (propriétaire `lapinou`),
-installer `protoc`, `ffmpeg` et `libspeexdsp`, copier l'unité dans `/etc/systemd/system/`.
+À la charge de l'installateur (`installation.md`) : créer l'utilisateur et les dossiers
+(propriétaire `lapinou`), installer `protoc`, `ffmpeg` et `libspeexdsp`, copier l'unité dans
+`/etc/systemd/system/` (avec une surcharge `lxc.conf` si le conteneur refuse une option).
 Le bouton « Redémarrer » de la page lance `systemctl --no-block restart lapinou` en tant que
 `lapinou` : il faut une règle polkit qui le permet (`sudo` est exclu par `NoNewPrivileges`).
 
