@@ -130,7 +130,9 @@ entraîne sur les 2 000 h de négatifs ACAV100M (17 Go). Ici, sur CPU et en fran
   moyenne) et des positifs uniquement synthétiques ;
 - réverbération et bruits synthétiques au lieu d'enregistrements réels ;
 - 300 000 fenêtres ACAV100M (≈ 6 % du jeu complet) ;
-- « la pinou » n'est pas un négatif : c'est un homophone exact de « Lapinou ».
+- « la pinou » n'est pas un négatif (décision R16 du projet) : c'est un homophone exact de
+  « Lapinou » (/lapinu/), Piper le prononce à l'identique, et l'apprendre comme négatif
+  contredirait les positifs. Le modèle se déclenchera donc sur « la pinou ».
 
 Conséquences attendues : moins robuste aux accents, aux enfants et aux pièces très
 réverbérantes qu'un modèle entraîné sur de vraies voix ; à reprendre avec des
