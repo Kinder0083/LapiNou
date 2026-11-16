@@ -303,13 +303,15 @@ class UsbKeyTest(unittest.TestCase):
     def test_no_server_keeps_the_rabbits(self):
         # The install keeps the rabbit's own karotz.conf and voice.conf when
         # lapinlibre.txt names no server; a rabbit with none gets the image's, which name no one's
-        # servers.
+        # servers. The factory controller's update check is turned off all the same (R38): it
+        # would reboot the rabbit into the factory's updates.
         r = self.rabbit("keep-server", rootfs_version="11.03.10.00")
         conf = r.sb / "usr/etc/conf"
-        (conf / "karotz.conf").write_text("[karotz]\nip_server=192.168.7.7\n", newline="\n")
+        (conf / "karotz.conf").write_text("[karotz]\nip_server=192.168.7.7\nurl_update=http://update.karotz.com/eabi/\n",
+                                          newline="\n")
         r.boot()
         self.assert_flashed(r)
-        self.assertEqual((conf / "karotz.conf").read_text(), "[karotz]\nip_server=192.168.7.7\n")
+        self.assertEqual((conf / "karotz.conf").read_text(), "[karotz]\nip_server=192.168.7.7\nurl_update=http://127.0.0.1:1\n")
         voice = (conf / "voice.conf").read_text()
         self.assertIn("server0=127.0.0.1\n", voice)
         self.assertNotIn("188.165", voice)
@@ -502,6 +504,22 @@ class UsbKeyTest(unittest.TestCase):
                       if path in files[label] and (b".debug_info" in files[label][path].data
                                                    or b"/home/" in files[label][path].data)]
         self.assertEqual(unstripped, [])
+
+    def test_core_has_lapinou_ota(self):
+        # lapinou-ota (Task 11) is in /usr with the key's install helpers and the OTA public key, as
+        # in the repository (the key's install-lib.sh, the same one).
+        import gzip
+        import tarfile
+        with tarfile.open(fileobj=io.BytesIO(gzip.decompress((self.key / "usr.tar.gz").read_bytes()))) as t:
+            members = {m.name.lstrip("./"): m for m in t.getmembers()}
+            def data(name):
+                return t.extractfile(members[name]).read()
+            for name, src, mode in (("karotz/bin/lapinou-ota", "userland/src/usr/lapinou-ota/lapinou-ota.sh", 0o755),
+                                    ("share/lapinou/install-lib.sh", "image/usbkey/install-lib.sh", 0o644),
+                                    ("share/lapinou/ota-pubkey.pem", "image/core/usr/share/lapinou/ota-pubkey.pem", 0o644)):
+                self.assertIn(name, members)
+                self.assertEqual(data(name), (ROOT / src).read_bytes(), name)
+                self.assertEqual(members[name].mode & 0o777, mode, name)
 
     def test_installed_files_match_the_record(self):
         # The key's layout (every entry's path, kind, mode, owner and link target, not

@@ -156,10 +156,16 @@ def make_key(key: Path):
 class FrosRabbit(Rabbit):
     """test_usbkey's sandboxed Karotz, running Free Rabbits OS, reached by the fake ssh."""
 
-    def __init__(self, key: Path, sb: Path, network_conf=NETWORK_CONF, nanddump=None):
+    def __init__(self, key: Path, sb: Path, network_conf=NETWORK_CONF, nanddump=None,
+                 answering=("192.168.1.1", "192.168.1.254"), resolving=("192.168.1.1", "192.168.1.254")):
         super().__init__(key, sb, wpa=WPA)
         sb = self.sb
         log = sb / "actions.log"
+        # The network as the rabbit sees it: the hosts that answer a ping, the DNS servers that answer.
+        stub(sb / "bin/ping", f'for a; do :; done; echo "ping $a" >> {log}\n'
+                              f'case " {" ".join(answering)} " in *" $a "*) exit 0 ;; esac; exit 1')
+        stub(sb / "usr/bin/nslookup", f'echo "nslookup $*" >> {log}\n'
+                                      f'case " {" ".join(resolving)} " in *" $2 "*) exit 0 ;; esac; exit 1')
         (sb / "proc/mtd").write_text(PROC_MTD, newline="\n")
         (sb / "proc/mounts").write_text(f"/dev/root / cramfs ro 0 0\n{sb}/dev/mtdblock6 {sb}/usr yaffs rw 0 0\n"
                                         "tmpfs /dev/shm tmpfs rw 0 0\n", newline="\n")
@@ -272,8 +278,8 @@ class MigrateTest(unittest.TestCase):
         # Each written partition was read back.
         self.assertIn("dump " + str(r.sb / "dev/mtd1"), r.actions())
         self.assertIn("dump " + str(r.sb / "dev/mtd2"), r.actions())
-        # The rabbit's own karotz.conf wins over the key's.
-        self.assertEqual(r.conf("karotz.conf"), "[karotz]\nfrom=rabbit\n")
+        # The rabbit's own karotz.conf wins over the key's; the factory update check is always off.
+        self.assertEqual(r.conf("karotz.conf"), "[karotz]\nfrom=rabbit\nurl_update=http://127.0.0.1:1\n")
 
     def test_refuses_mtd0_and_rescue(self):
         r = self.rabbit("protected")
@@ -318,6 +324,53 @@ class MigrateTest(unittest.TestCase):
         self.assertEqual(r.conf("network.conf"),
                          'IP="192.168.1.103"\nNETMASK="255.255.255.0"\nGATEWAY="192.168.1.1"\nDNS="192.168.1.254"\n')
         self.assertEqual(r.conf("wpa.conf"), WPA)
+
+    def test_live_network_is_checked(self):
+        # The gateway and the DNS server the rabbit uses now answer before they go in network.conf.
+        r = self.rabbit("net-checked", network_conf=None)
+        self.run_ok(r)
+        self.assertIn("ping 192.168.1.1", r.actions())
+        self.assertIn("nslookup github.com 192.168.1.254", r.actions())
+
+    def test_dead_gateway_and_dns_fall_back_to_the_pcs(self):
+        # Free Rabbits OS's gateway and DNS don't answer; the PC's (on the rabbit's network) do.
+        r = self.rabbit("net-fallback", network_conf=None, answering=("192.168.1.254",), resolving=("192.168.1.1",))
+        p = r.migrate(self.key, LAPINOU_PC_GATEWAY="192.168.1.254", LAPINOU_PC_DNS="192.168.1.1")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(r.conf("network.conf"),
+                         'IP="192.168.1.103"\nNETMASK="255.255.255.0"\nGATEWAY="192.168.1.254"\nDNS="192.168.1.1"\n')
+        self.assertIn("the PC's gateway", p.stdout)
+        self.assertIn("the PC's DNS server", p.stdout)
+
+    def test_dead_gateway_without_fallback_writes_nothing(self):
+        for name, env in (("none", {}), ("pc-dead", {"LAPINOU_PC_GATEWAY": "192.168.1.77"}),
+                          ("pc-elsewhere", {"LAPINOU_PC_GATEWAY": "10.0.0.1"})):
+            with self.subTest(name):
+                r = self.rabbit(f"net-dead-{name}", network_conf=None, answering=(), resolving=())
+                p = r.migrate(self.key, **env)
+                self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+                self.assertIn("gateway 192.168.1.1 doesn't answer", p.stdout)
+                self.assertIn("--dhcp", p.stdout)
+                self.assertEqual(r.writes(), [])
+                # The PC's gateway on another network isn't even tried.
+                self.assertNotIn("ping 10.0.0.1", r.actions())
+
+    def test_dead_dns_without_fallback_writes_nothing(self):
+        r = self.rabbit("dns-dead", network_conf=None, resolving=())
+        p = r.migrate(self.key)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("DNS server 192.168.1.254 doesn't answer", p.stdout)
+        self.assertEqual(r.writes(), [])
+
+    def test_kept_network_conf_is_not_probed(self):
+        r = self.rabbit("net-kept", answering=(), resolving=())
+        self.run_ok(r)
+        self.assertFalse([a for a in r.actions() if a.startswith(("ping", "nslookup"))])
+
+    def test_waits_30_s_per_ssh_attempt_after_the_reboot(self):
+        text = MIGRATE.read_text()
+        new_opts = text[text.index("NEW_OPTS=("):]
+        self.assertIn("ConnectTimeout=30", new_opts[:200])
 
     def test_dhcp(self):
         r = self.rabbit("dhcp", network_conf=None)
