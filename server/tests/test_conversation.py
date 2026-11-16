@@ -122,14 +122,18 @@ class FakeTranscriber:
     def __init__(self, *replies) -> None:
         self.replies = list(replies)
         self.calls: list[dict] = []
+        self.starved = 0
 
     async def transcribe_utterance(self, chunks, max_s=15, silence_ms=700, idle_timeout_s=7.0,
                                    no_speech_s=5.0):
         self.calls.append({"max_s": max_s, "silence_ms": silence_ms, "no_speech_s": no_speech_s})
         try:
             reply = self.replies.pop(0) if self.replies else None
-            first = await asyncio.wait_for(chunks.__anext__(), 2)
-            assert first.dtype == np.int16
+            try:
+                first = await asyncio.wait_for(chunks.__anext__(), 0.5)
+                assert first.dtype == np.int16
+            except TimeoutError:
+                self.starved += 1  # aucun audio (lapin sans flux)
             if reply is self.BLOCK:
                 await asyncio.Event().wait()
             return reply
@@ -372,7 +376,7 @@ async def test_allume_le_salon_calls_the_tool_then_speaks(world):
     assert brain.calls[0][-1]["content"][0]["text"] == "allume le salon"
     tool_result = brain.calls[1][-1]["content"][0]
     assert tool_result["type"] == "tool_result" and not tool_result["is_error"]
-    assert world.state.states() == ["thinking", "speaking", "followup", "idle"]
+    assert world.state.states() == ["idle", "thinking", "speaking", "followup", "idle"]
     assert world.transcriber.calls[0]["no_speech_s"] == 5  # fenêtre de suite
     # Référence de l'annuleur d'écho : le PCM exact de la phrase jouée.
     pid = world.rabbit.played[0][1]
@@ -390,7 +394,7 @@ async def test_wake_word_alone_listens_then_transcribes(world):
     await until(lambda: world.spoken())
     await world.idle()
     assert brain.calls[0][-1]["content"][0]["text"] == "quelle heure est-il"
-    assert world.state.states()[:2] == ["listening", "thinking"]
+    assert world.state.states()[:3] == ["idle", "listening", "thinking"]
     assert ("0000FF", "pulse") in world.rabbit.leds  # écoute : bleu pulsé
     assert world.transcriber.calls[0]["silence_ms"] == 700
 
@@ -403,7 +407,7 @@ async def test_false_wake_without_speech_returns_to_idle_without_the_brain(world
     await world.idle()
     assert brain.calls == []
     assert world.rabbit.played == []
-    assert world.state.states() == ["listening", "idle"]
+    assert world.state.states() == ["idle", "listening", "idle"]
     assert world.turns() == []
     # La détection reprend après le retour au repos.
     fed = world.detector.fed
@@ -449,7 +453,7 @@ async def test_long_press_starts_listening(world):
     session.on_button("lclick_start")
     await until(lambda: world.spoken() == ["Coucou !"])
     await world.idle()
-    assert world.state.states()[0] == "listening"
+    assert world.state.states()[1] == "listening"
 
 
 async def test_home_assistant_down_speaks_one_sentence_and_session_lives(world):
@@ -818,6 +822,7 @@ async def test_orchestrator_creates_a_session_per_stream_and_routes_events(tmp_p
     orch = Orchestrator(deps)
     orch.attach(registry, gateway)
     stream_b = RabbitStream("lapin-b")
+    stream_b.connected = True
     gateway.streams["lapin-b"] = stream_b
     gateway.on_stream(stream_b)
     assert set(orch.sessions) == {"lapin-a", "lapin-b"}
@@ -828,6 +833,7 @@ async def test_orchestrator_creates_a_session_per_stream_and_routes_events(tmp_p
     await orch.say("lapin-b", "Coucou.")
     assert [voice.texts[pid] for _, pid in rabbit_b.played] == ["Coucou."]
     assert registry.rabbits["lapin-a"].played == []
+    await until(lambda: orch.sessions["lapin-b"].is_idle)
     registry.on_button(rabbit_b, "lclick_start")
     await until(lambda: orch.sessions["lapin-b"].state == "listening")
     await orch.close()

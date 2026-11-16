@@ -11,7 +11,7 @@ import asyncio
 import logging
 import struct
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -203,10 +203,19 @@ class RabbitStream:
 
 
 class AudioGateway:
-    """Serveur TCP des flux audio des lapins, un RabbitStream par rabbit_id."""
+    """Serveur TCP des flux audio des lapins, un RabbitStream par rabbit_id.
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 9300) -> None:
+    `on_stream(stream)` (réglable après coup) est appelé une fois par nouveau lapin, à la
+    création de son flux (pas à ses reconnexions : le flux leur survit)."""
+
+    def __init__(
+        self,
+        host: str = "0.0.0.0",
+        port: int = 9300,
+        on_stream: Callable[[RabbitStream], None] | None = None,
+    ) -> None:
         self.host, self.port = host, port
+        self.on_stream = on_stream
         self.streams: dict[str, RabbitStream] = {}
         self._server: asyncio.Server | None = None
         self._writers: dict[str, asyncio.StreamWriter] = {}
@@ -256,6 +265,11 @@ class AudioGateway:
                 stream = self.streams[rabbit_id] = RabbitStream(rabbit_id)
                 if (event := self._waiters.pop(rabbit_id, None)) is not None:
                     event.set()
+                if self.on_stream is not None:
+                    try:
+                        self.on_stream(stream)
+                    except Exception:
+                        log.exception("on_stream en échec pour %s", rabbit_id)
             old = self._writers.get(rabbit_id)
             if old is not None:
                 old.close()

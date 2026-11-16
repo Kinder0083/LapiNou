@@ -29,6 +29,8 @@ dependencies = [
     "tzdata>=2024.1",
     # Configurations de scripts que ha-mcp peut renvoyer en YAML (chargeur sûr seulement)
     "pyyaml>=6.0",
+    # État de l'assistant publié sur MQTT (lapinou/<id>/assistant) pour Home Assistant
+    "paho-mqtt==2.1.0",
 ]
 
 [dependency-groups]

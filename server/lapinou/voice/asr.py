@@ -38,22 +38,27 @@ class Transcriber:
         max_s: float = 15,
         silence_ms: int = 700,
         idle_timeout_s: float = 7.0,
+        no_speech_s: float = NO_SPEECH_S,
     ) -> str | None:
         """Texte de la première parole du flux (blocs int16 mono 16 kHz), ou None si personne
-        n'a parlé : 5 s sans voix (comptées depuis la dernière activité vocale, un clic bref
-        n'y change rien), ou aucun bloc pendant `idle_timeout_s` (flux bloqué, lapin
+        n'a parlé : `no_speech_s` (5 s) sans voix (comptées depuis la dernière activité vocale,
+        un clic bref n'y change rien), ou aucun bloc pendant `idle_timeout_s` (flux bloqué, lapin
         déconnecté), ou transcription vide. La lecture s'arrête à la fin de la parole.
 
         `chunks` est fermé (`aclose`) à toute sortie. Annuler la tâche est permis : l'appel en
         cours dans un fil (VAD ou reconnaissance, bornés) finit seul, sans retenir l'appelant."""
         try:
-            return await self._run(chunks.__aiter__(), max_s, silence_ms, idle_timeout_s)
+            return await self._run(
+                chunks.__aiter__(), max_s, silence_ms, idle_timeout_s, no_speech_s
+            )
         finally:
             aclose = getattr(chunks, "aclose", None)
             if aclose is not None:
                 await aclose()
 
-    async def _run(self, chunks, max_s: float, silence_ms: int, idle_timeout_s: float) -> str | None:
+    async def _run(
+        self, chunks, max_s: float, silence_ms: int, idle_timeout_s: float, no_speech_s: float
+    ) -> str | None:
         segmenter = vad.SileroSegmenter(self.recogniser, max_s, silence_ms / 1000)
         fed = 0
         last_voice = 0  # dernier échantillon où de la parole était détectée
@@ -75,7 +80,7 @@ class Transcriber:
                 break
             if segmenter.speaking:
                 last_voice = fed
-            elif fed - last_voice >= NO_SPEECH_S * vad.SAMPLE_RATE:
+            elif fed - last_voice >= no_speech_s * vad.SAMPLE_RATE:
                 return None
         if not segments:
             return None
