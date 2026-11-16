@@ -113,23 +113,10 @@ SCRIPTS: dict[str, dict[str, Any]] = {
     "bain_tiede": {"sequence": [{"action": "climate.set_temperature",
                                  "target": {"entity_id": "climate.salon"},
                                  "data": {"temperature": 20, "hvac_mode": "heat"}}]},
-    "cles_data": ("sequence:
-  - action: light.turn_on
-    target:
-"
-                  "      entity_id: light.salon
-    data:
-      1: x
-      foo: y
-"),
-    "cles_racine": ("1: a
-zz: b
-sequence:
-  - action: light.turn_on
-"
-                    "    target:
-      entity_id: light.salon
-"),
+    "cles_data": ("sequence:\n  - action: light.turn_on\n    target:\n"
+                  "      entity_id: light.salon\n    data:\n      1: x\n      foo: y\n"),
+    "cles_racine": ("1: a\nzz: b\nsequence:\n  - action: light.turn_on\n"
+                    "    target:\n      entity_id: light.salon\n"),
     "prise_luminosite": {"sequence": [{"action": "switch.turn_on",
                                        "target": {"entity_id": "switch.prise_salon"},
                                        "data": {"brightness": 100}}]},
