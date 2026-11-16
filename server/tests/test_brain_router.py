@@ -727,6 +727,18 @@ def test_router_from_settings():
     assert router.fallbacks == [router.fast]
 
 
+def test_persona_extra_from_the_settings_page():
+    s = Settings()
+    s.brain.providers["local"] = ProviderConfig(kind="openai", base_url="http://llm.local/v1")
+    s.brain.fallback_chain = ["local:petit-modele"]
+    base = BrainRouter.from_settings(s).primary.persona
+    s.brain.persona_extra = "  La famille a un chat, Moustache.  "
+    router = BrainRouter.from_settings(s)
+    for brain in (router.primary, router.fast, router.fallbacks[0]):
+        assert brain.persona.startswith(base)
+        assert brain.persona.endswith("\nLa famille a un chat, Moustache.")
+
+
 def test_persona_mentions_the_rules():
     persona = load_persona()
     assert "SPDX" not in persona

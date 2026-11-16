@@ -42,7 +42,7 @@ class FakeGitHub:
         self.assets = {"manifest.json": self.manifest, **files}
         if key:
             zip_name = f"LapinLibre-{version}.zip"
-            self.assets[zip_name] = b"PK\x03\x04clé"
+            self.assets[zip_name] = b"PK\x03\x04cle"
             self.assets[zip_name + ".sha256"] = (
                 f"{_sha(self.assets[zip_name])}  {zip_name}\n".encode())
         self.version = version

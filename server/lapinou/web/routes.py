@@ -506,6 +506,8 @@ def install(app: FastAPI) -> None:
         h.setdefault("X-Frame-Options", "DENY")
         if path.startswith("/api/"):
             h["Cache-Control"] = "no-store"
+        elif path == "/" or path.startswith("/static/"):
+            h["Cache-Control"] = "no-cache"  # revalidée : une mise à jour se voit tout de suite
         if h.get("content-type", "").startswith("text/html"):
             h["Content-Security-Policy"] = CSP
         return response

@@ -105,13 +105,12 @@ def _login(client):
 def test_every_api_route_requires_login(env):
     client, _, _ = env
     checked = 0
-    for route in client.app.routes:
-        path = getattr(route, "path", "")
+    for path, methods in client.app.openapi()["paths"].items():
         if not path.startswith("/api/") or path in OPEN:
             continue
         url = path.replace("{memory_id}", "1").replace("{timer_id}", "1")
-        for method in route.methods - {"HEAD", "OPTIONS"}:
-            r = client.request(method, url, headers=H, json={})
+        for method in methods:
+            r = client.request(method.upper(), url, headers=H, json={})
             assert r.status_code == 401, (method, url, r.status_code)
             checked += 1
     assert checked >= 15
@@ -129,7 +128,8 @@ def test_pages_are_public_and_french(env):
         assert fr["pages"][page], page
     note = fr["tools"]["security_note"]
     assert "input_" in note and "allowed_entities" in note and "groupe" in note
-    assert client.get("/static/app.js").status_code == 200
+    r = client.get("/static/app.js")
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
     assert client.get("/static/style.css").status_code == 200
 
 

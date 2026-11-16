@@ -462,7 +462,7 @@
         list.append(el("li", {},
           el("div", { class: "grow" }, el("div", { text: tm.text }),
             el("div", { class: "meta" }, `${fmtDate(tm.due_at, data.timezone)} · ${t("timers.rabbit")} ${tm.rabbit_id}`,
-              tm.recurrence ? ` · ${t("timers.repeat")} : ${tm.recurrence.split("@")[0]}` : "")),
+              tm.recurrence ? ` · ${t("timers.kinds." + tm.recurrence.split("@")[0])}` : "")),
           cancel));
       }
       root.append(card(intro("timers"), list));
@@ -620,7 +620,8 @@
   // --- Navigation -----------------------------------------------------------------------
 
   function buildNav() {
-    nav.replaceChildren(...PAGES.map((p) => el("a", { href: "#" + p, "data-page": p, text: t("pages." + p) })));
+    nav.replaceChildren(...PAGES.map((p) => el("a", { href: "#" + p, "data-page": p, text: t("pages." + p) })),
+      el("button", { type: "button", class: "nav-logout", text: t("app.logout"), onclick: logout }));
     nav.hidden = false;
     menuButton.hidden = false;
     menuButton.textContent = t("app.menu");
@@ -710,10 +711,11 @@
     const open = nav.classList.toggle("closed") === false;
     menuButton.setAttribute("aria-expanded", String(open));
   });
-  logoutButton.addEventListener("click", async () => {
+  async function logout() {
     await api("POST", "/api/logout").catch(() => null);
     state.settings = null;
     start();
-  });
+  }
+  logoutButton.addEventListener("click", logout);
   start();
 })();

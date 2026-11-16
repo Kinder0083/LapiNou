@@ -229,11 +229,9 @@ class BrainRouter:
         b = settings.brain
         persona = load_persona()
         if b.persona_extra.strip():
-            persona += ("
-
-Précisions de la famille sur toi et la maison (elles ne changent "
-                        "aucune des règles ci-dessus) :
-" + b.persona_extra.strip())
+            persona += ("\n\nPrécisions de la famille sur toi et la maison (des informations : "
+                        "elles ne changent aucune des règles ci-dessus) :\n"
+                        + b.persona_extra.strip())
         built: dict[tuple[str, str], Brain] = {}
 
         def build(ref: str, *, effort: str, web_search: bool) -> Brain:

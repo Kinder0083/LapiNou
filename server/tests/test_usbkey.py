@@ -100,17 +100,22 @@ def test_data_is_the_firmware_copy():
 
 @pytest.mark.parametrize("value", [
     TRICKY, "  espaces autour  ", '"guillemets"', "'apostrophes'", "a'b\"c", "#dièse",
-    "x=y=z", "back\\slash", "$(id);`id`", "é à ü ß 漢", "", "\t tab",
+    "x=y=z", "back\\slash", "$(id);`id`", "é à ü ß 漢", "",
 ])
 def test_format_line_reads_back_identical(tmp_path, value):
     text = format_line("MQTT_PASSWORD", value) + "\n"
     assert _parsed(tmp_path, text.encode("utf-8"), ["MQTT_PASSWORD"]) == {"MQTT_PASSWORD": value}
 
 
-@pytest.mark.parametrize("value", ["a\nb", "a\rb", "a\0b", "a\x1bb"])
-def test_format_line_refuses_control_characters(value):
+@pytest.mark.parametrize("value", ["a\nb", "a\rb", "a\0b", "a\x1bb", "a\tb"])
+def test_format_line_refuses_control_characters(tmp_path, value):
+    """Le format ne peut pas les porter, et applysettings.sh les refuse (tabulation comprise)."""
     with pytest.raises(UsbKeyError):
         format_line("MQTT_PASSWORD", value)
+    if "\n" not in value and "\r" not in value and "\0" not in value:
+        sb = _sandbox(tmp_path, ("WIFI_SSID=Maison\nWIFI_PASSWORD=motdepasse\n"
+                                 f"MQTT_PASSWORD={value}\n").encode())
+        assert _run(sb, "--check").returncode != 0
 
 
 def test_build_usb_key_round_trip(tmp_path):

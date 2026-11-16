@@ -41,7 +41,6 @@ def create_app(
     from .config import SettingsStore
     from .web import routes
 
-
     lifespan = None
     if services is not None:
 
