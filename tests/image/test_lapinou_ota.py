@@ -40,6 +40,8 @@ OTA = ROOT / "userland/src/usr/lapinou-ota/lapinou-ota.sh"
 SIGN = ROOT / "tools/sign-ota.py"
 PLACEHOLDER = ROOT / "image/core/usr/share/lapinou/ota-pubkey.pub"
 INSTALL_LIB = ROOT / "image/usbkey/install-lib.sh"
+RESUME = ROOT / "image/core/rootfs/karotz/scripts/ota-resume.sh"
+LINUXRC = ROOT / "image/core/rootfs/linuxrc"
 CONF_SH = ROOT / "image/core/usr/share/lapinou/conf.sh"
 TOP_DIRS = "mnt|karotz|bin|sbin|tmp|usr|etc|dev|proc|sys"
 REWRITE = re.compile(rf"(?<![\w.$/])/({TOP_DIRS})(?=[/\s\"');$]|$)", re.M)
@@ -86,7 +88,14 @@ def sha256(data: bytes) -> str:
 def make_release(d: Path, version=NEW):
     """A release's files in d: the three images, a USB key archive, and usr.tar.gz's contents."""
     d.mkdir(parents=True)
-    zimage = bytes(range(256)) * 600 + b"kernel " + version.encode()
+    # The kernel's SHA-256 has the bytes 0x00 and 0x25 ("%"): the build id's printf must keep them.
+    base, n = bytes(range(256)) * 600 + b"kernel " + version.encode(), 0
+    while True:
+        zimage = base + b"#%d" % n
+        digest = hashlib.sha256(zimage).digest()
+        if 0x00 in digest and 0x25 in digest:
+            break
+        n += 1
     rootfs = gzip.compress(b"root filesystem " * 4000, mtime=0)
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
@@ -101,6 +110,13 @@ def make_release(d: Path, version=NEW):
     for name, data in (("zImage", zimage), ("rootfs.img.gz", rootfs), ("usr.tar.gz", usr),
                        (f"lapinou-key-{version}.zip", b"PK not really a zip")):
         (d / name).write_bytes(data)
+
+
+def sign_raw(d: Path, key: Path, manifest: dict):
+    """A manifest written and signed as given, without sign-ota.py's checks."""
+    (d / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    subprocess.run(["openssl", "pkeyutl", "-sign", "-inkey", str(key), "-rawin", "-in", str(d / "manifest.json"),
+                    "-out", str(d / "manifest.json.sig")], check=True, capture_output=True)
 
 
 def sign(d: Path, key: Path, version=NEW):
@@ -185,7 +201,15 @@ class OtaRabbit:
         stub(sb / "karotz/bin/led", "exit 0")
         stub(sb / "sbin/flash_erase", f'echo "erase $1" >> {log}; : > "$1"')
         stub(sb / "sbin/flash_eraseall", f'echo "eraseall $1" >> {log}; : > "$1"')
-        stub(sb / "sbin/nandwrite", f'echo "write $2 $3" >> {log}; cp "$3" "$2"')
+        # nandwrite writes garbage while corrupt-mtdN holds a count above 0 (a write the read-back catches).
+        stub(sb / "sbin/nandwrite", f'echo "write $2 $3" >> {log}\n'
+                                    f'c={sb}/corrupt-$(basename "$2"); n=$(cat "$c" 2> /dev/null || echo 0)\n'
+                                    f'if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$c"; printf garbage > "$2"; '
+                                    f'else cp "$3" "$2"; fi')
+        # nanddump -q --bb=skipbad -l LEN -f FILE DEVICE: LEN bytes of the device (no OOB).
+        stub(sb / "sbin/nanddump", f'len= out=\nwhile [ $# -gt 1 ]; do case "$1" in -l) len=$2; shift 2 ;; '
+                                   f'-f) out=$2; shift 2 ;; *) shift ;; esac; done\n'
+                                   f'echo "dump $1" >> {log}\nhead -c "$len" "$1" > "$out"')
         stub(sb / "sbin/reboot", f'echo "reboot $*" >> {log}')
         # The image's own curl and openssl; curl's arguments recorded (no secret may be in them).
         stub(sb / "usr/bin/curl", f'printf "%s\\n" "$*" >> {sb}/curl.log\n'
@@ -231,14 +255,15 @@ class OtaRabbit:
         share.mkdir(parents=True)
         shutil.copy(pubkey, share / "ota-pubkey.pub")
         self.put_script(CONF_SH, share / "conf.sh")
-        self.put_script(INSTALL_LIB, share / "install-lib.sh")
+        # The root filesystem's install helpers and the boot's resume of an interrupted /usr.
+        self.put_script(INSTALL_LIB, sb / "karotz/scripts/install-lib.sh")
+        self.put_script(RESUME, sb / "karotz/scripts/ota-resume.sh")
         self.ota = usr / "karotz/bin/lapinou-ota"
         self.put_script(OTA, self.ota, api)
 
     def put_script(self, src: Path, dst: Path, api=None):
         text = src.read_text(encoding="utf-8")
         head, _, rest = text.partition("\n")
-        assert PATH_LINE not in rest or src == OTA
         rest = rest.replace(PATH_LINE, "@PATH@")
         if api:
             rest = rest.replace("api.github.com", api)
@@ -248,9 +273,23 @@ class OtaRabbit:
         dst.write_text(head + "\n" + rest, encoding="utf-8", newline="\n")
         dst.chmod(0o755)
 
-    def run(self, *args, timeout=300):
-        return subprocess.run([str(arm_busybox()), "sh", str(self.ota), *args], cwd=self.sb, capture_output=True,
-                              text=True, timeout=timeout, env={"PATH": "/usr/bin:/bin", "HOME": str(self.sb)})
+    def run(self, *args, timeout=300, script=None):
+        # A session of its own, so that a simulated power cut (kill -KILL 0) stops this run only.
+        return subprocess.run([str(arm_busybox()), "sh", str(script or self.ota), *args], cwd=self.sb,
+                              capture_output=True, text=True, timeout=timeout, start_new_session=True,
+                              env={"PATH": "/usr/bin:/bin", "HOME": str(self.sb)})
+
+    def resume(self):
+        """The boot's resume, as linuxrc runs it once /usr is mounted."""
+        return self.run(script=self.sb / "karotz/scripts/ota-resume.sh")
+
+    def cut_unpack(self):
+        """The power goes during the unpack: tar writes one file, then everything stops."""
+        busybox = arm_busybox()
+        stub(self.sb / "bin/tar", f'if [ -e {self.sb}/cut-unpack ]; then rm -f {self.sb}/cut-unpack\n'
+                                  f'echo partial > {self.sb}/usr/karotz/bin/controller; kill -KILL 0; fi\n'
+                                  f'exec {busybox} tar "$@"')
+        (self.sb / "cut-unpack").write_text("")
 
     def actions(self):
         f = self.sb / "actions.log"
@@ -338,19 +377,28 @@ class OtaTest(unittest.TestCase):
         # No download left behind: only the log.
         self.assertEqual([f for f in r.ota_files() if f != "last.log"], [])
 
-    def assert_installed(self, r, p):
-        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+    WRITES = ["erase /dev/mtd1", "write /dev/mtd1 /usr/ota/new/zImage",
+              "erase /dev/mtd2", "write /dev/mtd2 /usr/ota/new/rootfs.img.gz"]
+
+    def assert_installed(self, r, p, files=None, version=NEW, writes=None, rebooted=True):
+        if p is not None:
+            self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        files = files or self.files
         sb = r.sb
-        self.assertEqual((sb / "dev/mtd1").read_bytes(), self.files["zImage"])
-        self.assertEqual((sb / "dev/mtd2").read_bytes(), self.files["rootfs.img.gz"])
-        self.assertEqual(r.writes(), ["erase /dev/mtd1", "write /dev/mtd1 /usr/ota/new/zImage",
-                                      "erase /dev/mtd2", "write /dev/mtd2 /usr/ota/new/rootfs.img.gz"])
+        self.assertEqual((sb / "dev/mtd1").read_bytes(), files["zImage"])
+        self.assertEqual((sb / "dev/mtd2").read_bytes(), files["rootfs.img.gz"])
+        self.assertEqual(r.writes(), writes or self.WRITES)
         for n in (0, 3, 4, 5, 6):
             self.assertEqual((sb / f"dev/mtd{n}").read_bytes(), f"old mtd{n}".encode(), f"mtd{n}")
         actions = r.actions()
-        # The daemons are stopped before the first erase; the reboot comes last.
+        # The daemons are stopped before the first erase; each partition is read back after its
+        # write; the reboot comes last.
         self.assertLess(actions.index("S40lapinlibre stop"), actions.index("erase /dev/mtd1"))
-        self.assertEqual(actions[-1], "reboot -f")
+        for mtd in ("mtd1", "mtd2"):
+            last_write = max(i for i, a in enumerate(actions) if a.startswith(f"write /dev/{mtd}"))
+            self.assertEqual(actions[last_write + 1], f"dump /dev/{mtd}")
+        if rebooted:
+            self.assertEqual(actions[-1], "reboot -f")
         # /usr replaced as the key's install does, settings, apps and UUID kept.
         self.assertEqual((sb / "usr/etc/init.d/S40lapinlibre").read_text(), "#!/bin/sh\n# new\n")
         self.assertEqual((sb / "usr/karotz/bin/controller").read_text(), "new elf")
@@ -362,15 +410,26 @@ class OtaTest(unittest.TestCase):
         self.assertEqual((sb / "usr/etc/conf/karotz.conf").read_text(),
                          "[karotz]\nfrom=rabbit\nurl_update=http://127.0.0.1:1\n")
         self.assertEqual((sb / "usr/etc/conf/wpa.conf").read_text(), "kept\n")
-        self.assertEqual(r.version(), NEW)
+        self.assertEqual(r.version(), version)
         # The build id image.py gives these images, so the same build's USB key only applies settings.
-        images = self.files
+        images = files
         build_id = hashlib.sha256(b"".join(hashlib.sha256(images[k]).digest()
                                            for k in sorted(("zImage", "rootfs.img.gz", "usr.tar.gz")))).hexdigest()[:16]
         self.assertEqual((sb / "usr/etc/conf/lapinlibre_build_id").read_text(), build_id + "\n")
         # The downloads are gone; the log stays.
         self.assertEqual(r.ota_files(), ["last.log"])
-        self.assertIn(f"Installed {NEW}", (sb / "usr/ota/last.log").read_text())
+        self.assertIn(f"Installed {version}", (sb / "usr/ota/last.log").read_text())
+
+    def build_id(self, files=None):
+        files = files or self.files
+        return hashlib.sha256(b"".join(hashlib.sha256(files[k]).digest()
+                                       for k in sorted(("zImage", "rootfs.img.gz", "usr.tar.gz")))).hexdigest()[:16]
+
+    def release_files(self, name, version, key="test.key.test"):
+        d = self.tmp / name
+        make_release(d, version)
+        sign(d, self.tmp / key, version)
+        return {p.name: p.read_bytes() for p in d.iterdir()}
 
     # --- With a LapiNou server ------------------------------------------------------------------
 
@@ -512,6 +571,156 @@ class OtaTest(unittest.TestCase):
         for a in r.actions():
             self.assertNotRegex(a, r"mtd[0345]\b")
 
+    def test_kernel_digest_has_nul_and_percent_bytes(self):
+        # The build id is checked in every install: its input must hold the awkward bytes.
+        digest = hashlib.sha256(self.files["zImage"]).digest()
+        self.assertIn(0x00, digest)
+        self.assertIn(0x25, digest)
+
+    def test_https_server(self):
+        # An https [ota] url: checked against the rabbit's CA certificates; curl ignores any curlrc.
+        routes = dict(self.ota_server().routes)
+        tls = self.server(routes, tls=self.tls)
+        r = self.rabbit("https-server", conf=f"[ota]\nurl=https://127.0.0.1:{tls.port}/ota/\n")
+        self.assert_installed(r, r.run("install"))
+        calls = (r.sb / "curl.log").read_text().splitlines()
+        self.assertTrue(calls)
+        for c in calls:
+            self.assertTrue(c.startswith("-q "), c)
+            self.assertIn("--cacert", c)
+            self.assertIn("--proto =http,https", c)
+
+    # --- Writing the flash: read back, retried once, never past a bad partition --------------------
+
+    def test_bad_write_is_written_again(self):
+        srv = self.ota_server()
+        r = self.server_rabbit("rewrite", srv)
+        (r.sb / "corrupt-mtd2").write_text("1")
+        p = r.run("install")
+        self.assert_installed(r, p, writes=self.WRITES + self.WRITES[2:])
+        self.assertIn("mtd2 reads back wrong", p.stderr)
+
+    def test_partition_bad_twice_stops_before_usr(self):
+        srv = self.ota_server()
+        r = self.server_rabbit("bad-flash", srv)
+        (r.sb / "corrupt-mtd1").write_text("2")
+        p = r.run("install")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("mtd1 reads back wrong twice", p.stderr)
+        self.assertEqual(r.writes(), self.WRITES[:2] * 2)
+        self.assertNotIn("reboot -f", r.actions())
+        # /usr untouched, and the checked images kept for another try.
+        self.assertEqual((r.sb / "usr/scripts/old.sh").read_text(), "wiped\n")
+        self.assertEqual(r.version(), OLD)
+        self.assertEqual((r.sb / "usr/ota/new/usr.tar.gz").read_bytes(), self.files["usr.tar.gz"])
+        self.assertEqual((r.sb / "usr/ota/new/zImage").read_bytes(), self.files["zImage"])
+        self.assertFalse((r.sb / "usr/ota/resume.conf").exists())
+
+    # --- Versions (R44) ----------------------------------------------------------------------------
+
+    def test_downgrade_refused(self):
+        files = self.release_files("release-old", "v0.9.0")
+        srv = self.ota_server(files, version="v0.9.0")
+        r = self.server_rabbit("downgrade", srv)
+        p = r.run("install")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("lower than the installed", p.stderr)
+        self.assert_nothing_written(r)
+        self.assertNotIn("/ota/v0.9.0/usr.tar.gz", [path for path, _ in srv.log])
+        # Given on purpose, it installs.
+        r = self.server_rabbit("downgrade-allowed", srv)
+        self.assert_installed(r, r.run("install", "--allow-downgrade"), files=files, version="v0.9.0")
+
+    def test_version_order_is_numeric(self):
+        # v1.10.0 is newer than v1.9.0; a dev build (0.0.0-<hash>), or a version from before R44,
+        # is older than any release.
+        for name, installed, version, ok in (("numeric", "v1.10.0", "v1.9.0", False),
+                                             ("numeric-up", "v1.9.9", "v1.10.0", True),
+                                             ("dev", "0.0.0-0123456789ab", "v1.10.0", True),
+                                             ("pre-r44", "f794da0b5716", "v1.10.0", True)):
+            with self.subTest(name):
+                files = self.release_files(f"release-{name}", version)
+                srv = self.ota_server(files, version=version)
+                r = self.server_rabbit(f"order-{name}", srv)
+                (r.sb / "usr/etc/conf/sys_version").write_text(installed + "\n")
+                p = r.run("install")
+                if ok:
+                    self.assert_installed(r, p, files=files, version=version)
+                else:
+                    self.assertNotEqual(p.returncode, 0)
+                    self.assertEqual(r.writes(), [])
+
+    def test_same_build_skipped(self):
+        srv = self.ota_server()
+        r = self.server_rabbit("same-build", srv)
+        (r.sb / "usr/etc/conf/lapinlibre_build_id").write_text(self.build_id() + "\n")
+        p = r.run("install")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("same build", p.stderr)
+        self.assertEqual(r.writes(), [])
+        self.assertEqual(r.version(), OLD)
+
+    def test_manifest_version_must_be_a_release_tag(self):
+        d = self.tmp / "release-untagged"
+        shutil.copytree(self.release, d)
+        m = json.loads((d / "manifest.json").read_text())
+        m["version"] = "2.0"
+        sign_raw(d, self.tmp / "test.key.test", m)
+        files = {p.name: p.read_bytes() for p in d.iterdir()}
+        r = self.server_rabbit("untagged", self.ota_server(files, version="2.0"))
+        p = r.run("install")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("vX.Y.Z", p.stderr)
+        self.assert_nothing_written(r)
+
+    # --- A power cut during /usr: resumed at the next boot ------------------------------------------
+
+    def test_interrupted_unpack_is_resumed_at_boot(self):
+        srv = self.ota_server()
+        r = self.server_rabbit("resume", srv)
+        r.cut_unpack()
+        p = r.run("install")
+        self.assertNotEqual(p.returncode, 0)
+        # The power went half-way through /usr: partial, the marker and the checked archive kept.
+        self.assertEqual((r.sb / "usr/karotz/bin/controller").read_text(), "partial\n")
+        self.assertTrue((r.sb / "usr/ota/resume.conf").is_file())
+        self.assertEqual((r.sb / "usr/ota/new/usr.tar.gz").read_bytes(), self.files["usr.tar.gz"])
+        self.assertNotIn("reboot -f", r.actions())
+        # lapinou-ota itself won't start over it (nor remove what the resume needs).
+        p = r.run("check")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("interrupted", p.stderr)
+        self.assertTrue((r.sb / "usr/ota/new/usr.tar.gz").is_file())
+        # The next boot: linuxrc's resume finishes /usr.
+        p = r.resume()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assert_installed(r, None, rebooted=False)
+        self.assertFalse((r.sb / "usr/ota/resume.conf").exists())
+        # Nothing to resume at the boot after.
+        p = r.resume()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+
+    def test_resume_refuses_a_damaged_archive(self):
+        srv = self.ota_server()
+        r = self.server_rabbit("resume-damaged", srv)
+        r.cut_unpack()
+        r.run("install")
+        usr = bytearray((r.sb / "usr/ota/new/usr.tar.gz").read_bytes())
+        usr[100] ^= 0xFF
+        (r.sb / "usr/ota/new/usr.tar.gz").write_bytes(bytes(usr))
+        p = r.resume()
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("SHA-256", p.stdout + p.stderr)
+        self.assertEqual((r.sb / "usr/karotz/bin/controller").read_text(), "partial\n")
+
+    def test_linuxrc_resumes_before_usr_is_used(self):
+        text = LINUXRC.read_text()
+        call = text.index("/karotz/scripts/ota-resume.sh")
+        self.assertLess(text.index("mount -t yaffs /dev/mtdblock6 /usr"), call)
+        self.assertLess(call, text.index("for name in passwd inittab"))
+        self.assertLess(call, text.index("/mnt/usbkey/autorun"))
+        self.assertIsNone(re.search(r"mtd[0345]\b", RESUME.read_text()))
+
     # --- Without a server: GitHub's Releases API ----------------------------------------------------
 
     def github(self, storage_scheme="https"):
@@ -623,6 +832,11 @@ class SignToolTest(unittest.TestCase):
             r = subprocess.run(verify, capture_output=True, text=True)
             self.assertNotEqual(r.returncode, 0)
             self.assertIn("zImage", r.stderr)
+            # The version is the release's tag, vX.Y.Z, and must be given (R44).
+            for args in ([], ["--version", "2.0"], ["--version", "0.0.0-abc"]):
+                r = subprocess.run([sys.executable, "-I", str(SIGN), "--key", str(t / "k"), "--dir", str(rel), *args],
+                                   capture_output=True, text=True)
+                self.assertNotEqual(r.returncode, 0, args)
 
 
 if __name__ == "__main__":

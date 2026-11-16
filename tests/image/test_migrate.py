@@ -149,7 +149,7 @@ def make_key(key: Path):
         (key / name).write_bytes(data)
     (key / "build_id").write_text("cd6052898d59aa6a\n", newline="\n")
     (key / "install.conf").write_text(
-        f"BUILD_ID=cd6052898d59aa6a\nBUILD_VERSION=f794da0b5716\nKERNEL_MD5={md5(zimage)}\n"
+        f"BUILD_ID=cd6052898d59aa6a\nBUILD_VERSION=f794da0b5716\nRELEASE_VERSION=v1.4.0\nKERNEL_MD5={md5(zimage)}\n"
         f"ROOTFS_MD5={md5(rootfs)}\nUSR_MD5={md5(usr)}\nINSTALL_TOOLS_MD5=0\n", newline="\n")
 
 
@@ -157,15 +157,16 @@ class FrosRabbit(Rabbit):
     """test_usbkey's sandboxed Karotz, running Free Rabbits OS, reached by the fake ssh."""
 
     def __init__(self, key: Path, sb: Path, network_conf=NETWORK_CONF, nanddump=None,
-                 answering=("192.168.1.1", "192.168.1.254"), resolving=("192.168.1.1", "192.168.1.254")):
+                 answering=("192.168.1.1", "192.168.1.254"), resolving=("192.168.1.1", "192.168.1.254"), tools=True):
         super().__init__(key, sb, wpa=WPA)
         sb = self.sb
         log = sb / "actions.log"
         # The network as the rabbit sees it: the hosts that answer a ping, the DNS servers that answer.
-        stub(sb / "bin/ping", f'for a; do :; done; echo "ping $a" >> {log}\n'
-                              f'case " {" ".join(answering)} " in *" $a "*) exit 0 ;; esac; exit 1')
-        stub(sb / "usr/bin/nslookup", f'echo "nslookup $*" >> {log}\n'
-                                      f'case " {" ".join(resolving)} " in *" $2 "*) exit 0 ;; esac; exit 1')
+        if tools:
+            stub(sb / "bin/ping", f'for a; do :; done; echo "ping $a" >> {log}\n'
+                                  f'case " {" ".join(answering)} " in *" $a "*) exit 0 ;; esac; exit 1')
+            stub(sb / "usr/bin/nslookup", f'echo "nslookup $*" >> {log}\n'
+                                          f'case " {" ".join(resolving)} " in *" $2 "*) exit 0 ;; esac; exit 1')
         (sb / "proc/mtd").write_text(PROC_MTD, newline="\n")
         (sb / "proc/mounts").write_text(f"/dev/root / cramfs ro 0 0\n{sb}/dev/mtdblock6 {sb}/usr yaffs rw 0 0\n"
                                         "tmpfs /dev/shm tmpfs rw 0 0\n", newline="\n")
@@ -260,6 +261,9 @@ class MigrateTest(unittest.TestCase):
         self.assertEqual(r.writes(), ["erase /dev/mtd1", "write /dev/mtd1 /dev/shm/lapinou-migrate/zImage",
                                       "erase /dev/mtd2", "write /dev/mtd2 /dev/shm/lapinou-migrate/rootfs.img.gz"])
         self.assertEqual(r.conf("lapinlibre_build_id"), (key / "build_id").read_text())
+        # R44: the release's tag, as the USB key and lapinou-ota write it.
+        release = re.search(r"^RELEASE_VERSION=(.*)$", (key / "install.conf").read_text(), re.M).group(1)
+        self.assertEqual(r.conf("sys_version"), release + "\n")
         self.assertTrue((sb / "usr/etc/init.d/S40lapinlibre").is_file())
         self.assertFalse((sb / "usr/scripts/old.sh").exists(), "Free Rabbits OS's /usr should be gone")
         self.assertFalse((sb / "usr/.lapinou-migrate").exists(), "the staged usr.tar.gz should be removed")
@@ -367,10 +371,51 @@ class MigrateTest(unittest.TestCase):
         self.run_ok(r)
         self.assertFalse([a for a in r.actions() if a.startswith(("ping", "nslookup"))])
 
+    def test_no_ping_or_nslookup_stops_unless_dhcp(self):
+        # A fixed address whose gateway and DNS can't be checked isn't written: code 2, nothing
+        # written; with --dhcp nothing needs checking.
+        r = self.rabbit("no-tools", network_conf=None, tools=False)
+        p = r.migrate(self.key)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("no ping", p.stdout)
+        self.assertEqual(r.writes(), [])
+        r = self.rabbit("no-tools-dhcp", network_conf=None, tools=False)
+        self.run_ok(r, None, "--dhcp")
+
     def test_waits_30_s_per_ssh_attempt_after_the_reboot(self):
         text = MIGRATE.read_text()
         new_opts = text[text.index("NEW_OPTS=("):]
         self.assertIn("ConnectTimeout=30", new_opts[:200])
+        self.assertIn("WAIT_S=${LAPINOU_WAIT_S:-300}", text)
+
+    def test_wait_after_the_reboot_is_bounded(self):
+        # LapinLibre never answers: the wait gives up once its time is spent (LAPINOU_WAIT_S, 300 s
+        # by default; 8 s here), whatever each attempt takes, and says so. No real network: the
+        # new system's ssh and curl are stand-ins that fail after a second.
+        r = self.rabbit("wait-bound")
+        fake = r.sb / "fake-ssh"
+        down = r.sb / "ssh-down"
+        down.write_text(f'#!/bin/bash\ncase "$*" in *known_hosts_lapinlibre*) echo "try" >> {r.sb}/attempts; sleep 1; '
+                        f'exit 255 ;; esac\nexec {fake} "$@"\n')
+        down.chmod(0o755)
+        bin_dir = r.sb / "pc-bin"
+        bin_dir.mkdir()
+        (bin_dir / "curl").write_text("#!/bin/sh\nsleep 1\nexit 7\n")
+        (bin_dir / "curl").chmod(0o755)
+        env = dict(os.environ, LAPINOU_SSH=str(down), FAKE_RABBIT=str(r.sb), LAPINOU_WAIT_S="8",
+                   PATH=f"{bin_dir}:{os.environ['PATH']}")
+        import time
+        start = time.monotonic()
+        p = subprocess.run(["bash", str(MIGRATE), "--rabbit", IP, "--key", str(self.key), "--ssh-pubkey", TEST_KEY],
+                           capture_output=True, text=True, timeout=600, env=env)
+        elapsed = time.monotonic() - start
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertIn("isn't answering yet", p.stderr)
+        self.assertIn("Waiting for LapinLibre (up to 8 s)", p.stdout)
+        attempts = (r.sb / "attempts").read_text().split()
+        self.assertGreaterEqual(len(attempts), 1)
+        self.assertLessEqual(len(attempts), 3)
+        self.assertLess(elapsed, 120)
 
     def test_dhcp(self):
         r = self.rabbit("dhcp", network_conf=None)

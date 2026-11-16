@@ -506,20 +506,22 @@ class UsbKeyTest(unittest.TestCase):
         self.assertEqual(unstripped, [])
 
     def test_core_has_lapinou_ota(self):
-        # lapinou-ota (Task 11) is in /usr with the key's install helpers and the OTA public key, as
-        # in the repository (the key's install-lib.sh, the same one).
+        # lapinou-ota (Task 11) and the OTA public key are in /usr; the key's install helpers and the
+        # boot's resume of an interrupted /usr are in the root filesystem (mtd2), which an
+        # interrupted /usr can't take away. All as in the repository.
+        import fstree
         import gzip
-        import tarfile
-        with tarfile.open(fileobj=io.BytesIO(gzip.decompress((self.key / "usr.tar.gz").read_bytes()))) as t:
-            members = {m.name.lstrip("./"): m for m in t.getmembers()}
-            def data(name):
-                return t.extractfile(members[name]).read()
-            for name, src, mode in (("karotz/bin/lapinou-ota", "userland/src/usr/lapinou-ota/lapinou-ota.sh", 0o755),
-                                    ("share/lapinou/install-lib.sh", "image/usbkey/install-lib.sh", 0o644),
-                                    ("share/lapinou/ota-pubkey.pub", "image/core/usr/share/lapinou/ota-pubkey.pub", 0o644)):
-                self.assertIn(name, members)
-                self.assertEqual(data(name), (ROOT / src).read_bytes(), name)
-                self.assertEqual(members[name].mode & 0o777, mode, name)
+        usr = fstree.TarPart(gzip.decompress((self.key / "usr.tar.gz").read_bytes()), 0)
+        root = fstree.CramfsPart(gzip.decompress((self.key / "rootfs.img.gz").read_bytes()))
+        for part, name, src, mode in (
+                (usr, "karotz/bin/lapinou-ota", "userland/src/usr/lapinou-ota/lapinou-ota.sh", 0o755),
+                (usr, "share/lapinou/ota-pubkey.pub", "image/core/usr/share/lapinou/ota-pubkey.pub", 0o644),
+                (root, "karotz/scripts/install-lib.sh", "image/usbkey/install-lib.sh", 0o644),
+                (root, "karotz/scripts/ota-resume.sh", "image/core/rootfs/karotz/scripts/ota-resume.sh", 0o755)):
+            entries = {e.path: e for e in part.entries()}
+            self.assertIn(name, entries)
+            self.assertEqual(entries[name].data, (ROOT / src).read_bytes(), name)
+            self.assertEqual(entries[name].mode & 0o777, mode, name)
 
     def test_installed_files_match_the_record(self):
         # The key's layout (every entry's path, kind, mode, owner and link target, not
@@ -569,7 +571,10 @@ class UsbKeyTest(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in self.key.iterdir()), sorted(files + ["sound"]))
         conf = (self.key / "install.conf").read_text()
         self.assertEqual(sorted(line.split("=")[0] for line in conf.splitlines()),
-                         ["BUILD_ID", "BUILD_VERSION", "INSTALL_TOOLS_MD5", "KERNEL_MD5", "ROOTFS_MD5", "USR_MD5"])
+                         ["BUILD_ID", "BUILD_VERSION", "INSTALL_TOOLS_MD5", "KERNEL_MD5", "RELEASE_VERSION", "ROOTFS_MD5",
+                          "USR_MD5"])
+        # R44: the release tag, or 0.0.0-<commit> for a build that isn't a release.
+        self.assertRegex(conf, r"\nRELEASE_VERSION=(v[0-9]+\.[0-9]+\.[0-9]+|0\.0\.0-[0-9a-f]+)\n")
         self.assertIn(f"BUILD_ID={self.build_id}\n", conf)
         self.assertNotIn("/", conf)
 
@@ -666,12 +671,13 @@ class UsbKeyTest(unittest.TestCase):
         self.assertNotIn("trying once more", ram.setuplog())
 
     def test_full_flash_sets_the_system_version(self):
-        # After a full flash the rabbit's sys_version is LapinLibre's build version.
+        # After a full flash the rabbit's sys_version is the release's tag (R44), as lapinou-ota and
+        # the migration write it.
         conf = dict(line.split("=", 1) for line in (self.key / "install.conf").read_text().splitlines())
         r = self.rabbit("sys-version", build_id="0123456789abcdef")
         r.boot()
         self.assert_flashed(r)
-        self.assertEqual((r.sb / "usr/etc/conf/sys_version").read_text(), conf["BUILD_VERSION"] + "\n")
+        self.assertEqual((r.sb / "usr/etc/conf/sys_version").read_text(), conf["RELEASE_VERSION"] + "\n")
 
     def test_cleaning_usr_keeps_settings_apps_and_messages(self):
         # The install empties /usr but for /usr/etc/conf (all of it), /usr/karotz/apps,
@@ -779,6 +785,17 @@ def elf_needed(data):
     needed = [string(v) for t, v in tags if t == 1]
     paths = [d for t, v in tags if t in (15, 29) for d in string(v).split(":") if d]
     return needed, paths
+
+
+class ReleaseVersionTest(unittest.TestCase):
+    """R44: the version a build installs (sys_version) is its release tag, or 0.0.0-<commit>."""
+
+    def test_release_version(self):
+        for describe, want in (("v1.2.3", "v1.2.3"), ("v1.2.3-dirty", "0.0.0-0123456789ab"),
+                               ("v1.2.3-4-gabcdef012345", "0.0.0-0123456789ab"), ("abcdef012345", "0.0.0-0123456789ab"),
+                               ("unversioned", "0.0.0-0123456789ab")):
+            self.assertEqual(image.release_version(describe, "0123456789ab"), want, describe)
+        self.assertEqual(image.release_version("unversioned", ""), "0.0.0-unversioned")
 
 
 if __name__ == "__main__":
