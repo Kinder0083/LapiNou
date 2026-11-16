@@ -5,6 +5,9 @@ Fichiers (server/tools/train_wakeword/train.py export-tests) : mu-law 8 bits 16 
 comme le flux des lapins. Les 3 min de négatifs enregistrées sont portées à 12 min par
 des versions dérivées déterministes (audio retourné + bruit rose ; lecture ralentie et
 accélérée, soit d'autres timbres et débits), pour garder le dépôt léger.
+
+Le classifieur n'est pas distribué (R24) : les tests qui l'utilisent sont ignorés (skip)
+tant qu'on ne l'a pas entraîné localement dans server/models/lapinou_fr.onnx.
 """
 
 from __future__ import annotations
@@ -15,10 +18,16 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from lapinou.config import Settings
+from lapinou.config import Settings, VoiceConfig
 from lapinou.rabbit.audio_gateway import mulaw_decode
 from lapinou.voice import wakeword
-from lapinou.voice.wakeword import DEFAULT_MODEL, WakeWord, feature_models_present
+from lapinou.voice.wakeword import (
+    DEFAULT_MODEL,
+    WakeWord,
+    WakeWordUnavailable,
+    feature_models_present,
+    load_wakeword,
+)
 
 DATA = Path(__file__).parent / "data"
 SR = 16000
@@ -26,18 +35,20 @@ GATEWAY_BLOCK = 2048  # taille typique des blocs de la passerelle audio
 
 VALIDATED_THRESHOLD = 0.9  # train.py evaluate : seuil le plus bas à ≤ 5 fausses détections/h
 
-# Objectifs de la tâche 16 NON atteints par le modèle livré (mesures du 2026-11-16, voir
-# tools/train_wakeword/README.md) : marqués xfail strict pour rester visibles ; ils
-# redeviendront des tests normaux (XPASS -> échec) dès qu'un meilleur modèle les tiendra.
+# Objectifs de la tâche 16 NON atteints par le modèle de la recette (mesures du 2026-11-16,
+# voir tools/train_wakeword/README.md) : xfail strict pour rester visibles ; un modèle
+# local qui les tient donne XPASS -> échec, et l'on retire alors ce marqueur.
 BELOW_TARGET = pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="modèle synthétique sous l'objectif : 4/10 positifs, 3 fausses détections en 12 min "
     "au seuil 0.9 (voir README de train_wakeword)",
 )
 
 needs_models = pytest.mark.skipif(
     not feature_models_present() or not DEFAULT_MODEL.is_file(),
-    reason="modèles openWakeWord absents (uv run python -m lapinou.voice.wakeword download)",
+    reason="classifieur local (non distribué, voir tools/train_wakeword) ou modèles "
+    "openWakeWord absents (uv run python -m lapinou.voice.wakeword download)",
 )
 
 
@@ -122,11 +133,41 @@ def test_default_threshold_is_validated():
     assert Settings().voice.wake_threshold == VALIDATED_THRESHOLD
 
 
+def test_test_files_cover_the_targets():
+    """10 positifs et au moins 10 min de négatifs, sans aucun modèle."""
+    assert len(sorted(DATA.glob("lapinou_*.wav"))) == 10
+    assert sum(len(pcm) for _, pcm in negatives()) / SR >= 600
+
+
+def test_classifier_not_configured_by_default():
+    assert Settings().voice.wake_model == ""
+    with pytest.raises(WakeWordUnavailable, match="voice.wake_model"):
+        load_wakeword(VoiceConfig())
+
+
+def test_missing_classifier_explains_how_to_get_it(tmp_path):
+    missing = tmp_path / "lapinou_fr.onnx"
+    with pytest.raises(WakeWordUnavailable, match="train_wakeword"):
+        load_wakeword(VoiceConfig(wake_model=str(missing)))
+    with pytest.raises(WakeWordUnavailable, match="train_wakeword"):
+        WakeWord(missing, 0.9)
+
+
+@pytest.mark.parametrize(
+    "pcm",
+    [np.zeros(1280, np.float32), np.zeros(1280, np.int32), np.zeros((640, 2), np.int16)],
+    ids=["float32", "int32", "stéréo"],
+)
+def test_feed_requires_int16_mono(pcm):
+    detector = WakeWord.__new__(WakeWord)  # la vérification précède tout calcul
+    with pytest.raises(ValueError, match="int16"):
+        detector.feed(pcm)
+
+
 @needs_models
 @BELOW_TARGET
 def test_positives_detected():
     files = sorted(DATA.glob("lapinou_*.wav"))
-    assert len(files) == 10
     detector = WakeWord(DEFAULT_MODEL, Settings().voice.wake_threshold)
     detected = []
     for path in files:
@@ -142,8 +183,6 @@ def test_positives_detected():
 @BELOW_TARGET
 def test_no_false_detection_in_ten_minutes():
     clips = negatives()
-    total = sum(len(pcm) for _, pcm in clips) / SR
-    assert total >= 600
     detector = WakeWord(DEFAULT_MODEL, Settings().voice.wake_threshold)
     false = {name: hits for name, pcm in clips if (hits := feed_all(detector, pcm))}
     assert false == {}

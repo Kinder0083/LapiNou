@@ -379,8 +379,12 @@ def _synth(job: tuple) -> np.ndarray | None:
     return trim(audio).astype(np.float32)
 
 
+EXCLUDED_VOICES: set[str] = set()  # generate --exclude-voice (licence, par exemple)
+
+
 def _jobs(kind: str, split: str, count: int, rng: random.Random) -> list[tuple]:
     voices = TEST_VOICES if split == "test" else TRAIN_VOICES
+    voices = [v for v in voices if v not in EXCLUDED_VOICES]
     pool = [(v, s) for v in voices for s in speakers(v, split)]
     if kind == "positive":
         texts = POSITIVE_TEXTS
@@ -415,6 +419,7 @@ def load_texts(path: Path) -> list[str]:
 def cmd_generate(args: argparse.Namespace) -> None:
     global _VOICE_DIR
     _VOICE_DIR = Path(args.voices)
+    EXCLUDED_VOICES.update(args.exclude_voice)
     out = Path(args.work) / "clips"
     out.mkdir(parents=True, exist_ok=True)
     plan = [
@@ -941,6 +946,8 @@ def main() -> None:
     g.add_argument("--mix-positives", type=int, default=6000, help="voix mélangées")
     g.add_argument("--mix-near", type=int, default=3000)
     g.add_argument("--mix-sentences", type=int, default=1500)
+    g.add_argument("--exclude-voice", action="append", default=[],
+                   help="voix à ne pas utiliser, ex. fr_FR-upmc-medium (CC BY-SA)")
     f = sub.add_parser("features")
     f.add_argument("--feature-dir", default=str(ww.FEATURE_DIR))
     f.add_argument("--pos-aug", type=int, default=3)

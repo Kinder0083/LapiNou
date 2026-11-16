@@ -1,40 +1,59 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Entraîner le mot d'activation « Lapinou »
 
-Le serveur détecte « Lapinou » dans le micro de chaque lapin avec
-`lapinou.voice.wakeword.WakeWord`, sur la chaîne d'[openWakeWord](https://github.com/dscripka/openWakeWord) :
-PCM 16 kHz → mélspectrogramme → plongements de 96 valeurs toutes les 80 ms (modèles
-`melspectrogram.onnx` et `embedding_model.onnx` d'openWakeWord) → notre classifieur
-`server/models/lapinou_fr.onnx` sur les 16 derniers plongements (≈ 2 s d'audio).
+Détecteur optionnel : la détection principale de « Lapinou » passe par la transcription
+(R23). Ce dossier fournit un pré-filtre acoustique, `lapinou.voice.wakeword.WakeWord`, sur la
+chaîne d'[openWakeWord](https://github.com/dscripka/openWakeWord) : PCM 16 kHz →
+mélspectrogramme → plongements de 96 valeurs toutes les 80 ms (modèles
+`melspectrogram.onnx` et `embedding_model.onnx` d'openWakeWord) → un classifieur sur les
+16 derniers plongements (≈ 2 s d'audio).
 
-Ce dossier refait ce classifieur. La recette tourne sur CPU (machine de développement :
-4 cœurs, 8 Go) en quelques heures.
+**Le classifieur n'est pas distribué** (voir « Données et licences ») : chacun l'entraîne
+avec la recette ci-dessous, sur CPU (machine de développement : 4 cœurs, 6 Go de mémoire ;
+≈ 11 h en tout, dont ≈ 9 h de synthèse), puis l'indique au serveur :
 
-## Ce qui est dans le dépôt, ce qui ne l'est pas
+```toml
+[voice]
+wake_model = "/chemin/vers/lapinou_fr.onnx"   # vide par défaut : détecteur indisponible
+wake_threshold = 0.9
+```
 
-| Fichier | Où | Licence |
-|---|---|---|
-| `server/models/lapinou_fr.onnx` (notre classifieur, < 1 Mo) | dépôt | MIT (entraîné ici) |
-| `melspectrogram.onnx`, `embedding_model.onnx` | téléchargés dans `server/models/openwakeword/` (ignoré par git) par `uv run python -m lapinou.voice.wakeword download`, SHA-256 vérifié | ceux de la version v0.5.1 d'openWakeWord ; le code d'openWakeWord est Apache-2.0 |
-| modèles « hey jarvis » & co. d'openWakeWord | **jamais** utilisés ni distribués | CC BY-NC-SA 4.0 |
-| voix Piper, données d'entraînement | seulement sur la machine d'entraînement (`~/wakeword-train/`) | voir ci-dessous |
-| `server/tests/data/*.wav` (voix de synthèse réservées au test) | dépôt | produits par `train.py export-tests` à partir des voix gilles (CC0), mls_1840 et mls (CC BY 4.0) |
+Sans `wake_model`, `lapinou.voice.wakeword.load_wakeword()` lève `WakeWordUnavailable` avec
+la marche à suivre.
 
-## Voix Piper utilisées
+## Données et licences
 
-Toutes viennent de [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) (`fr/fr_FR/…`).
-Licence de chaque voix = celle de son jeu de données (fichier `MODEL_CARD` de la voix) :
+Un modèle entraîné hérite des conditions de ses données. Avec la recette complète, il
+dépend de données **CC BY-NC-SA 4.0** (pas d'usage commercial, partage dans les mêmes
+conditions) et **CC BY-SA 4.0** : il ne peut pas être publié sous MIT et n'est donc **pas**
+dans ce dépôt (décision R24 ; `server/models/lapinou_fr.onnx` est ignoré par git).
 
-| Voix | Locuteurs | Licence | Rôle |
+| Donnée | Source | Licence | Usage ici |
 |---|---|---|---|
-| `fr_FR-siwis-medium`, `fr_FR-siwis-low` | 1 | CC BY 4.0 | entraînement |
-| `fr_FR-upmc-medium` | 2 (Jessica, Pierre) | CC BY-SA 4.0 | entraînement |
-| `fr_FR-mls-medium` | 125 (MLS) | CC BY 4.0 | entraînement (117 locuteurs) et test (8 locuteurs réservés, `MLS_HELD_OUT`) |
-| `fr_FR-gilles-low` | 1 | CC0 | test seulement |
-| `fr_FR-mls_1840-low` | 1 | CC BY 4.0 | test seulement (le locuteur 1840 est aussi exclu de mls-medium à l'entraînement) |
-| `fr_FR-tom-medium` | 1 | AGPL-3.0 | **non utilisée** (licence) |
+| plongements ACAV100M (`openwakeword_features_ACAV100M_2000_hrs_16bit.npy`, 1,5 premier Go) | [davidscripka/openwakeword_features](https://huggingface.co/datasets/davidscripka/openwakeword_features) | CC BY-NC-SA 4.0 | négatifs d'entraînement (`train --acav`) |
+| plongements de validation (`validation_set_features.npy`, ≈ 11 h) | même jeu de données | CC BY-NC-SA 4.0 | mesure seulement (`evaluate --validation`), n'entre pas dans le modèle |
+| `fr_FR-siwis-medium`, `fr_FR-siwis-low` (1 locuteur) | [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices), données SIWIS | CC BY 4.0 | entraînement |
+| `fr_FR-upmc-medium` (2 locuteurs) | piper-voices, données UPMC (MaryTTS) | **CC BY-SA 4.0** | entraînement |
+| `fr_FR-mls-medium` (125 locuteurs, dont 3 000 voix mélangées dérivées) | piper-voices, Multilingual LibriSpeech (OpenSLR 94) | CC BY 4.0 | entraînement (117 locuteurs) et test (8 réservés, `MLS_HELD_OUT`) |
+| `fr_FR-mls_1840-low` (1) | piper-voices, OpenSLR 94 | CC BY 4.0 | test seulement (1840 exclu aussi de mls-medium) |
+| `fr_FR-gilles-low` (1) | piper-voices, données Kaggle de Bryan Park | CC0 | test seulement |
+| `fr_FR-tom-medium` | piper-voices | AGPL-3.0 | **non utilisée** |
+| `melspectrogram.onnx`, `embedding_model.onnx` | version v0.5.1 d'openWakeWord, téléchargés dans `server/models/openwakeword/` (ignoré) par `uv run python -m lapinou.voice.wakeword download`, SHA-256 vérifié | ceux d'openWakeWord (code Apache-2.0) | caractéristiques, au service comme à l'entraînement |
+| modèles « hey jarvis » & co. d'openWakeWord | — | CC BY-NC-SA 4.0 | **jamais** utilisés ni distribués |
 
-Ces voix ne servent qu'à fabriquer des exemples ; aucune n'est distribuée avec LapiNou.
+Licence de chaque voix = celle de son jeu de données (fichier `MODEL_CARD` de la voix). Les
+voix ne servent qu'à fabriquer des exemples ; aucune n'est distribuée. Seuls sont dans le
+dépôt le code (MIT) et `server/tests/data/*.wav`, des extraits de synthèse produits par
+`train.py export-tests` avec les voix gilles (CC0), mls_1840 et mls (CC BY 4.0 :
+attribution ci-dessus).
+
+**Entraîner sans données NC ni SA** (modèle utilisable sous des conditions CC BY
+seulement) : ne pas passer `--acav` à `train` (les négatifs sont alors seulement les
+nôtres : phrases, mots proches, fonds, et les enregistrements réels de `--real-negatives`)
+et exclure la voix upmc de la synthèse :
+`generate --voices … --exclude-voice fr_FR-upmc-medium`. `evaluate --validation` reste
+possible (mesure seulement) ou peut être omis. Ce mode n'a pas été mesuré ; attendre plus
+de fausses détections faute de négatifs ACAV100M.
 
 ## Recette
 
@@ -73,7 +92,8 @@ $T export-tests --voices ~/wakeword-train/voices     # server/tests/data/*.wav
 uv run pytest -q tests/test_wakeword.py
 ```
 
-`train` écrit `server/models/lapinou_fr.onnx`. Choisir ensuite le seuil d'après
+`train` écrit `server/models/lapinou_fr.onnx` (ignoré par git ; `voice.wake_model` doit
+pointer vers lui). Choisir ensuite le seuil d'après
 `evaluate` (règle utilisée : le plus bas seuil à ≤ 5 fausses détections par heure sur la
 validation openWakeWord) et le reporter dans `VoiceConfig.wake_threshold`
 (`server/lapinou/config.py`) et `VALIDATED_THRESHOLD` (`tests/test_wakeword.py`).
@@ -88,8 +108,9 @@ validation openWakeWord) et le reporter dans `VoiceConfig.wake_threshold`
   des 117 locuteurs MLS d'entraînement (lignes ajoutées à `emb_g.weight`, comme
   piper-sample-generator) ; fichiers `mix_*.npz`. Négatifs : mots
   proches (« lapin », « lapereau », « papinou », « lapinot », « minou », « pinou »,
-  « la pinède »…) et ≈ 3 100 phrases (une liste écrite à la main + des phrases
-  combinées), une sur cinq réservée au test. Les voix low et MLS dérapent souvent
+  « la pinède »…) et phrases : ≈ 3 090 textes (une liste écrite à la main + des phrases
+  combinées), un sur cinq réservé au test ; 4 000 + 1 500 (voix mélangées) synthèses
+  d'entraînement et 700 de test, dont 3 634 + 1 339 et 490 retenues. Les voix low et MLS dérapent souvent
   (phonème de plusieurs secondes, babillage) : les alignements phonème/audio de Piper
   servent à couper chaque extrait à la fin du dernier phonème et à refuser ceux dont
   « Lapinou » ne dure pas 0,25 à 0,95 s.
@@ -145,10 +166,10 @@ réverbérantes qu'un modèle entraîné sur de vraies voix ; à reprendre avec 
 enregistrements réels des lapins (`record_negatives.py`, et des « Lapinou » réels comme
 positifs).
 
-## Résultats du modèle livré (2026-11-16) : objectifs NON atteints
+## Résultats de la recette (2026-11-16, modèle non distribué) : objectifs NON atteints
 
 Données : 6 158 positifs (3 316 voix d'origine + 2 842 voix mélangées), 3 029 mots proches,
-4 973 phrases (≈ 5 h 30), 300 000 fenêtres ACAV100M. Modèle : 1536 → 128 → 128 → 1,
+4 973 phrases (≈ 5 h 30 d'audio), 300 000 fenêtres ACAV100M. Modèle : 1536 → 128 → 128 → 1,
 dropout 0,3, bruit 0,3 sur les plongements, poids des négatifs 20, 30 000 pas.
 
 `evaluate` (voix réservées, extraits augmentés ; validation openWakeWord ≈ 11 h) :
@@ -164,7 +185,7 @@ dropout 0,3, bruit 0,3 sur les plongements, poids des négatifs 20, 30 000 pas.
 Fichiers de test (`tests/data`, voix réservées, 12,1 min de négatifs) : seuil 0,5 → 5/10
 positifs, 17 fausses détections ; 0,8 → 5/10, 4 ; **0,9 → 4/10, 3** ; 0,95 → 2/10, 1.
 Objectif (≥ 9/10 et 0 fausse détection) non atteint : les deux tests correspondants sont
-`xfail(strict=True)`.
+`xfail(strict=True)` quand un modèle local est présent, ignorés sinon.
 
 Diagnostic : le classifieur apprend les locuteurs, pas le mot. Sur des voix jamais vues
 (locuteurs MLS réservés, voix mélangées, gilles, mls_1840), « Lapinou » et les mots

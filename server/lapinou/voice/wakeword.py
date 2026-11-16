@@ -9,7 +9,9 @@ Les deux modèles de caractéristiques d'openWakeWord (melspectrogram.onnx,
 embedding_model.onnx) ne sont pas dans le dépôt : `download_feature_models()` les
 télécharge (URL épinglées, SHA-256 vérifié) dans server/models/openwakeword/.
 Commande : `uv run python -m lapinou.voice.wakeword download`.
-Le classifieur, entraîné par server/tools/train_wakeword/, est server/models/lapinou_fr.onnx.
+Le classifieur n'est pas distribué (ses données d'entraînement sont sous licences NC/SA) :
+chacun l'entraîne avec server/tools/train_wakeword/ (README) et l'indique dans
+`voice.wake_model` ; `load_wakeword()` le charge ou explique pourquoi c'est impossible.
 """
 
 from __future__ import annotations
@@ -24,7 +26,8 @@ import numpy as np
 import onnxruntime as ort
 
 MODELS_DIR = Path(__file__).resolve().parents[2] / "models"
-DEFAULT_MODEL = MODELS_DIR / "lapinou_fr.onnx"
+DEFAULT_MODEL = MODELS_DIR / "lapinou_fr.onnx"  # emplacement conseillé (ignoré par git)
+RECIPE = "server/tools/train_wakeword/README.md"
 FEATURE_DIR = MODELS_DIR / "openwakeword"
 
 _OWW = "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/"
@@ -158,10 +161,24 @@ def _shared_models(feature_dir: Path) -> FeatureModels:
     return FeatureModels(feature_dir)
 
 
+class WakeWordUnavailable(RuntimeError):
+    """Le détecteur openWakeWord ne peut pas être chargé (modèle absent, non configuré)."""
+
+
 class WakeWord:
     """Détecteur « Lapinou » pour un flux (un par lapin)."""
 
     def __init__(self, model_path: Path, threshold: float, feature_dir: Path = FEATURE_DIR) -> None:
+        if not Path(model_path).is_file():
+            raise WakeWordUnavailable(
+                f"classifieur « Lapinou » absent : {model_path} (il n'est pas distribué ; "
+                f"l'entraîner avec la recette de {RECIPE})"
+            )
+        if not feature_models_present(Path(feature_dir)):
+            raise WakeWordUnavailable(
+                f"modèles openWakeWord absents de {feature_dir} "
+                "(uv run python -m lapinou.voice.wakeword download)"
+            )
         self.threshold = threshold
         self._models = _shared_models(Path(feature_dir))
         self._model = _session(Path(model_path), 1)
@@ -181,6 +198,9 @@ class WakeWord:
         Une détection par passage au-dessus du seuil : le score doit redescendre sous le
         seuil avant qu'une nouvelle détection soit possible.
         """
+        pcm = np.asarray(pcm)
+        if pcm.dtype != np.int16 or pcm.ndim != 1:
+            raise ValueError(f"PCM int16 mono (1-D) attendu, reçu {pcm.dtype} de forme {pcm.shape}")
         new = self._stream.push(pcm)
         if len(new) == 0:
             return None
@@ -201,6 +221,20 @@ class WakeWord:
                 self._armed = True
         self.last_score = float(scores[-1])
         return detected
+
+
+def load_wakeword(voice) -> WakeWord:
+    """Le détecteur de la configuration `voice` (lapinou.config.VoiceConfig).
+
+    Lève WakeWordUnavailable avec la marche à suivre si `voice.wake_model` est vide ou
+    si un modèle manque.
+    """
+    if not voice.wake_model:
+        raise WakeWordUnavailable(
+            "voice.wake_model n'est pas renseigné : le classifieur « Lapinou » n'est pas "
+            f"distribué, l'entraîner avec la recette de {RECIPE} puis indiquer son chemin"
+        )
+    return WakeWord(Path(voice.wake_model).expanduser(), voice.wake_threshold)
 
 
 def main(argv: list[str]) -> int:

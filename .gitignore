@@ -13,3 +13,5 @@ __pycache__/
 /tools/app-server/uploads/
 # Modèles de caractéristiques openWakeWord (téléchargés : python -m lapinou.voice.wakeword download)
 /server/models/openwakeword/
+# Classifieur « Lapinou » entraîné localement : jamais distribué (données NC/SA, R24)
+/server/models/lapinou_fr.onnx
