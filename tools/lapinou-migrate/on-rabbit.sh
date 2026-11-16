@@ -148,12 +148,14 @@ setting() { # NAME
     printf '%s' "${v}"
 }
 
-# Free Rabbits OS's processes, kernel threads left out: "pid name ppid" per line.
+# The processes, kernel threads (an empty command line) left out: "pid name ppid" per line. Run it
+# in this shell, not in $( ): the /proc list is taken before it starts any command of its own.
+# (/proc's files all have size 0, so their content is what tells.)
 proc_list() {
     local d stat comm rest
     for d in /proc/[0-9]*; do
-        [ -s "${d}/cmdline" ] || continue
-        stat=$(cat "${d}/stat" 2> /dev/null) || continue
+        { read -r stat < "${d}/stat"; } 2> /dev/null || continue
+        [ -n "$(tr -d '\000' < "${d}/cmdline" 2> /dev/null)" ] || continue
         comm=${stat#*\(}
         comm=${comm%\)*}
         rest=${stat##*\) }
@@ -167,7 +169,7 @@ ancestors() {
     local p=$$ i=0 stat
     while [ -n "${p}" ] && [ "${p}" != 0 ] && [ ${i} -lt 30 ]; do
         echo "${p}"
-        stat=$(cat "/proc/${p}/stat" 2> /dev/null) || break
+        { read -r stat < "/proc/${p}/stat"; } 2> /dev/null || break
         set -- ${stat##*\) }
         p=$2
         i=$((i + 1))
@@ -178,33 +180,42 @@ ancestors() {
 # programs, and a process that holds the watchdog (stopping it would let the watchdog reboot).
 KEEP_PROCS="init syslogd klogd inetd dropbear wpa_supplicant udhcpc power getty"
 
-# Stop everything else (the controller, immortaldog, crond, OpenKarotz...), which could otherwise
-# reboot the rabbit between erasing mtd1 and the end of mtd2's read-back: all are frozen first (so
-# none can react to another's end), then killed. With "list", only says what it would stop.
-stop_fros() { # [list]
-    local ours pid comm ppid targets=
+# Everything else (the controller, immortaldog, crond, OpenKarotz...) could reboot the rabbit between
+# erasing mtd1 and the end of mtd2's read-back: plan_stop, part of the checks, lists them in TARGETS
+# (and refuses when /proc can't be read); stop_fros then freezes them all (so none can react to
+# another's end) and kills them.
+plan_stop() {
+    local ours pid comm ppid
+    proc_list > "${STAGE}/procs"
+    grep -q '^1 ' "${STAGE}/procs" && grep -q "^$$ " "${STAGE}/procs" ||
+        ERROR "can't list the processes in /proc (neither init nor this script found)"
     ours=" $(ancestors | tr '\n' ' ') "
+    TARGETS=
     while read -r pid comm ppid; do
-        [ -n "${pid}" ] || continue
-        case " ${KEEP_PROCS} " in *" ${comm} "*) LOG "Process ${pid} ${comm}: kept"; continue ;; esac
+        # This script's own commands (the read of /proc) aren't Free Rabbits OS's.
+        [ "${ppid}" != "$$" ] || continue
         case "${ours}" in *" ${pid} "*) continue ;; esac
+        case " ${KEEP_PROCS} " in *" ${comm} "*) LOG "Process ${pid} ${comm}: kept"; continue ;; esac
         if ls -l "/proc/${pid}/fd" 2> /dev/null | grep -q watchdog; then
             LOG "Process ${pid} ${comm}: holds the watchdog, kept"
             continue
         fi
         LOG "Process ${pid} ${comm} ($(tr '\000' ' ' < "/proc/${pid}/cmdline" 2> /dev/null | cut -c 1-80 | sed 's/ *$//')): to stop"
-        targets="${targets} ${pid}"
-    done <<EOF
-$(proc_list)
-EOF
-    [ "$1" = list ] && return 0
-    if [ -n "${targets}" ]; then
-        LOG "Stopping Free Rabbits OS's processes:${targets}"
-        /bin/kill -STOP ${targets} 2> /dev/null
-        /bin/kill -KILL ${targets} 2> /dev/null
+        TARGETS="${TARGETS} ${pid}"
+    done < "${STAGE}/procs"
+    rm -f "${STAGE}/procs"
+    LOG "Processes to stop:${TARGETS:- none}"
+}
+stop_fros() {
+    if [ -n "${TARGETS}" ]; then
+        LOG "Stopping Free Rabbits OS's processes:${TARGETS}"
+        /bin/kill -STOP ${TARGETS} 2> /dev/null
+        /bin/kill -KILL ${TARGETS} 2> /dev/null
         sleep 1
     fi
-    LOG "Still running: $(proc_list | awk '{ printf "%s ", $2 }')"
+    proc_list > "${STAGE}/procs"
+    LOG "Still running: $(awk '{ printf "%s ", $2 }' "${STAGE}/procs")"
+    rm -f "${STAGE}/procs"
 }
 
 # The rollback writes back sauvegarde/data: say whether mtd1 and mtd2 still hold just that.
@@ -301,8 +312,8 @@ check_all() { # [usr]
     if [ "${MODE}" = check ]; then
         compare_backup mtd1 "${BACKUP_MTD1_MD5:-}"
         compare_backup mtd2 "${BACKUP_MTD2_MD5:-}"
-        stop_fros list
     fi
+    plan_stop
     LOG "Checks passed"
 }
 

@@ -71,7 +71,7 @@ STOPPED = "1700 1701 1702"
 
 # The fake ssh: "ssh [options] user@host command" runs the command in the sandbox.
 FAKE_SSH = r'''#!/usr/bin/env python3
-import hashlib, os, re, subprocess, sys
+import hashlib, os, re, shutil, subprocess, sys
 from pathlib import Path
 sb = Path(os.environ["FAKE_RABBIT"])
 def rewrite(text):
@@ -82,14 +82,31 @@ while args and args[0].startswith("-"):
 command = " ".join(args[1:])
 with open(sb / "ssh.log", "a") as f:
     f.write(command + "\n")
+def run(command, data=None):
+    """The command in bash, which the sandbox's /proc lists (its process, a child of dropbear) the
+    way the rabbit's would: bash waits on a pipe until that entry is made, and keeps its pid through
+    exec (on-rabbit.sh, a simple command, is exec'd too)."""
+    r, w = os.pipe()
+    p = subprocess.Popen(["bash", "-c", "read -r _ <&" + str(r) + ' && exec bash -c "$0"', command], cwd=sb,
+                         pass_fds=(r,), stdin=subprocess.PIPE if data is not None else None)
+    os.close(r)
+    entry = sb / "proc" / str(p.pid)
+    entry.mkdir()
+    (entry / "stat").write_text(str(p.pid) + " (bash) S 1645 1 1 0 -1\n")
+    (entry / "cmdline").write_bytes(b"bash\0on-rabbit.sh\0")
+    os.write(w, b"go\n")
+    os.close(w)
+    p.communicate(data)
+    shutil.rmtree(entry)
+    return p.returncode
 # FAKE_DAMAGE=NAME: a file of that name sent to the rabbit arrives with its first byte changed.
 damage = os.environ.get("FAKE_DAMAGE")
 if damage and command.endswith("/" + damage + "'"):
     data = bytearray(sys.stdin.buffer.read())
     data[0] ^= 0xFF
-    status = subprocess.run(["bash", "-c", rewrite(command)], cwd=sb, input=bytes(data)).returncode
+    status = run(rewrite(command), bytes(data))
 else:
-    status = subprocess.run(["bash", "-c", rewrite(command)], cwd=sb).returncode
+    status = run(rewrite(command))
 # Scripts sent to the stage are rewritten once (a record keeps what has been).
 done = sb / "rewritten.txt"
 seen = set(done.read_text().split()) if done.exists() else set()
@@ -331,6 +348,20 @@ class MigrateTest(unittest.TestCase):
         self.assertIn("Process 1701 controller (/usr/karotz/bin/controller): to stop", p.stdout)
         self.assertIn("Process 1283 wpa_supplicant: kept", p.stdout)
         self.assertRegex(p.stdout, r"Settings files: .*karotz\.conf .*wpa\.conf")
+        self.assertFalse([a for a in r.actions() if a.startswith("kill")])
+        # The script's own process and the commands it runs aren't listed.
+        self.assertIn(f"Processes to stop: {STOPPED}\n", p.stdout)
+        self.assertNotRegex(p.stdout, r"Process \d+ (bash|cat|tr|sh) ")
+
+    def test_unreadable_processes_refused(self):
+        # A /proc where neither init nor the script is found (the processes couldn't be listed):
+        # FROS couldn't be stopped, so nothing is written.
+        r = self.rabbit("no-processes")
+        shutil.rmtree(r.sb / "proc/1")
+        p = r.migrate(self.key)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("can't list the processes", p.stdout)
+        self.assertEqual(r.writes(), [])
         self.assertFalse([a for a in r.actions() if a.startswith("kill")])
 
     def test_stops_fros_before_writing(self):
