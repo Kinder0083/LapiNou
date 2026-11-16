@@ -234,7 +234,7 @@ class OtaConfig(_Section):
     # Jeton GitHub à grain fin, lecture seule de « Contents », pour un dépôt privé.
     token: str = ""  # secret
     dir: str = "/var/lib/lapinou/ota"
-    # Clé publique Ed25519 (PEM) des versions (R42) ; vide : ota-pubkey.pem livré avec le
+    # Clé publique Ed25519 (contenu PEM) des versions (R42) ; vide : ota-pubkey.pub livré avec le
     # serveur. Ni elle ni `repo` ne se changent par la page (config.toml seulement).
     pubkey_path: str = ""
     check_hours: float = Field(default=12.0, ge=0)  # 0 : seulement à la demande

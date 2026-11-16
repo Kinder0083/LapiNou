@@ -7,8 +7,8 @@ jeton ne part que vers api.github.com, jamais vers l'hôte de stockage où GitHu
 téléchargements. Toutes les adresses GitHub sont en https, redirections comprises.
 
 Signature (R42) : Ed25519 sur les octets exacts de `manifest.json`, signature brute de 64
-octets publiée à part (`manifest.json.sig`). La clé publique est le fichier PEM de
-`[ota] pubkey_path` (par défaut `ota-pubkey.pem` livré avec le serveur). Le serveur vérifie la
+octets publiée à part (`manifest.json.sig`). La clé publique est le fichier (contenu PEM, extension .pub) de
+`[ota] pubkey_path` (par défaut `ota-pubkey.pub` livré avec le serveur). Le serveur vérifie la
 signature **avant** de télécharger les fichiers et d'installer la version, donc avant toute
 clé USB construite à partir d'elle ; clé absente ou provisoire (PLACEHOLDER) : refus.
 Chaque fichier listé est ensuite vérifié (taille, SHA-256), l'archive de la clé USB comprise
@@ -57,7 +57,7 @@ log = logging.getLogger(__name__)
 API = "https://api.github.com"
 MANIFEST = "manifest.json"
 SIGNATURE = "manifest.json.sig"
-PACKAGED_PUBKEY = Path(__file__).with_name("ota-pubkey.pem")
+PACKAGED_PUBKEY = Path(__file__).with_name("ota-pubkey.pub")
 MAX_FILE = 300 * 1024 * 1024
 GRACE_S = 600  # une version remplacée reste servie 10 minutes
 FIRST_CHECK_S = 60  # première vérification périodique une minute après le démarrage

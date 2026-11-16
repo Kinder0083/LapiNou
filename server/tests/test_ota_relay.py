@@ -92,7 +92,7 @@ class FakeGitHub:
 def _relay(gh, tmp_path, token="", clock=None, pubkey=None):
     kwargs = {"clock": clock} if clock else {}
     if pubkey is None:
-        pubkey = tmp_path / "ota-pubkey.pem"
+        pubkey = tmp_path / "ota-pubkey.pub"
         pubkey.write_bytes(_pem(SIGNER))
     return OtaRelay(REPO, token, tmp_path / "ota", client=gh.client(), pubkey_path=pubkey,
                     **kwargs)
@@ -250,7 +250,7 @@ async def test_bad_or_missing_signature_is_refused(tmp_path, case):
 async def test_placeholder_or_missing_public_key_refuses_everything(tmp_path):
     assert b"PLACEHOLDER" in PACKAGED_PUBKEY.read_bytes()
     gh = FakeGitHub()
-    for pubkey in (PACKAGED_PUBKEY, tmp_path / "absente.pem"):
+    for pubkey in (PACKAGED_PUBKEY, tmp_path / "absente.pub"):
         relay = _relay(gh, tmp_path, pubkey=pubkey)
         gh.requests.clear()
         with pytest.raises(OtaError, match="clé publique OTA"):
@@ -268,7 +268,7 @@ async def test_usb_key_needs_a_valid_public_key_now(tmp_path):
     relay = _relay(gh, tmp_path)
     await relay.refresh()
     assert relay.key_zip() is not None
-    (tmp_path / "ota-pubkey.pem").write_bytes(_pem(OTHER))
+    (tmp_path / "ota-pubkey.pub").write_bytes(_pem(OTHER))
     with pytest.raises(OtaError, match="signature"):
         relay.key_zip()
     relay.pubkey_path = PACKAGED_PUBKEY
@@ -392,8 +392,9 @@ async def test_release_survives_restart(tmp_path):
 
 def test_from_settings():
     s = Settings(ota=OtaConfig(repo="moi/fork", token="t", dir="/tmp/x",
-                               pubkey_path="/etc/lapinou/ota.pem"))
+                               pubkey_path="/etc/lapinou/ota.pub"))
     relay = OtaRelay.from_settings(s)
     assert (relay.repo, relay.token, str(relay.dir)) == ("moi/fork", "t", "/tmp/x")
-    assert str(relay.pubkey_path) == "/etc/lapinou/ota.pem"
+    assert str(relay.pubkey_path) == "/etc/lapinou/ota.pub"
     assert OtaRelay.from_settings(Settings()).pubkey_path == PACKAGED_PUBKEY
+    assert PACKAGED_PUBKEY.name == "ota-pubkey.pub"  # R42 amendée : extension .pub

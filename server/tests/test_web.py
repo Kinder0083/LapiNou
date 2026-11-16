@@ -837,7 +837,7 @@ def test_ota_settings_are_read_only_from_the_page(env):
     client, _, tmp_path = env
     _login(client)
     r = client.put("/api/settings", headers=H, json={
-        "ota": {"repo": "attaquant/faux", "pubkey_path": "/tmp/cle.pem", "check_hours": 6}})
+        "ota": {"repo": "attaquant/faux", "pubkey_path": "/tmp/cle.pub", "check_hours": 6}})
     assert r.status_code == 200, r.text
     saved = load_settings(tmp_path / "config.toml")
     assert saved.ota.repo == "Kinder0083/LapiNou" and saved.ota.pubkey_path == ""

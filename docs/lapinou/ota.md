@@ -15,8 +15,8 @@ Assets de la Release `vX.Y.Z` :
   bruts.
 - chaque fichier listé, sous le même nom.
 
-Clé publique (PEM) : `image/core/usr/share/lapinou/ota-pubkey.pem` sur le lapin ;
-`[ota] pubkey_path` sur le serveur (par défaut `server/lapinou/ota-pubkey.pem`, livré). Le
+Clé publique (contenu PEM, extension `.pub`, R42 amendée) : `image/core/usr/share/lapinou/ota-pubkey.pub` sur le lapin ;
+`[ota] pubkey_path` sur le serveur (par défaut `server/lapinou/ota-pubkey.pub`, livré). Le
 fichier du dépôt est **provisoire** (PLACEHOLDER) tant que la vraie paire n'est pas créée
 (T26) : d'ici là, serveur et lapin refusent toute version.
 

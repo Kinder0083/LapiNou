@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: MIT
+# PLACEHOLDER: this is NOT a public key. The owner replaces this file with the real Ed25519
+# public key of the OTA releases (PEM content, generated at Task 26; the private key never goes
+# in the repository). Until then the server refuses every OTA release (fail closed, ruling R42).
