@@ -204,3 +204,93 @@ async def test_ping_answered_and_reconnect_keeps_rabbit(platform):
     assert platform.get("lapin-1") is first and first.connected
     await first.ears(5, 6)
     assert "left: 5" in await c2.until(r"^ears \{")
+
+
+async def test_no_config_pushed_at_connection(platform):
+    c = await platform.connect("lapin-1")
+    await asyncio.sleep(0.1)
+    assert not any(re.search(r"^config \{", t, re.M) for t in c.inbox)
+
+
+async def test_slow_handler_does_not_block_controller(platform):
+    release = asyncio.Event()
+
+    async def slow(rabbit, kind):
+        await release.wait()
+
+    platform.on_button = slow
+    c = await platform.connect("lapin-1")
+    await c.send('id: "b1" buttonCallback { type: SIMPLE }')
+    await c.send('id: "p1" ping { }')
+    assert 'correlationId: "p1"' in await c.until(r"correlationId", timeout=2)
+    await asyncio.wait_for(platform.get("lapin-1").ears(1, 2), 2)
+    assert "left: 1" in await c.until(r"^ears \{", timeout=2)
+    release.set()
+
+
+async def test_handler_exception_is_isolated(platform):
+    def boom(rabbit, kind):
+        raise RuntimeError("x")
+
+    platform.on_button = boom
+    c = await platform.connect("lapin-1")
+    await c.send('id: "b1" buttonCallback { type: SIMPLE }')
+    await c.send('id: "p1" ping { }')
+    assert 'correlationId: "p1"' in await c.until(r"correlationId", timeout=2)
+
+
+async def test_play_replacing_play_attributes_events(platform):
+    c = await platform.connect("lapin-1")
+    r = platform.get("lapin-1")
+    await r.play("http://x/a.mp3", "A")
+    await r.play("http://x/b.mp3", "B")
+    await c.send('id: "m1" multimediaCallback { action: STOP }')  # fin de A
+    await c.send('id: "m2" multimediaCallback { action: PLAY }')  # début de B
+    for _ in range(100):
+        if len(platform.events) >= 2:
+            break
+        await asyncio.sleep(0.05)
+    assert platform.events == [
+        ("playback", "lapin-1", "A", "stopped"),
+        ("playback", "lapin-1", "B", "playing"),
+    ]
+
+
+async def test_failed_play_leaves_no_stale_id(platform):
+    r = platform.get("lapin-1")
+    with pytest.raises(ConnectionError):
+        await r.play("http://x/a.mp3", "A")  # jamais connecté
+    assert r._playback_id is None
+
+
+async def test_interactive_mode_renewed_before_expiry():
+    codec = build_codec()
+    registry = RabbitRegistry(codec=codec, interactive_ttl=1)
+    await registry.start("127.0.0.1", 0)
+    c = FakeController(codec, "lapin-1")
+    try:
+        await c.connect(registry.port)
+        first = await c.until(r"^interactiveMode \{")
+        await asyncio.wait_for(registry.get("lapin-1").wait_ready(), 10)
+        second = await c.until(r"^interactiveMode \{", timeout=3)  # renouvelé
+        id1 = re.search(r'^\s*interactiveId: "([^"]+)"', first, re.M).group(1)
+        id2 = re.search(r'^\s*interactiveId: "([^"]+)"', second, re.M).group(1)
+        assert id1 != id2
+        await asyncio.sleep(0.2)
+        await registry.get("lapin-1").ears(1, 1)
+        ears = await c.until(r"^ears \{")
+        assert f'interactiveId: "{id2}"' in ears
+    finally:
+        await c.close()
+        await registry.close()
+
+
+async def test_bad_interactive_id_reenters_and_retries_once(platform):
+    c = await platform.connect("lapin-1")
+    await platform.get("lapin-1").ears(7, 8)
+    ears = await c.until(r"^ears \{")
+    eid = re.search(r'^id: "([^"]*)"', ears, re.M).group(1)
+    await c.send(f'id: "e1" correlationId: "{eid}" response {{ code: BAD_INTERACTIVEID }}')
+    await c.until(r"^interactiveMode \{")
+    again = await c.until(r"^ears \{")
+    assert "left: 7" in again

@@ -37,9 +37,11 @@ class RabbitRegistry:
         on_button: Callable[..., Any] | None = None,
         on_rfid: Callable[..., Any] | None = None,
         on_playback: Callable[..., Any] | None = None,
+        interactive_ttl: int = 86400,
     ):
         self.codec = codec or build_codec()
         self.timezone = timezone
+        self.interactive_ttl = interactive_ttl
         self.on_button, self.on_rfid, self.on_playback = on_button, on_rfid, on_playback
         self._rabbits: dict[str, Rabbit] = {}
         self._server: asyncio.Server | None = None
@@ -60,14 +62,25 @@ class RabbitRegistry:
         """scheduleConfig : règle l'horloge et le fuseau du lapin."""
         return f"scheduleConfig {{ time: {int(time.time() * 1000)} gmt: {quote(self.timezone)} }}"
 
-    async def _emit(self, event: str, *args) -> None:
-        handler = getattr(self, f"on_{event}")
-        if handler is None:
-            return
+    def _spawn(self, coro) -> asyncio.Task:
+        """Une tâche suivie : annulée à la fermeture, jamais dans la boucle de lecture."""
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+    def _emit(self, event: str, *args) -> None:
+        """Appelle on_<event> dans sa propre tâche (un gestionnaire lent ne bloque pas le contrôleur)."""
+        if getattr(self, f"on_{event}") is not None:
+            self._spawn(self._run_handler(event, args))
+
+    async def _run_handler(self, event: str, args: tuple) -> None:
         try:
-            result = handler(*args)
+            result = getattr(self, f"on_{event}")(*args)
             if inspect.isawaitable(result):
                 await result
+        except asyncio.CancelledError:
+            raise
         except Exception:
             log.exception("gestionnaire on_%s en échec", event)
 
@@ -87,9 +100,10 @@ class RabbitRegistry:
         for rabbit in self._rabbits.values():
             if rabbit._link is not None:
                 rabbit._link.close()
-        for task in list(self._tasks):
+        tasks = list(self._tasks)
+        for task in tasks:
             task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
         if self._server is not None:
             await self._server.wait_closed()
 
@@ -102,6 +116,7 @@ class RabbitRegistry:
     async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         task = asyncio.current_task()
         self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
         link = _Link(self.codec, writer)
         rabbit: Rabbit | None = None
         try:
@@ -122,4 +137,3 @@ class RabbitRegistry:
             if rabbit is not None:
                 rabbit._detach(link)
             link.close()
-            self._tasks.discard(task)

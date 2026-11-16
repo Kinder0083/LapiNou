@@ -33,8 +33,8 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 PROTO = REPO / "userland" / "proto" / "platform-message.proto"
-# Durée de la prise de main (mode interactif) : le contrôleur la rend à l'expiration.
-INTERACTIVE_TTL_S = 86400
+# Le mode interactif est renouvelé à cette fraction de sa durée.
+RENEW_FRACTION = 0.8
 READY_TIMEOUT_S = 10
 
 quote = app_server.quote
@@ -89,9 +89,12 @@ class Rabbit:
         self._registry = registry
         self._link: _Link | None = None
         self._interactive_id: str | None = None
-        self._interactive_req: str | None = None
+        self._pending_interactive: dict[str, str] = {}  # id de requête -> interactiveId demandé
+        self._sent: dict[str, str] = {}  # id de commande -> corps (pour un renvoi)
+        self._renew_task: asyncio.Task | None = None
         self._ready = asyncio.Event()
         self._playback_id: str | None = None
+        self._stale_stops = 0  # STOP attendus pour des lectures déjà remplacées
         self._play_req: str | None = None
 
     @property
@@ -109,18 +112,40 @@ class Rabbit:
             old.close()
         self.state = "connected"
         self._ready.clear()
-        self._playback_id = None
-        await link.send("config { playsounds: true }")
+        self._playback_id, self._stale_stops = None, 0
+        self._interactive_id = None
+        self._pending_interactive.clear()
         await link.send(self._registry.schedule_text())
-        self._interactive_id = str(uuid.uuid4())
-        self._interactive_req = await link.send(
-            f"interactiveMode {{ action: START interactiveId: {quote(self._interactive_id)} "
-            f"ttl: {INTERACTIVE_TTL_S} }}"
+        await self._start_interactive(link)
+        if self._renew_task is not None:
+            self._renew_task.cancel()
+        self._renew_task = self._registry._spawn(self._renew_loop(link))
+
+    async def _start_interactive(self, link: _Link) -> None:
+        """Prend (ou reprend) la main ; l'identifiant n'est adopté qu'à la réponse OK du contrôleur."""
+        new_id = str(uuid.uuid4())
+        req = await link.send(
+            f"interactiveMode {{ action: START interactiveId: {quote(new_id)} "
+            f"ttl: {self._registry.interactive_ttl} }}"
         )
+        self._pending_interactive[req] = new_id
+
+    async def _renew_loop(self, link: _Link) -> None:
+        while True:
+            await asyncio.sleep(max(0.1, self._registry.interactive_ttl * RENEW_FRACTION))
+            if self._link is not link:
+                return
+            try:
+                await self._start_interactive(link)
+            except OSError:
+                return
 
     def _detach(self, link: _Link) -> None:
         if self._link is link:
             self._link, self.state = None, "disconnected"
+            if self._renew_task is not None:
+                self._renew_task.cancel()
+                self._renew_task = None
             self._ready.clear()
             self._interactive_id = None
 
@@ -136,11 +161,23 @@ class Rabbit:
         link = self._link
         if link is None:
             raise ConnectionError(f"lapin {self.id} déconnecté")
-        return await link.send(f"interactiveId: {quote(self._interactive_id)} {body}")
+        req = await link.send(f"interactiveId: {quote(self._interactive_id)} {body}")
+        self._sent[req] = body
+        for old in list(self._sent)[:-50]:
+            del self._sent[old]
+        return req
 
     async def play(self, url: str, playback_id: str) -> None:
-        self._playback_id = playback_id
-        self._play_req = await self._command(f"multimedia {{ play {{ url: {quote(url)} }} }}")
+        previous, self._playback_id = self._playback_id, playback_id
+        try:
+            self._play_req = await self._command(f"multimedia {{ play {{ url: {quote(url)} }} }}")
+        except BaseException:
+            self._playback_id = previous
+            raise
+        if previous is not None:
+            # La lecture remplacée est finie ; son STOP, s'il vient, ne concerne plus la nouvelle.
+            self._stale_stops += 1
+            self._registry._emit("playback", self, previous, "stopped")
 
     async def stop_playback(self) -> None:
         await self._command("multimedia { stop { } }")
@@ -188,32 +225,61 @@ class Rabbit:
         if "buttonCallback" in top:
             kind = re.search(r"^\s+type: (\w+)", text, re.M)
             if kind:
-                await self._registry._emit("button", self, kind.group(1).lower())
+                self._registry._emit("button", self, kind.group(1).lower())
         if "rfidCallback" in top:
             tag = re.search(r'^\s+id: "([^"]*)"', text, re.M)
             direction = re.search(r"^\s+direction: (\w+)", text, re.M)
             if tag:
                 action = direction.group(1).lower() if direction else "in"
-                await self._registry._emit("rfid", self, tag.group(1), action)
+                self._registry._emit("rfid", self, tag.group(1), action)
         if "multimediaCallback" in top:
             action = re.search(r"^\s+action: (\w+)", text, re.M)
             status = {"PLAY": "playing", "RESUME": "playing", "PAUSE": "paused", "STOP": "stopped"}.get(
                 action.group(1) if action else ""
             )
-            if status and self._playback_id is not None:
+            if status == "playing":
+                self._stale_stops = 0
+            if status == "stopped" and self._stale_stops > 0:
+                self._stale_stops -= 1
+            elif status and self._playback_id is not None:
                 pid = self._playback_id
                 if status == "stopped":
                     self._playback_id = None
-                await self._registry._emit("playback", self, pid, status)
+                self._registry._emit("playback", self, pid, status)
 
     async def _handle_response(self, corr: str, text: str) -> None:
-        ok = re.search(r"^\s+code: OK", text, re.M) is not None
-        if corr == self._interactive_req:
-            if ok:
+        code = re.search(r"^\s+code: (\w+)", text, re.M)
+        code = code.group(1) if code else "?"
+        if corr in self._pending_interactive:
+            new_id = self._pending_interactive.pop(corr)
+            if code == "OK":
+                self._interactive_id = new_id
                 self.state = "ready"
                 self._ready.set()
             else:
-                log.warning("lapin %s : mode interactif refusé", self.id)
-        elif corr == self._play_req and not ok and self._playback_id is not None:
+                log.warning("lapin %s : mode interactif refusé (%s)", self.id, code)
+            return
+        if code == "OK":
+            self._sent.pop(corr, None)
+            return
+        log.warning("lapin %s : commande refusée (%s)", self.id, code)
+        body = self._sent.pop(corr, None)
+        if corr == self._play_req and self._playback_id is not None:
             pid, self._playback_id = self._playback_id, None
-            await self._registry._emit("playback", self, pid, "error")
+            self._registry._emit("playback", self, pid, "error")
+        if code == "BAD_INTERACTIVEID" and body is not None and self._link is not None:
+            self._registry._spawn(self._reenter_and_retry(body))
+
+    async def _reenter_and_retry(self, body: str) -> None:
+        """Le contrôleur ne reconnaît plus notre prise de main : la reprendre, renvoyer une fois."""
+        link = self._link
+        if link is None:
+            return
+        self._ready.clear()
+        self.state = "connected"
+        try:
+            await self._start_interactive(link)
+            req = await self._command(body)
+            self._sent.pop(req, None)  # pas de second renvoi
+        except (ConnectionError, OSError):
+            log.warning("lapin %s : renvoi impossible", self.id)
