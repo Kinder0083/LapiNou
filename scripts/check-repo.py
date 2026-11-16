@@ -20,7 +20,7 @@ from collections import defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-BINARY_SUFFIXES = {".png", ".jpg", ".mp3", ".gz", ".tar", ".zip", ".gpg"}
+BINARY_SUFFIXES = {".png", ".jpg", ".mp3", ".wav", ".onnx", ".gz", ".tar", ".zip", ".gpg"}
 # Kept byte for byte: Violet's signed file, whose lines end in CRLF.
 KEEP_CRLF = {"image/usbkey/autorun.sig"}
 

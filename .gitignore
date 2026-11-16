@@ -11,3 +11,5 @@ __pycache__/
 .venv/
 /tools/app-server/platform_message_pb2.py
 /tools/app-server/uploads/
+# Modèles de caractéristiques openWakeWord (téléchargés : python -m lapinou.voice.wakeword download)
+/server/models/openwakeword/
