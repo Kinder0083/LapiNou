@@ -684,11 +684,15 @@ def cmd_features(args: argparse.Namespace) -> None:
             ((w, 500000 + i * 10 + k, sub, NEAR_OFFSETS) for i, w in enumerate(near)
              for k in range(2)))
         del near
-    if not (out / "train_speech.npy").exists():
+    if not (out / "train_speech.npy").exists() or not (out / "train_ends.npy").exists():
         speech = train_clips("sentence")
         groups = [speech[i : i + 12] for i in range(0, len(speech), 12)]
         run("train_speech", _stream_task,
             ((g, 900000 + i * 10 + k, sub, 2) for i, g in enumerate(groups) for k in range(2)))
+        # Phrases isolées, suivies de silence comme les positifs : sans elles, « fin d'un
+        # mot isolé » suffit presque à reconnaître un positif (raccourci appris).
+        run("train_ends", _word_task,
+            ((w, 3000000 + i, sub, NEAR_OFFSETS) for i, w in enumerate(speech)))
         del speech, groups
     run("train_noise", _noise_task, ((30.0, 1300000 + i, sub, 2) for i in range(args.noise_min * 2)))
     if args.real_negatives:
@@ -705,6 +709,9 @@ def cmd_features(args: argparse.Namespace) -> None:
         speech_t = load_clips(clips / "test_sentence.npz")
         groups_t = [speech_t[i : i + 12] for i in range(0, len(speech_t), 12)]
         run("test_speech", _stream_task, ((g, 2200000 + i, sub_t, 1) for i, g in enumerate(groups_t)))
+    if not (out / "test_ends.npy").exists():
+        speech_t = load_clips(clips / "test_sentence.npz")
+        run("test_ends", _word_task, ((w, 2300000 + i, sub_t, NEAR_OFFSETS) for i, w in enumerate(speech_t)))
 
 
 # ---------------------------------------------------------------- entraînement
@@ -740,7 +747,7 @@ def cmd_train(args: argparse.Namespace) -> None:
     feat = Path(args.work) / "features"
     # Mémoire bornée : fichiers projetés (mmap), un seul tableau de négatifs rempli par morceaux.
     pos = np.load(feat / "train_pos.npy")
-    parts = [np.load(feat / f"train_{n}.npy", mmap_mode="r") for n in ("near", "speech", "noise")]
+    parts = [np.load(feat / f"train_{n}.npy", mmap_mode="r") for n in ("near", "speech", "noise", "ends")]
     if (feat / "train_real.npy").exists():
         parts.append(np.load(feat / "train_real.npy", mmap_mode="r"))
     if args.acav:
