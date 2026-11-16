@@ -11,8 +11,9 @@
  * again, through a 256-byte table made at start-up. Then the block goes, as it is, to:
  *
  *  - every client of the local socket /var/run/lapinou/mic.sock (AF_UNIX stream): each receives
- *    the same bytes from its connection on (voice-daemon, multimedia-daemon, lapinou-cloud). A
- *    client that doesn't keep up (its socket full) is disconnected;
+ *    the same bytes from its connection on (voice-daemon, multimedia-daemon, lapinou-cloud). The
+ *    socket is mode 0666. A client that doesn't keep up (its socket full) is disconnected, and
+ *    must connect again;
  *  - the LapiNou server, TCP <[server] host>:9300, in frames of docs/lapinou/protocole-audio.md:
  *    a 4-byte big-endian length, then a LapinouAudio (userland/proto/lapinou-audio.proto),
  *    encoded here by hand (varints and length-delimited fields: protobuf's wire format, which is
@@ -25,20 +26,24 @@
  * Frames wait in a queue that holds at most 2 s of audio (32000 samples): when the server can't
  * take them (not connected, or too slow), the oldest audio frames are dropped, which the server
  * sees as a jump in seq. A connection that fails or ends is tried again after 2 s, 5 times, then
- * every 10 s; a connection attempt that takes more than 5 s, or a connection that takes nothing
- * for 10 s while frames wait, is given up (so a Wi-Fi drop is noticed without TCP's own
- * timeouts).
+ * every 10 s; the count starts again only once a connection has sent its first frame and held
+ * for 10 s (so a server that accepts and closes reaches the 10 s step). Every address the host
+ * has is tried in turn. A connection attempt that takes more than 5 s, or a connection that
+ * takes nothing for 10 s while frames wait, is given up: a Wi-Fi drop is noticed without TCP's
+ * own timeouts, and the socket's send buffer is kept small (16 KB, about 1 s of audio) so that it
+ * fills within a second or so of the drop, and little audio is lost in it.
  *
  * D-Bus: mark_playback(s playback_id, b start) queues a PlaybackMark at the number of samples
- * captured so far (the start or the end of a sound the rabbit plays, for the server's echo
- * cancellation); set_streaming(b on) stops or resumes the stream to the server (the local socket
+ * captured so far, those read and those still in the driver's buffer (SNDCTL_DSP_GETISPACE),
+ * for the start or the end of a sound the rabbit plays (the server's echo cancellation); set_streaming(b on) stops or resumes the stream to the server (the local socket
  * goes on either way; nothing is kept for the server while it is off); signal stream_state(s)
  * says "connected" or "disconnected" when the connection to the server comes or goes.
  *
  * With no [server] host, nothing is sent: the microphone is only shared locally. For the tests,
  * LAPINOU_UUID_FILE and LAPINOU_MIC_SOCKET move uuid.conf and the local socket (LAPINOU_CONF_DIR
- * moves lapinou.conf, lapinou_conf.h). A server host that is a name, not an address, is resolved
- * with a blocking getaddrinfo() at each attempt.
+ * moves lapinou.conf, lapinou_conf.h). A server host that is an address is used as it is; a name
+ * is resolved at each attempt in a thread of its own, so the main loop (and the microphone) never
+ * waits on DNS.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -81,13 +86,15 @@
 #define FAST_RETRIES   5
 #define CONNECT_TIMEOUT_US (5 * G_USEC_PER_SEC)
 #define STALL_US       (10 * G_USEC_PER_SEC)
+#define STABLE_US      (10 * G_USEC_PER_SEC) /* a connection that held this long resets the retries */
+#define SEND_BUFFER    8192              /* SO_SNDBUF; Linux doubles it: 16 KB, about 1 s */
 #define AUDIO_RETRY_MS 1000
 #define GAIN_DEFAULT   "12"
 #define GAIN_MIN_DB    (-20.0)
 #define GAIN_MAX_DB    30.0
 
 enum { SIGNAL_STREAM_STATE, N_SIGNALS };
-enum { SERVER_DOWN, SERVER_CONNECTING, SERVER_UP };
+enum { SERVER_DOWN, SERVER_RESOLVING, SERVER_CONNECTING, SERVER_UP };
 
 /* A frame waiting for the server: audio (mulaw set), a playback mark (mark_id set), or neither
  * (a frame for the Hello alone). */
@@ -128,8 +135,14 @@ typedef struct {
     int server_state;
     guint server_watch, retry_timer, tick;
     GIOCondition watch_condition;
-    int failures;            /* connection attempts failed since the last connection */
+    int failures;            /* connection attempts failed since the last stable connection */
     gboolean hello_sent;
+    gboolean first_sent;     /* this connection has sent a whole frame */
+    gint64 connected_at;
+    guint resolve_gen;       /* the current name resolution; older ones' results are ignored */
+    struct addrinfo *addrs;  /* the host's addresses, being tried */
+    struct addrinfo *addr_next;
+    char *last_error;
     GByteArray *out;         /* the head frame, encoded, being sent */
     gsize out_pos;
     gint64 deadline;         /* end of the connection attempt */
@@ -158,6 +171,7 @@ gboolean lapinou_mic_object_set_streaming(LapinouMicObject *self, gboolean on, G
 
 static void server_pump(LapinouMicObject *self);
 static void server_try(LapinouMicObject *self);
+static void server_connect_next(LapinouMicObject *self);
 
 /* ---- G.711 mu-law and the gain ----------------------------------------- */
 
@@ -405,6 +419,10 @@ static void server_close(LapinouMicObject *self, const char *why)
         close(self->server_fd);
     self->server_fd = -1;
     self->server_state = SERVER_DOWN;
+    self->resolve_gen++;  /* a resolution under way no longer counts */
+    if (self->addrs)
+        freeaddrinfo(self->addrs);
+    self->addrs = self->addr_next = NULL;
     g_byte_array_set_size(self->out, 0);
     self->out_pos = 0;
     if (was_up) {
@@ -421,9 +439,13 @@ static void server_connected(LapinouMicObject *self)
 {
     Frame *f;
 
+    if (self->addrs)
+        freeaddrinfo(self->addrs);
+    self->addrs = self->addr_next = NULL;
     self->server_state = SERVER_UP;
-    self->failures = 0;
     self->hello_sent = FALSE;
+    self->first_sent = FALSE;
+    self->connected_at = g_get_monotonic_time();
     self->last_progress = g_get_monotonic_time();
     g_log(NULL, G_LOG_LEVEL_MESSAGE, "server %s: connected", self->host);
     emit_state(self, "connected");
@@ -451,11 +473,116 @@ static gboolean rabbit_id_load(LapinouMicObject *self)
     return self->rabbit_id && *self->rabbit_id;
 }
 
+/* The attempt on the current address failed: the next address, or the whole attempt fails. */
+static void server_attempt_failed(LapinouMicObject *self, const char *why)
+{
+    if (!self->addr_next) {
+        server_close(self, why);
+        return;
+    }
+    g_free(self->last_error);
+    self->last_error = g_strdup(why);
+    if (self->server_watch)
+        g_source_remove(self->server_watch);
+    self->server_watch = 0;
+    if (self->server_fd >= 0)
+        close(self->server_fd);
+    self->server_fd = -1;
+    self->server_state = SERVER_DOWN;
+    server_connect_next(self);
+}
+
+/* Connect to the next of the host's addresses (self->addr_next); once none is left, the attempt
+ * has failed. */
+static void server_connect_next(LapinouMicObject *self)
+{
+    int one = 1, size = SEND_BUFFER;
+
+    while (self->addr_next) {
+        struct addrinfo *a = self->addr_next;
+        int fd, err;
+
+        self->addr_next = a->ai_next;
+        fd = socket(a->ai_family, SOCK_STREAM, 0);
+        if (fd < 0) {
+            err = errno;
+        } else {
+            fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+            fcntl(fd, F_SETFD, FD_CLOEXEC);
+            setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof one);
+            setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &size, sizeof size);
+            err = connect(fd, a->ai_addr, a->ai_addrlen) == 0 ? 0 : errno;
+        }
+        if (fd >= 0 && (err == 0 || err == EINPROGRESS)) {
+            self->server_fd = fd;
+            if (err == 0) {
+                server_connected(self);
+            } else {
+                self->server_state = SERVER_CONNECTING;
+                self->deadline = g_get_monotonic_time() + CONNECT_TIMEOUT_US;
+                server_watch(self);
+            }
+            return;
+        }
+        if (fd >= 0)
+            close(fd);
+        g_free(self->last_error);
+        self->last_error = g_strdup(strerror(err));
+    }
+    server_close(self, self->last_error ? self->last_error : "no address");
+}
+
+/* A name resolved in a thread, handed back to the main loop. */
+typedef struct {
+    LapinouMicObject *self;
+    guint gen;
+    char *host;
+    struct addrinfo *res;
+    int err;
+} Resolution;
+
+static gboolean resolve_done(gpointer data)
+{
+    Resolution *r = data;
+    LapinouMicObject *self = r->self;
+
+    if (r->gen != self->resolve_gen || self->server_state != SERVER_RESOLVING) {
+        if (r->res)
+            freeaddrinfo(r->res);  /* stopped meanwhile */
+    } else if (r->err != 0 || !r->res) {
+        char *why = g_strdup_printf("can't resolve: %s", gai_strerror(r->err));
+        if (r->res)
+            freeaddrinfo(r->res);
+        server_close(self, why);
+        g_free(why);
+    } else {
+        self->server_state = SERVER_DOWN;
+        self->addrs = self->addr_next = r->res;
+        server_connect_next(self);
+    }
+    g_free(r->host);
+    g_free(r);
+    return FALSE;
+}
+
+static gpointer resolve_thread(gpointer data)
+{
+    Resolution *r = data;
+    struct addrinfo hints;
+
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    r->err = getaddrinfo(r->host, SERVER_PORT, &hints, &r->res);
+    g_idle_add(resolve_done, r);
+    return NULL;
+}
+
 static void server_try(LapinouMicObject *self)
 {
     struct addrinfo hints, *res = NULL;
-    int fd, err, one = 1;
-    char *why;
+    Resolution *r;
+    GThread *thread;
 
     if (!self->streaming || !self->host || self->server_state != SERVER_DOWN || self->retry_timer)
         return;
@@ -463,37 +590,30 @@ static void server_try(LapinouMicObject *self)
         server_close(self, "no rabbit id (" UUID_FILE ")");
         return;
     }
+    g_free(self->last_error);
+    self->last_error = NULL;
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
-    err = getaddrinfo(self->host, SERVER_PORT, &hints, &res);
-    if (err != 0 || !res) {
-        why = g_strdup_printf("can't resolve: %s", gai_strerror(err));
-        server_close(self, why);
-        g_free(why);
+    hints.ai_flags = AI_NUMERICHOST;  /* an address: never waits */
+    if (getaddrinfo(self->host, SERVER_PORT, &hints, &res) == 0 && res) {
+        self->addrs = self->addr_next = res;
+        server_connect_next(self);
         return;
     }
-    fd = socket(res->ai_family, SOCK_STREAM, 0);
-    if (fd < 0) {
-        freeaddrinfo(res);
-        server_close(self, strerror(errno));
+    r = g_new0(Resolution, 1);
+    r->self = self;
+    r->gen = ++self->resolve_gen;
+    r->host = g_strdup(self->host);
+    self->server_state = SERVER_RESOLVING;
+    thread = g_thread_try_new("resolve", resolve_thread, r, NULL);
+    if (!thread) {
+        g_free(r->host);
+        g_free(r);
+        server_close(self, "can't start the name resolution");
         return;
     }
-    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
-    fcntl(fd, F_SETFD, FD_CLOEXEC);
-    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof one);
-    self->server_fd = fd;
-    err = connect(fd, res->ai_addr, res->ai_addrlen) == 0 ? 0 : errno;
-    freeaddrinfo(res);
-    if (err == 0) {
-        server_connected(self);
-    } else if (err == EINPROGRESS) {
-        self->server_state = SERVER_CONNECTING;
-        self->deadline = g_get_monotonic_time() + CONNECT_TIMEOUT_US;
-        server_watch(self);
-    } else {
-        server_close(self, strerror(err));
-    }
+    g_thread_unref(thread);
 }
 
 /* Send what the socket takes: the head frame, encoded (with the Hello for a connection's first
@@ -525,6 +645,7 @@ static void server_pump(LapinouMicObject *self)
             g_byte_array_set_size(self->out, 0);
             self->out_pos = 0;
             queue_remove(self, self->frames->head);
+            self->first_sent = TRUE;
         }
     }
     if (self->server_state != SERVER_DOWN)
@@ -543,7 +664,7 @@ static gboolean server_event(GIOChannel *channel, GIOCondition condition, gpoint
             err = errno;
         self->server_watch = 0;
         if (err) {
-            server_close(self, strerror(err));
+            server_attempt_failed(self, strerror(err));
             return FALSE;
         }
         server_connected(self);
@@ -567,16 +688,20 @@ static gboolean server_event(GIOChannel *channel, GIOCondition condition, gpoint
     return TRUE;
 }
 
-/* Once a second: a connection attempt that takes too long, a connection that takes nothing. */
+/* Once a second: a connection attempt that takes too long, a connection that takes nothing, a
+ * connection that has held long enough to reset the retries. */
 static gboolean server_tick(gpointer data)
 {
     LapinouMicObject *self = data;
     gint64 now = g_get_monotonic_time();
 
     if (self->server_state == SERVER_CONNECTING && now > self->deadline)
-        server_close(self, "connection timed out");
+        server_attempt_failed(self, "connection timed out");
     else if (self->server_state == SERVER_UP && self->out->len > 0 && now - self->last_progress > STALL_US)
         server_close(self, "the server takes nothing");
+    else if (self->server_state == SERVER_UP && self->failures && self->first_sent
+             && now - self->connected_at >= STABLE_US)
+        self->failures = 0;
     return TRUE;
 }
 
@@ -675,6 +800,7 @@ static void local_listen(LapinouMicObject *self)
             close(fd);
         return;
     }
+    chmod(path, 0666);  /* for clients that don't run as root (lapinou-cloud) */
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
     fcntl(fd, F_SETFD, FD_CLOEXEC);
     self->listen_fd = fd;
@@ -785,6 +911,17 @@ static gboolean audio_open(gpointer data)
     return FALSE;
 }
 
+/* Samples captured but not read yet: what the driver holds (0 if it can't tell). */
+static guint64 audio_pending(LapinouMicObject *self)
+{
+    audio_buf_info info;
+
+    memset(&info, 0, sizeof info);
+    if (self->audio_fd < 0 || ioctl(self->audio_fd, SNDCTL_DSP_GETISPACE, &info) < 0 || info.bytes < 0)
+        return 0;
+    return info.bytes;
+}
+
 /* ---- D-Bus ---------------------------------------------------------------- */
 
 gboolean lapinou_mic_object_mark_playback(LapinouMicObject *self, const char *playback_id, gboolean start,
@@ -801,7 +938,7 @@ gboolean lapinou_mic_object_mark_playback(LapinouMicObject *self, const char *pl
         return TRUE;
     f = g_new0(Frame, 1);
     f->mark_id = g_strdup(playback_id);
-    f->mark_at = self->samples;
+    f->mark_at = self->samples + audio_pending(self);
     f->mark_start = start;
     queue_push(self, f);
     return TRUE;

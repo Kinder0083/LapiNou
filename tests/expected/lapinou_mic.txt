@@ -7,6 +7,7 @@ microphone opened by the daemon: True
 == 1. connection
 fake server ready: True
   connection 1
+  connection 1: hello first
   frame rabbit_id=<uuid.conf> seq=0 hello(rabbit_id=<uuid.conf>, firmware_version=<build stamp>, sample_rate=16000)
 == 2. 4096 bytes from the microphone
   audio seq 1-2: samples 0-4096
@@ -22,6 +23,7 @@ disconnected: True
 fake server ready: True
 reconnected: True
   connection 2
+  connection 2: hello first
   frame rabbit_id=<uuid.conf> seq=11 hello(rabbit_id=<uuid.conf>, firmware_version=<build stamp>, sample_rate=16000) mulaw=2048 first_sample=16384
   audio seq 12-25: samples 18432-47104
 after the reconnection: 30720 bytes, the last ones written with the gain: True
@@ -33,8 +35,17 @@ client 1: 2048 bytes, client 2: 2048 bytes, the same: True, the microphone's wit
 nothing streamed meanwhile: True
 set_streaming('boolean:true',): ok
   connection 3
+  connection 3: hello first
   frame rabbit_id=<uuid.conf> seq=26 hello(rabbit_id=<uuid.conf>, firmware_version=<build stamp>, sample_rate=16000)
+== 6. a Wi-Fi drop: the server stops taking anything
+disconnected: True, within 20 s: True
+reconnected: True
+the new connection's first frame carries the Hello: True
+== 7. the local socket
+mode: 0o666
 == signals
+com.mindscape.karotz.LapinouMic.stream_state(string "connected")
+com.mindscape.karotz.LapinouMic.stream_state(string "disconnected")
 com.mindscape.karotz.LapinouMic.stream_state(string "connected")
 com.mindscape.karotz.LapinouMic.stream_state(string "disconnected")
 com.mindscape.karotz.LapinouMic.stream_state(string "connected")
@@ -46,5 +57,7 @@ ioctl /dev/audio 0x5000
 ioctl /dev/audio 0xc0045005
 ioctl /dev/audio 0xc0045003
 ioctl /dev/audio 0xc0045002
+read /dev/audio 2048
+ioctl /dev/audio 0x8010500d
 read /dev/audio 2048
 == daemon still running: True

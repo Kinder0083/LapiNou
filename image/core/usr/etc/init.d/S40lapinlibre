@@ -5,8 +5,8 @@
 # (/usr/etc/conf/playsounds, turned on once, the first time; the platform's settings may remove it
 # later, and that stays); then the hardware and service daemons, each kept running by immortaldog
 # (it restarts a daemon that dies and writes its own pid file), LapiNou's microphone (lapinou-mic,
-# the only reader of /dev/audio) first, before voice-daemon and multimedia-daemon, which read it from
-# lapinou-mic's socket; then the head button's watcher
+# the only reader of /dev/audio) first, before voice-daemon and multimedia-daemon (which are to read
+# the microphone from lapinou-mic's socket: wired in Task 6); then the head button's watcher
 # (/usr/scripts/dbus_watcher: tones and /etc/button.d hooks) and the web API's tag listener
 # (/usr/scripts/tag_listener: tag learning and the tags' actions, as the user web, like the web API
 # whose programs it runs; web-files.sh makes its files first), each also under immortaldog and

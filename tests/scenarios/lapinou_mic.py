@@ -25,11 +25,18 @@ the connection's first frame, which carries the Hello, is shown on its own).
   5. set_streaming(false): the connection is closed; two clients on the local socket receive the same
      bytes, the microphone's with the gain applied; set_streaming(true): a new connection, its Hello
      alone (nothing was kept while streaming was off).
+  6. A Wi-Fi drop: the server stopped (SIGSTOP), so the connection stays open but takes nothing (the
+     fake server's receive window is small, the daemon's send buffer 16 KB); 64 KB written: the
+     daemon gives the connection up within 20 s (stream_state "disconnected"), then, the server
+     continued (SIGCONT), connects again with a Hello. Only facts that don't depend on timing are
+     recorded here.
+  7. The local socket is mode 0666 (for clients that don't run as root).
 """
 
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -327,6 +334,25 @@ def drive(d, bus):
         wait_until(lambda: any(l.startswith("frame") for l in fake.lines()[fake.seen:]), 10)
         time.sleep(0.5)
         record.extend(summarise(fake.new_lines(), stamp))
+
+        record.append("== 6. a Wi-Fi drop: the server stops taking anything")
+        fake.proc.send_signal(signal.SIGSTOP)
+        stopped = time.time()
+        mic.write(bytes((i * 13) & 0xFF for i in range(65536)))
+        dropped = wait_until(lambda: len(states(bus)) >= 6, 30)
+        took = time.time() - stopped
+        fake.proc.send_signal(signal.SIGCONT)
+        record.append(f"disconnected: {dropped}, within 20 s: {took < 20}")
+        record.append(f"reconnected: {wait_until(lambda: len(states(bus)) >= 7, 30)}")
+
+        def newest_has_hello():
+            numbers = [int(m.group(1)) for m in map(re.compile(r"connection (\d+)$").match, fake.lines()) if m]
+            return bool(numbers) and numbers[-1] > 3 and f"connection {numbers[-1]}: hello first" in fake.lines()
+        record.append(f"the new connection's first frame carries the Hello: {wait_until(newest_has_hello, 10)}")
+        fake.new_lines()
+
+        record.append("== 7. the local socket")
+        record.append(f"mode: {oct(path.stat().st_mode & 0o777)}")
     finally:
         for c in clients:
             c.close()

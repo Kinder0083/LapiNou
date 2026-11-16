@@ -7,11 +7,13 @@ Run inside the daemon's network namespace (nsenter). It listens on 127.0.0.1:POR
 frames of docs/lapinou/protocole-audio.md: a 4-byte big-endian length, then a LapinouAudio, decoded
 with tools/app-server/asr_server.py's field reader as server/lapinou/rabbit/audio_gateway.py does,
 with the same checks (frames of at most 65536 bytes, a Hello in the first frame of a connection with
-sample_rate 16000 and the frame's rabbit_id). Each frame becomes a line of CTRL/log; the mu-law bytes
+sample_rate 16000 and the frame's rabbit_id). Each frame becomes a line of CTRL/log (and a
+connection whose first frame passes those checks "connection N: hello first"); the mu-law bytes
 of every connection are appended to CTRL/audio. CTRL/ready appears once it listens.
 """
 
 import os
+import re
 import socket
 import sys
 import threading
@@ -42,7 +44,8 @@ def serve(ctrl, port):
     lock = threading.Lock()
     logf = open(os.path.join(ctrl, "log"), "a", buffering=1)
     audio = open(os.path.join(ctrl, "audio"), "ab", buffering=0)
-    count = [len(open(os.path.join(ctrl, "log")).read().split("connection ")) - 1]
+    # Connections are numbered on from the ones a previous run of the server logged.
+    count = [sum(1 for line in open(os.path.join(ctrl, "log")) if re.fullmatch(r"connection \d+\n?", line))]
 
     def log(line):
         with lock:
@@ -89,6 +92,8 @@ def serve(ctrl, port):
                 elif first:
                     log("refused: first frame without hello " + " ".join(parts))
                     break
+                if first:
+                    log(f"connection {number}: hello first")
                 first = False
                 if "mulaw" in f:
                     audio.write(f["mulaw"])
@@ -105,6 +110,10 @@ def serve(ctrl, port):
 
     s = socket.socket()
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    # A small receive window (inherited by the connections): when the server is stopped (SIGSTOP,
+    # tests/scenarios/lapinou_mic.py), the daemon's sends stop after a few kilobytes, as when the
+    # Wi-Fi drops.
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
     s.bind(("127.0.0.1", port))
     s.listen(8)
     open(os.path.join(ctrl, "ready"), "w").close()
