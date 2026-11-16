@@ -1,0 +1,33 @@
+== registered: True
+fake audio server ready: True
+voice-daemon registered: True, multimedia-daemon registered: True
+asr_start_string('string:s1', 'string:oui | non', 'string:fr-FR', 'int32:0'): boolean true
+record('string:r1', 'string:x', 'int32:0'): boolean true
+play('string:p1', 'string:song.mp3', 'int32:0'): boolean true
+== 0. before the outage: marks ['mark(p1, start=True)']
+== 1. lapinou-mic killed
+next('string:p1', 'int32:0'): boolean true
+tts_stop('string:nothing', 'int32:0'): boolean true
+during the outage the ASR server got at most 16 KB/s: True, the encoder at most 32 KB/s: True
+== 2. lapinou-mic started again
+fake audio server ready: True
+ASR audio comes again: True
+the recording goes on: True
+play('string:p2', 'string:song.mp3', 'int32:0'): boolean true
+pause('string:p2', 'int32:0'): boolean true
+marks reach the new lapinou-mic: ['mark(p1, start=False)', 'mark(p2, start=True)', 'mark(p2, start=False)']
+== 3. lapinou-mic killed for good
+the ASR session ends with an error event: True
+the recording ends: True
+asr_stop('string:s1', 'int32:0'): boolean true
+stop('string:r1', 'int32:0'): boolean true
+== warnings the other daemons logged beyond the expected ones
+voice-daemon: []
+multimedia-daemon: []
+== signals
+com.mindscape.karotz.KarotzInterface.asr_event(string "s1", string "<nomatch>", string "connection lost", int32 2)
+com.mindscape.karotz.KarotzInterface.multi_playfinished(string "p2", int32 4)
+com.mindscape.karotz.KarotzInterface.multi_playfinished(string "p2", int32 4)
+com.mindscape.karotz.KarotzInterface.multi_recordfinished(string "r1", int32 2)
+== device I/O
+== daemon still running: False

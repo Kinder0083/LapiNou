@@ -22,7 +22,6 @@
  * external MPD client appeared) and, on stop or pause,
  * multi_playfinished(id, 4).
  */
-#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -108,6 +107,8 @@ typedef struct {
     FILE *record_pipe;      /* flac's stdin */
     guint record_timeout;
     int audio_fd;           /* /dev/audio, or lapinou-mic's socket, 0 once a recording is stopped */
+    guint mic_retry;        /* the timer reconnecting to lapinou-mic, 0 when none */
+    int mic_retries;        /* reconnections tried since it was lost */
     int audio_shared;       /* audio_fd is lapinou-mic's socket: mu-law 16 kHz, not the device's format */
     int skip_silence;       /* still skipping the device's initial silence */
 } MultimediaObject;
@@ -771,109 +772,184 @@ static guint player_watch;  /* the current player's child watch, 0 for none */
 /* ---- playback marks for lapinou-mic ---------------------------------------- */
 
 /*
- * lapinou-mic (the shared microphone) is told when a play really starts and ends on the speaker,
- * so the server can cancel the echo: LapinouMic.mark_playback(id, TRUE) once karotz-player has
- * opened /dev/dsp, mark_playback(id, FALSE) when it has ended or stopped, or is given another
- * sound to play. Where lapinou-mic isn't on the bus there is nothing to tell and nothing is logged.
- * Only karotz-player's plays are marked (MPD's output is another process, not tracked here).
- * $LAPINOU_DSP_DEVICE names the device instead of /dev/dsp (tests).
+ * lapinou-mic (the shared microphone) is told when a sound really starts and ends on the speaker,
+ * so the server can cancel the echo: LapinouMic.mark_playback(id, TRUE) at the instant karotz-player
+ * writes the sound's first samples to /dev/dsp, (id, FALSE) when the sound ends or is paused, and
+ * (id, TRUE) again when it resumes. karotz-player reports those instants on a pipe: the daemon
+ * gives it the write end in $LAPINOU_PLAYER_EVENTS_FD, and reads one line per event ("start",
+ * "end", "pause", "resume") with a GLib watch. A play that replaces a running sound gets its own
+ * start only when the new sound really starts (after the old one's "end"), whatever it takes to
+ * download it.
+ * Where lapinou-mic isn't on the bus (tracked with NameOwnerChanged, no call to ask) nothing is
+ * called or logged. Only karotz-player's plays are marked (MPD's output is another process).
  */
 #define LAPINOU_MIC_NAME "com.mindscape.karotz.LapinouMic"
 #define LAPINOU_MIC_PATH "/com/mindscape/karotz/LapinouMic"
-#define LAPINOU_MIC_PLAYER_POLL_MS 100
 
-static char *mark_id;       /* the play being marked, NULL when none */
-static int mark_pid;        /* the player that plays it */
-static int mark_started;    /* its start mark is sent */
-static guint mark_timer;    /* the poll for /dev/dsp being opened, 0 when not polling */
+static int mic_present;          /* LapinouMic owns its name on the bus */
+static DBusGProxy *mic_proxy;    /* its mark_playback, created at the first mark */
+static char *mark_pending;       /* the id of the last play given to the player */
+static char *mark_id;            /* the id of the sound being played, NULL when none */
+static int mark_on;              /* the last mark sent for mark_id was a start */
+static int events_fd = -1;       /* the read end of the player's events pipe */
+static guint events_watch;
+static char events_buf[128];
+static size_t events_used;
 
 static void send_mark(const char *id, gboolean start)
 {
-    DBusGProxy *proxy;
-    gboolean has_owner = FALSE;
-    GError *error = NULL;
-
-    if (multimedia == NULL || multimedia->bus == NULL || multimedia->bus_proxy == NULL)
+    if (!mic_present || multimedia == NULL || multimedia->bus == NULL)
         return;
-    if (!org_freedesktop_DBus_name_has_owner(multimedia->bus_proxy, LAPINOU_MIC_NAME, &has_owner, &error)) {
-        g_clear_error(&error);
-        return;
-    }
-    if (!has_owner)
-        return;
-    proxy = dbus_g_proxy_new_for_name(multimedia->bus, LAPINOU_MIC_NAME, LAPINOU_MIC_PATH, LAPINOU_MIC_NAME);
-    dbus_g_proxy_call_no_reply(proxy, "mark_playback", G_TYPE_STRING, id, G_TYPE_BOOLEAN, start, G_TYPE_INVALID);
-    g_object_unref(proxy);
+    if (mic_proxy == NULL)
+        mic_proxy = dbus_g_proxy_new_for_name(multimedia->bus, LAPINOU_MIC_NAME, LAPINOU_MIC_PATH,
+                                              LAPINOU_MIC_NAME);
+    dbus_g_proxy_call_no_reply(mic_proxy, "mark_playback", G_TYPE_STRING, id, G_TYPE_BOOLEAN, start,
+                               G_TYPE_INVALID);
 }
 
-/* 1 if process pid holds the sound device open. */
-static int dsp_open_in(int pid)
+/* The sound ends, pauses or its player is gone: the end mark if it was marked on. */
+static void mark_off(void)
 {
-    const char *device = g_getenv("LAPINOU_DSP_DEVICE");
-    char dir[48], link[320], target[256];
-    struct dirent *entry;
-    int found = 0;
-    DIR *fds;
+    if (mark_id != NULL && mark_on)
+        send_mark(mark_id, FALSE);
+    mark_on = 0;
+}
 
-    if (device == NULL || *device == '\0')
-        device = "/dev/dsp";
-    snprintf(dir, sizeof dir, "/proc/%d/fd", pid);
-    fds = opendir(dir);
-    if (fds == NULL)
-        return 0;
-    while (!found && (entry = readdir(fds)) != NULL) {
-        ssize_t n;
-
-        if (entry->d_name[0] == '.')
-            continue;
-        snprintf(link, sizeof link, "%s/%s", dir, entry->d_name);
-        n = readlink(link, target, sizeof target - 1);
-        if (n > 0) {
-            target[n] = '\0';
-            found = strcmp(target, device) == 0;
+static void player_event(const char *line)
+{
+    if (strcmp(line, "start") == 0) {
+        mark_off();
+        g_free(mark_id);
+        mark_id = g_strdup(mark_pending != NULL ? mark_pending : "");
+        mark_on = 1;
+        send_mark(mark_id, TRUE);
+    } else if (strcmp(line, "end") == 0) {
+        mark_off();
+        g_free(mark_id);
+        mark_id = NULL;
+    } else if (strcmp(line, "pause") == 0) {
+        mark_off();
+    } else if (strcmp(line, "resume") == 0) {
+        if (mark_id != NULL && !mark_on) {
+            mark_on = 1;
+            send_mark(mark_id, TRUE);
         }
     }
-    closedir(fds);
-    return found;
 }
 
-/* The play's end mark, if its start mark was sent; stop watching. */
-static void mark_end(void)
+/* Read what the player has reported so far (without waiting). 0, or -1 once its end is closed. */
+static int player_events_read(void)
 {
-    if (mark_timer != 0) {
-        g_source_remove(mark_timer);
-        mark_timer = 0;
+    ssize_t n;
+    char *start, *nl;
+
+    if (events_fd < 0)
+        return -1;
+    n = read(events_fd, events_buf + events_used, sizeof events_buf - 1 - events_used);
+    if (n == 0 || (n < 0 && errno != EAGAIN && errno != EINTR))
+        return -1;
+    if (n < 0)
+        return 0;
+    events_used += (size_t)n;
+    events_buf[events_used] = '\0';
+    start = events_buf;
+    while ((nl = strchr(start, '\n')) != NULL) {
+        *nl = '\0';
+        player_event(start);
+        start = nl + 1;
     }
-    if (mark_id != NULL && mark_started)
-        send_mark(mark_id, FALSE);
-    g_free(mark_id);
-    mark_id = NULL;
-    mark_started = 0;
+    events_used = strlen(start);
+    memmove(events_buf, start, events_used + 1);
+    return 0;
 }
 
-/* Every few tenths of a second after a play, until the player has the sound device open. */
-static gboolean mark_poll(gpointer data)
+static void player_events_close(void)
 {
+    if (events_watch != 0) {
+        g_source_remove(events_watch);
+        events_watch = 0;
+    }
+    if (events_fd >= 0)
+        close(events_fd);
+    events_fd = -1;
+    events_used = 0;
+}
+
+static gboolean player_events_ready(GIOChannel *source, GIOCondition condition, gpointer data)
+{
+    (void)source;
     (void)data;
-    if (mark_id == NULL || multimedia->player_pid != mark_pid) {
-        mark_timer = 0;
-        return FALSE;
-    }
-    if (!dsp_open_in(mark_pid))
+    if (player_events_read() == 0 && !(condition & (G_IO_ERR | G_IO_NVAL)))
         return TRUE;
-    mark_started = 1;
-    mark_timer = 0;
-    send_mark(mark_id, TRUE);
+    events_watch = 0;  /* returning FALSE removes it */
+    player_events_close();
     return FALSE;
 }
 
-/* A play of id has been given to the player with this pid (the one before it is over). */
-static void mark_begin(const char *id, int pid)
+/* Watch the read end of a new player's events pipe (the older player's is closed). */
+static void player_events_open(int fd)
 {
-    mark_end();
-    mark_id = g_strdup(id);
-    mark_pid = pid;
-    mark_timer = g_timeout_add(LAPINOU_MIC_PLAYER_POLL_MS, mark_poll, NULL);
+    GIOChannel *channel;
+
+    player_events_close();
+    events_fd = fd;
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+    channel = g_io_channel_unix_new(fd);
+    events_watch = g_io_add_watch(channel, (GIOCondition)(G_IO_IN | G_IO_HUP | G_IO_ERR), player_events_ready,
+                                  NULL);
+    g_io_channel_unref(channel);
+}
+
+/* A play of id is given to the player: what it has reported so far belongs to the sound before. */
+static void mark_begin(const char *id)
+{
+    player_events_read();
+    g_free(mark_pending);
+    mark_pending = g_strdup(id);
+}
+
+/* The player is gone: what it reported last, then the end mark if the sound was still on. */
+static void mark_end(void)
+{
+    player_events_read();
+    mark_off();
+    g_free(mark_id);
+    mark_id = NULL;
+    player_events_close();
+}
+
+/* LapinouMic appeared on the bus or left it. */
+static void mic_name_changed(DBusGProxy *proxy, const char *name, const char *old_owner, const char *new_owner,
+                             gpointer data)
+{
+    (void)proxy;
+    (void)old_owner;
+    (void)data;
+    if (strcmp(name, LAPINOU_MIC_NAME) != 0)
+        return;
+    mic_present = new_owner != NULL && *new_owner != '\0';
+    if (!mic_present && mic_proxy != NULL) {
+        g_object_unref(mic_proxy);
+        mic_proxy = NULL;
+    }
+}
+
+/* Learn whether LapinouMic is on the bus now, and when that changes. */
+static void mic_watch_init(DBusGProxy *bus_proxy)
+{
+    gboolean has_owner = FALSE;
+    GError *error = NULL;
+
+    dbus_g_object_register_marshaller(karotz_smarshal_VOID__STRING_STRING_STRING, G_TYPE_NONE, G_TYPE_STRING,
+                                      G_TYPE_STRING, G_TYPE_STRING, G_TYPE_INVALID);
+    dbus_g_proxy_add_signal(bus_proxy, "NameOwnerChanged", G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
+                            G_TYPE_INVALID);
+    dbus_g_proxy_connect_signal(bus_proxy, "NameOwnerChanged", G_CALLBACK(mic_name_changed), NULL, NULL);
+    if (org_freedesktop_DBus_name_has_owner(bus_proxy, LAPINOU_MIC_NAME, &has_owner, &error))
+        mic_present = has_owner;
+    else
+        g_clear_error(&error);
 }
 
 /* player has ended (its waitpid status): the player is stopped. stopped: a stop
@@ -916,9 +992,19 @@ static int is_playlist(const char *path)
 
 static pid_t start_player(const char *path)
 {
+    int events[2];
+    int have_events = pipe(events) == 0;
     pid_t pid = fork();
 
     if (pid == 0) {
+        if (have_events) {
+            /* karotz-player reports when its sound starts and ends on this pipe. */
+            char number[16];
+
+            close(events[0]);
+            snprintf(number, sizeof number, "%d", events[1]);
+            setenv("LAPINOU_PLAYER_EVENTS_FD", number, 1);
+        }
         g_log(NULL, G_LOG_LEVEL_DEBUG, "Multimedia: startPlayer CHILD\n");
         g_log(NULL, G_LOG_LEVEL_DEBUG, "Multimedia: startPlayer CHILD. path: %s\n", path);
         if (!is_playlist(path))
@@ -928,6 +1014,13 @@ static pid_t start_player(const char *path)
         /* Only reached if the exec failed (see start_mpd()). */
         g_log(NULL, G_LOG_LEVEL_WARNING, "Multimedia: execlp karotz-player ERROR\n");
         _exit(1);
+    }
+    if (have_events) {
+        close(events[1]);
+        if (pid > 0)
+            player_events_open(events[0]);
+        else
+            close(events[0]);
     }
     return pid;
 }
@@ -1431,6 +1524,28 @@ static int mulaw_to_s16(guint8 byte)
 }
 
 static gboolean record_stop(gpointer data);
+static gboolean record_pump(gpointer data);
+
+/* Timer after lapinou-mic's socket was lost: connect again and go on recording; after
+ * LAPINOU_MIC_RETRIES tries the recording ends as failed (recordFinished with an error). */
+static gboolean record_mic_retry(gpointer data)
+{
+    MultimediaObject *self = data;
+
+    self->audio_fd = lapinou_mic_connect();
+    if (self->audio_fd >= 0) {
+        self->mic_retry = 0;
+        g_idle_add(record_pump, self);
+        return FALSE;
+    }
+    if (++self->mic_retries < LAPINOU_MIC_RETRIES)
+        return TRUE;
+    self->mic_retry = 0;
+    g_log(NULL, G_LOG_LEVEL_WARNING, "Record: lapinou-mic didn't come back");
+    record_failed = 1;
+    record_stop(self);
+    return FALSE;
+}
 
 /* Idle callback: move one block from /dev/audio to flac, amplified. */
 static gboolean record_pump(gpointer data)
@@ -1446,14 +1561,23 @@ static gboolean record_pump(gpointer data)
      * midpoint, little-endian) from the first incomplete sample on, so no
      * stale stack bytes go into the recording. */
     if (self->audio_shared) {
-        /* lapinou-mic's socket: mu-law bytes, one per sample. A whole block, or the connection is
-         * gone (lapinou-mic drops a slow client): connect again, and what is missing is silence. */
+        /* lapinou-mic's socket: mu-law bytes, one per sample. A whole block; or fewer bytes after 1 s
+         * without any (the rest is silence); or the connection is gone (lapinou-mic drops a slow client,
+         * or restarts): connect again, and if nobody answers yet, wait for it on a timer instead of
+         * spinning here (what was lost is skipped). */
         guint8 mulaw[sizeof buf / 2];
-        size_t got = lapinou_mic_read_full(self->audio_fd, mulaw, sizeof mulaw);
+        int lost;
+        size_t got = lapinou_mic_read_full(self->audio_fd, mulaw, sizeof mulaw, &lost);
 
-        if (got < sizeof mulaw) {
+        if (lost) {
             close(self->audio_fd);
             self->audio_fd = lapinou_mic_connect();
+            if (self->audio_fd < 0) {
+                g_log(NULL, G_LOG_LEVEL_DEBUG, "Record: lapinou-mic is gone, waiting for it");
+                self->mic_retries = 0;
+                self->mic_retry = g_timeout_add(LAPINOU_MIC_RETRY_MS, record_mic_retry, self);
+                return FALSE;
+            }
         }
         for (i = 0; i < (int)got; i++) {
             unsigned sample = (unsigned)(mulaw_to_s16(mulaw[i]) + 0x8000) & 0xffff;
@@ -1506,6 +1630,10 @@ static gboolean record_stop(gpointer data)
         g_source_remove(self->record_timeout);
         self->record_timeout = 0;
     }
+    if (self->mic_retry != 0) {
+        g_source_remove(self->mic_retry);
+        self->mic_retry = 0;
+    }
     if (self->record_pipe == NULL) {
         /* Nothing is recording. */
         g_log(NULL, G_LOG_LEVEL_DEBUG, "Record Stop: no recording\n");
@@ -1550,7 +1678,13 @@ static int record_go(MultimediaObject *self, const char *id)
     g_log(NULL, G_LOG_LEVEL_DEBUG, "Record Go %s\n", id);
     /* With lapinou-mic running it is the only one to open /dev/audio: the microphone comes from its socket. */
     self->audio_fd = lapinou_mic_connect();
-    self->audio_shared = self->audio_fd >= 0;
+    self->audio_shared = self->audio_fd != LAPINOU_MIC_ABSENT;
+    if (self->audio_fd == LAPINOU_MIC_REFUSED) {
+        /* lapinou-mic is there but doesn't answer: its /dev/audio isn't ours to take. */
+        g_log(NULL, G_LOG_LEVEL_WARNING, "Record Go: lapinou-mic doesn't answer");
+        self->audio_fd = 0;
+        return -1;
+    }
     if (!self->audio_shared) {
         self->audio_fd = open("/dev/audio", O_RDONLY);
         if (self->audio_fd < 0) {
@@ -1574,6 +1708,8 @@ static int record_go(MultimediaObject *self, const char *id)
         self->audio_fd = 0;
         return -1;
     }
+    /* A player or another child started meanwhile mustn't keep the encoder's input open. */
+    fcntl(fileno(self->record_pipe), F_SETFD, FD_CLOEXEC);
     g_string_assign(self->record_uuid, id);
     record_gain = 10;
     record_failed = 0;
@@ -1600,7 +1736,7 @@ gboolean multimedia_object_play(MultimediaObject *self, const char *id, char *ur
         *result = TRUE;
         g_string_assign(self->uid, id);
         if (played == PLAY_PLAYER)
-            mark_begin(id, self->player_pid);
+            mark_begin(id);
         g_log(NULL, G_LOG_LEVEL_DEBUG, "Multimedia play: obj. uid: %s", self->uid->str);
         break;
     case PLAY_SETTING:
@@ -1817,6 +1953,7 @@ int main(void)
         return 0;
     }
     multimedia->bus = bus;
+    mic_watch_init(multimedia->bus_proxy);
     g_timeout_add_seconds(1, check_mpd, multimedia);
     g_signal_emit(multimedia, object_class()->signals[SIGNAL_REGISTERED], 0);
     g_main_loop_run(loop);
