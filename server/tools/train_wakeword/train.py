@@ -656,7 +656,7 @@ def acav_windows(path: Path, count: int, seed: int) -> np.ndarray:
     rows = (path.stat().st_size - 128) // (16 * 96 * 2)
     data = np.memmap(path, np.float16, "r", 128, (rows, 16, 96))
     index = np.sort(np.random.default_rng(seed).choice(rows, min(count, rows), replace=False))
-    return np.asarray(data[index])
+    return data[index]  # copie des seules lignes choisies (le fichier reste projeté)
 
 
 def cmd_train(args: argparse.Namespace) -> None:
@@ -665,14 +665,19 @@ def cmd_train(args: argparse.Namespace) -> None:
     torch.manual_seed(0)
     torch.set_num_threads(args.jobs)
     feat = Path(args.work) / "features"
+    # Mémoire bornée : fichiers projetés (mmap), un seul tableau de négatifs rempli par morceaux.
     pos = np.load(feat / "train_pos.npy")
-    negs = [np.load(feat / f"train_{n}.npy") for n in ("near", "speech", "noise")]
+    parts = [np.load(feat / f"train_{n}.npy", mmap_mode="r") for n in ("near", "speech", "noise")]
     if (feat / "train_real.npy").exists():
-        negs.append(np.load(feat / "train_real.npy"))
+        parts.append(np.load(feat / "train_real.npy", mmap_mode="r"))
     if args.acav:
-        negs.append(acav_windows(Path(args.acav), args.acav_count, 0))
-    neg = np.concatenate(negs)
-    del negs
+        parts.append(acav_windows(Path(args.acav), args.acav_count, 0))
+    neg = np.empty((sum(len(p) for p in parts), ww.N_FEATURES, 96), np.float16)
+    row = 0
+    for part in parts:
+        neg[row : row + len(part)] = part
+        row += len(part)
+    del parts
     print(f"positifs {len(pos)}, négatifs {len(neg)}", flush=True)
     model = build_model(args.hidden)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-3)
@@ -794,7 +799,7 @@ def write_wav(path: Path, pcm: np.ndarray, mulaw: bool = True) -> None:
 
 
 def cmd_export_tests(args: argparse.Namespace) -> None:
-    """10 positifs et 5 min de négatifs, voix et phrases jamais vues à l'entraînement."""
+    """10 positifs et 3 min de négatifs, voix et phrases jamais vues à l'entraînement."""
     global _VOICE_DIR
     _VOICE_DIR = Path(args.voices)
     out = Path(args.out)
@@ -864,7 +869,7 @@ def main() -> None:
     x = sub.add_parser("export-tests")
     x.add_argument("--voices", required=True)
     x.add_argument("--out", default=str(SERVER / "tests" / "data"))
-    x.add_argument("--neg-files", type=int, default=5)
+    x.add_argument("--neg-files", type=int, default=3)
     args = p.parse_args()
     {"generate": cmd_generate, "features": cmd_features, "train": cmd_train,
      "evaluate": cmd_evaluate, "export-tests": cmd_export_tests}[args.cmd](args)

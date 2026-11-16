@@ -2,9 +2,9 @@
 """Mot d'activation « Lapinou » sur des voix de synthèse jamais vues à l'entraînement.
 
 Fichiers (server/tools/train_wakeword/train.py export-tests) : mu-law 8 bits 16 kHz,
-comme le flux des lapins. Les 5 min de négatifs enregistrées sont complétées à 10 min
-par une version dérivée déterministe (audio retourné + bruit rose), pour garder le dépôt
-léger.
+comme le flux des lapins. Les 3 min de négatifs enregistrées sont portées à 12 min par
+des versions dérivées déterministes (audio retourné + bruit rose ; lecture ralentie et
+accélérée, soit d'autres timbres et débits), pour garder le dépôt léger.
 """
 
 from __future__ import annotations
@@ -60,19 +60,33 @@ def feed_all(detector: WakeWord, pcm: np.ndarray, block: int = GATEWAY_BLOCK) ->
     return hits
 
 
+def pink_noise(n: int, rng: np.random.Generator, rms: float) -> np.ndarray:
+    white = np.fft.rfft(rng.standard_normal(n))
+    f = np.fft.rfftfreq(n)
+    f[0] = f[1]
+    pink = np.fft.irfft(white / np.sqrt(f), n)
+    return pink * rms / np.sqrt(np.mean(pink**2))
+
+
+def resample(pcm: np.ndarray, rate: float) -> np.ndarray:
+    """Lecture `rate` fois plus vite (hauteur et débit ensemble)."""
+    positions = np.arange(0, len(pcm) - 1, rate)
+    return np.interp(positions, np.arange(len(pcm)), pcm.astype(np.float64))
+
+
 def negatives() -> list[tuple[str, np.ndarray]]:
-    """10 min : les fichiers enregistrés, puis chacun retourné et mêlé de bruit rose."""
+    """Les fichiers enregistrés, puis chacun retourné + bruit rose, ralenti et accéléré."""
     stored = [(p.name, read_wav(p)) for p in sorted(DATA.glob("not_lapinou_*.wav"))]
     rng = np.random.default_rng(16)
     derived = []
     for name, pcm in stored:
-        white = np.fft.rfft(rng.standard_normal(len(pcm)))
-        f = np.fft.rfftfreq(len(pcm))
-        f[0] = f[1]
-        pink = np.fft.irfft(white / np.sqrt(f), len(pcm))
-        pink *= 300 / np.sqrt(np.mean(pink**2))  # environ -40 dBFS
-        mixed = pcm[::-1].astype(np.float64) * 0.7 + pink
-        derived.append((f"{name} retourné", np.clip(mixed, -32768, 32767).astype(np.int16)))
+        variants = {
+            "retourné": pcm[::-1].astype(np.float64) * 0.7 + pink_noise(len(pcm), rng, 300),
+            "ralenti": resample(pcm, 0.88),
+            "accéléré": resample(pcm, 1.12),
+        }
+        for label, audio in variants.items():
+            derived.append((f"{name} {label}", np.clip(audio, -32768, 32767).astype(np.int16)))
     return stored + derived
 
 
