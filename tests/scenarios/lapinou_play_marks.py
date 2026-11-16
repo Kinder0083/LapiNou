@@ -10,7 +10,9 @@ before the first samples). The marks are what the fake audio server receives fro
   2. play p2 ("slow") while p1 plays: (p1, end) at once, and (p2, start) only when p2 really starts,
      1.5 s later, not when the play was asked for.
   3. pause: (p2, end); resume: (p2, start).
-  4. stop: (p2, end).
+  4. play p3 (starts at once) while p2 plays: (p2, end), (p3, start), each with its own id.
+  5. play p4 whose player first writes a 300-byte line: dropped, and (p3, end), (p4, start) still follow.
+  6. stop: (p4, end).
 """
 
 import re
@@ -68,9 +70,21 @@ def drive(d, bus):
         wait_until(lambda: len(marks(server)) >= 5, 20)
         record.append(f"marks: {marks(server)}")
 
-        record.append("== 4. stop")
-        record.append(m("stop", "string:p2", "int32:0"))
-        wait_until(lambda: len(marks(server)) >= 6, 20)
+        record.append("== 4. play p3 at once, replacing p2")
+        record.append(m("play", "string:p3", "string:song.mp3", "int32:0"))
+        wait_until(lambda: len(marks(server)) >= 7, 20)
+        time.sleep(0.5)
+        record.append(f"marks: {marks(server)[5:7]}")
+
+        record.append("== 5. play p4, whose player first reports a line too long to be an event")
+        record.append(m("play", "string:p4", "string:junk.mp3", "int32:0"))
+        wait_until(lambda: len(marks(server)) >= 9, 20)
+        time.sleep(0.5)
+        record.append(f"marks: {marks(server)[7:9]}")
+
+        record.append("== 6. stop")
+        record.append(m("stop", "string:p4", "int32:0"))
+        wait_until(lambda: len(marks(server)) >= 10, 20)
         time.sleep(0.5)
         record.append(f"marks: {marks(server)}")
         record.append("== warnings the other daemons logged beyond the expected ones")

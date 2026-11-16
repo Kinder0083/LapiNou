@@ -795,6 +795,7 @@ static int events_fd = -1;       /* the read end of the player's events pipe */
 static guint events_watch;
 static char events_buf[128];
 static size_t events_used;
+static int events_skip;          /* inside an overlong line being dropped */
 
 static void send_mark(const char *id, gboolean start)
 {
@@ -853,6 +854,16 @@ static int player_events_read(void)
     events_used += (size_t)n;
     events_buf[events_used] = '\0';
     start = events_buf;
+    if (events_skip) {
+        /* the end of a line that was too long: dropped */
+        nl = strchr(start, '\n');
+        if (nl == NULL) {
+            events_used = 0;
+            return 0;
+        }
+        start = nl + 1;
+        events_skip = 0;
+    }
     while ((nl = strchr(start, '\n')) != NULL) {
         *nl = '\0';
         player_event(start);
@@ -860,6 +871,11 @@ static int player_events_read(void)
     }
     events_used = strlen(start);
     memmove(events_buf, start, events_used + 1);
+    if (events_used >= sizeof events_buf - 1) {
+        /* a line too long to be an event: dropped, up to its end, so reading goes on */
+        events_used = 0;
+        events_skip = 1;
+    }
     return 0;
 }
 
@@ -873,6 +889,7 @@ static void player_events_close(void)
         close(events_fd);
     events_fd = -1;
     events_used = 0;
+    events_skip = 0;
 }
 
 static gboolean player_events_ready(GIOChannel *source, GIOCondition condition, gpointer data)
@@ -901,12 +918,23 @@ static void player_events_open(int fd)
     g_io_channel_unref(channel);
 }
 
-/* A play of id is given to the player: what it has reported so far belongs to the sound before. */
-static void mark_begin(const char *id)
+/* A play of id is about to be given to the player (before its command is sent): what it has
+ * reported so far belongs to the sound before, and what it reports from now on to this id. Returns
+ * the id it replaces, for mark_cancel(). */
+static char *mark_begin(const char *id)
 {
+    char *before = mark_pending;
+
     player_events_read();
-    g_free(mark_pending);
     mark_pending = g_strdup(id);
+    return before;
+}
+
+/* The play wasn't one for the player after all: the sound before keeps its id. */
+static void mark_cancel(char *before)
+{
+    g_free(mark_pending);
+    mark_pending = before;
 }
 
 /* The player is gone: what it reported last, then the end mark if the sound was still on. */
@@ -1727,16 +1755,19 @@ gboolean multimedia_object_play(MultimediaObject *self, const char *id, char *ur
     (void)behaviour;
     (void)error;
     g_log(NULL, G_LOG_LEVEL_MESSAGE, "play url: %s :: id:%s", url, id);
+    char *before = mark_begin(id);
     int played = api_play(self, url);
 
+    if (played == PLAY_PLAYER)
+        g_free(before);
+    else
+        mark_cancel(before);
     switch (played) {
     case PLAY_PLAYER:
     case PLAY_MPD:
         /* The play's id, for its playFinished. ("" when nobody waits for it.) */
         *result = TRUE;
         g_string_assign(self->uid, id);
-        if (played == PLAY_PLAYER)
-            mark_begin(id);
         g_log(NULL, G_LOG_LEVEL_DEBUG, "Multimedia play: obj. uid: %s", self->uid->str);
         break;
     case PLAY_SETTING:

@@ -14,7 +14,7 @@ It speaks karotz-player's side of the protocol multimedia-daemon uses, without s
     "resume" when pause toggles a sound that has started.
 
 A path or URL holding "slow" takes 1.5 s to start (a download before the first samples), one holding
-"quick" ends 1 s after it started, and the player then exits, as without -idle.
+"junk" reports a 300-byte line before its start, "quick" ends 1 s after it started, and the player then exits, as without -idle.
 """
 
 import os
@@ -77,6 +77,8 @@ def main():
                 item[4] = not item[4]
         if item and not item[2] and not item[4] and now >= item[1]:
             item[2], item[3] = True, now
+            if "junk" in item[0]:  # a line too long to be an event, before the real one
+                os.write(events, b"x" * 300 + b"\n")
             report("start")
         if item and item[2] and not item[4] and "quick" in item[0] and now - item[3] >= QUICK_LENGTH:
             report("end")
