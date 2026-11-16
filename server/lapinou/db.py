@@ -35,13 +35,10 @@ class Database:
             # Une migration est atomique : tout ou rien.
             try:
                 self.conn.executescript(
-                    "BEGIN;
-"
+                    "BEGIN;\n"
                     + script
-                    + "
-INSERT INTO schema_migrations(version, name) "
-                    + f"VALUES ({version}, '{sql_file.stem}');
-COMMIT;"
+                    + "\nINSERT INTO schema_migrations(version, name) "
+                    + f"VALUES ({version}, '{sql_file.stem}'); COMMIT;"
                 )
             except BaseException:
                 if self.conn.in_transaction:
