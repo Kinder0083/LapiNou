@@ -688,13 +688,13 @@ def cmd_features(args: argparse.Namespace) -> None:
 
 # ---------------------------------------------------------------- entraînement
 
-def build_model(hidden: int = 128):
+def build_model(hidden: int = 128, dropout: float = 0.2):
     import torch.nn as nn
 
     return nn.Sequential(
         nn.Flatten(),
-        nn.Linear(ww.N_FEATURES * 96, hidden), nn.LayerNorm(hidden), nn.ReLU(), nn.Dropout(0.2),
-        nn.Linear(hidden, hidden), nn.LayerNorm(hidden), nn.ReLU(), nn.Dropout(0.2),
+        nn.Linear(ww.N_FEATURES * 96, hidden), nn.LayerNorm(hidden), nn.ReLU(), nn.Dropout(dropout),
+        nn.Linear(hidden, hidden), nn.LayerNorm(hidden), nn.ReLU(), nn.Dropout(dropout),
         nn.Linear(hidden, 1),
     )
 
@@ -731,7 +731,8 @@ def cmd_train(args: argparse.Namespace) -> None:
         row += len(part)
     del parts
     print(f"positifs {len(pos)}, négatifs {len(neg)}", flush=True)
-    model = build_model(args.hidden)
+    model = build_model(args.hidden, args.dropout)
+    noise = args.noise * float(np.std(pos[:20000].astype(np.float32)))
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-3)
     loss_fn = torch.nn.BCEWithLogitsLoss(reduction="none")
     rng = np.random.default_rng(0)
@@ -746,6 +747,8 @@ def cmd_train(args: argparse.Namespace) -> None:
         if len(hard) and step > steps // 3:  # moitié des négatifs : les plus difficiles
             ni[: half // 2] = hard[rng.integers(0, len(hard), half // 2)]
         x = torch.from_numpy(np.concatenate((pos[pi], neg[ni])).astype(np.float32))
+        if noise:  # bruit sur les plongements : contre l'apprentissage par cœur
+            x = x + torch.randn_like(x) * noise
         y = torch.cat((torch.ones(half), torch.zeros(half)))
         # Les négatifs pèsent de plus en plus : peu de fausses détections.
         w_neg = 1.0 + (args.neg_weight - 1.0) * min(1.0, step / (0.6 * steps))
@@ -916,6 +919,8 @@ def main() -> None:
     t.add_argument("--batch", type=int, default=1024)
     t.add_argument("--lr", type=float, default=1e-3)
     t.add_argument("--hidden", type=int, default=128)
+    t.add_argument("--dropout", type=float, default=0.2)
+    t.add_argument("--noise", type=float, default=0.0, help="bruit gaussien (x écart type des plongements)")
     t.add_argument("--neg-weight", type=float, default=20.0)
     t.add_argument("--output", default=str(ww.DEFAULT_MODEL))
     e = sub.add_parser("evaluate")
