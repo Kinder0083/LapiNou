@@ -100,7 +100,6 @@ class Services:
     recogniser: Any = None
     tts_server: Any = None
     asr_server: Any = None
-    _threads: list[threading.Thread] = field(default_factory=list)
 
     def refresh_tools(self) -> None:
         """La boîte à outils des sessions (après le démarrage de ha-mcp : sa liste d'outils)."""
@@ -132,10 +131,9 @@ class Services:
             self.web.auth.prepare_setup()  # code d'installation si aucun mot de passe (R40)
         log.info("serveur LapiNou démarré")
 
-    def _serve(self, server: Any, name: str) -> None:
-        thread = threading.Thread(target=server.serve_forever, name=name, daemon=True)
-        thread.start()
-        self._threads.append(thread)
+    @staticmethod
+    def _serve(server: Any, name: str) -> None:
+        threading.Thread(target=server.serve_forever, name=name, daemon=True).start()
 
     async def close(self) -> None:
         if self.ota is not None:
@@ -146,7 +144,6 @@ class Services:
                 await asyncio.to_thread(srv.shutdown)
                 srv.server_close()
                 setattr(self, attr, None)
-        self._threads.clear()
         await self.orchestrator.close()
         await self.timers.close()
         if self.ha is not None:
@@ -253,9 +250,8 @@ def build_services(
     from .config import SettingsStore
     from .ota import OtaRelay
     from .updater import Updater
-    from .web.routes import WebContext
-
     from .web.apps import AppHost
+    from .web.routes import WebContext
 
     relay = OtaRelay.from_settings(settings)
     data_dir = None if str(db_path) == ":memory:" else Path(db_path).parent

@@ -95,7 +95,8 @@ class AppHost:
                     field = part.get_param("name", header="content-disposition") or "field"
                     data = part.get_payload(decode=True) or b""
                     if part.get_filename():
-                        target = self._target(f"{stamp}-{name}-{_SAFE.sub('_', part.get_filename())}")
+                        safe = _SAFE.sub("_", part.get_filename())[-100:]
+                        target = self._target(f"{stamp}-{name}-{safe}")
                         target.write_bytes(data)
                         saved.append(f"{field}={target.name} ({len(data)} bytes)")
                     else:
@@ -197,7 +198,7 @@ async def upload(request: Request, name: str = "") -> PlainTextResponse:
     if host.uploads is None:
         raise HTTPException(404)
     body = await _body(request, MAX_UPLOAD)
-    safe = _SAFE.sub("_", name.strip("/")) or "upload"
+    safe = _SAFE.sub("_", name.strip("/"))[:100] or "upload"
     saved = await asyncio.to_thread(host.save, safe, request.headers.get("content-type", ""),
                                     body)
     app_server.log(f"http: upload /upload/{safe}: {', '.join(saved) or 'nothing'}")
