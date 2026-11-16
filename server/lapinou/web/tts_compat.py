@@ -26,7 +26,11 @@ def make_server(voice: Voice, listen: str, port: int) -> ThreadingHTTPServer:
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
-            length = int(self.headers.get("Content-Length") or 0)
+            raw = (self.headers.get("Content-Length") or "0").strip()
+            if not raw.isascii() or not raw.isdigit():  # absent = 0 ; « abc », « -5 » : 400
+                self.send_error(400, "bad Content-Length")
+                return
+            length = int(raw)
             if length > MAX_BODY:
                 self.send_error(413)
                 return

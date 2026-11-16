@@ -1,8 +1,12 @@
 # SPDX-License-Identifier: MIT
 """Synthèse vocale : phrase -> MP3 servi au lapin + PCM 16 kHz pour l'annulateur d'écho.
 
-Moteurs : Kokoro (`KokoroEngine` de LapinLibre, R4, importé de tools/app-server) ou Piper
-(paquet `piper-tts`, GPL-3.0-or-later : extra optionnel `piper`, importé à la demande, R24).
+Moteurs : Kokoro (`KokoroEngine` de LapinLibre, R4, importé de tools/app-server) ou Piper.
+Piper (`piper-tts`, GPL-3.0-or-later) n'est jamais importé par le serveur MIT (R30) : il tourne
+dans un processus séparé et durable (`piper_worker.py`, exécuté par le Python d'un venv à part,
+`PIPER_PYTHON`, créé par `python -m lapinou.voice.models piper-setup`), texte en entrée et PCM en
+sortie sur stdin/stdout ; il est relancé s'il meurt. Les fichiers de la voix sont vérifiés par
+SHA-256 au chargement (R31).
 L'encodage MP3 est `tts_server.to_mp3` (lameenc, 64 kbit/s) ; la fréquence est celle du moteur
 (Kokoro 24 kHz, Piper 22,05 kHz), sans rééchantillonnage : le Karotz (ARM9 sans FPU) lit le
 MP3 tel que LapinLibre le sert déjà.
@@ -17,7 +21,10 @@ bourrage de la dernière trame y sont donc, comme dans ce que lit karotz-player 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -30,7 +37,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 
 if TYPE_CHECKING:
     from lapinou.config import Settings
@@ -50,6 +57,20 @@ MAX_MP3 = 200  # garde-fou mémoire si les phrases s'enchaînent plus vite que l
 Engine = Literal["kokoro", "piper"]
 ENGINES = ("kokoro", "piper")
 PIPER_MODELS = Path.home() / ".cache" / "lapinou" / "piper"
+PIPER_VENV = Path.home() / ".local" / "share" / "lapinou" / "piper-venv"
+PIPER_PYTHON = PIPER_VENV / "bin" / "python"
+PIPER_WORKER = Path(__file__).with_name("piper_worker.py")
+PIPER_TIMEOUT_S = 60
+DEFAULT_PIPER_VOICE = "fr_FR-siwis-medium"
+# Voix Piper utilisables : révision de rhasspy/piper-voices et SHA-256 de leurs fichiers (R31).
+# fr_FR-siwis-medium : CC BY 4.0 (upmc est CC BY-SA : non retenue).
+PIPER_REVISION = "e9ab671f2a0e50a701b34361136ba3e6a3a9eb0c"
+PIPER_VOICES: dict[str, dict[str, str]] = {
+    "fr_FR-siwis-medium": {
+        "fr_FR-siwis-medium.onnx": "b1d946fd68d0347155fa59bce0a018924abbef3c1561181db45ca463d83963ef",
+        "fr_FR-siwis-medium.onnx.json": "df814aa3dfedd00510a07144442cc0a220ff21e43d03c3b078444fc0be68fc37",
+    },
+}
 # Code de langue de phonémisation de Kokoro selon le préfixe de la voix (ff_siwis -> fr-fr).
 _KOKORO_LANG = {"ff": "fr-fr", "ef": "es", "if": "it", "pf": "pt-br", "af": "en-us", "bf": "en-gb"}
 
@@ -115,6 +136,14 @@ class Mp3Store:
             return len(self._items)
 
 
+def _need_ffmpeg() -> None:
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError(
+            "ffmpeg est requis (décodage du PCM de référence) : apt install ffmpeg "
+            "(paquet à prévoir dans l'installateur et l'image Docker)"
+        )
+
+
 def decode_mp3_16k(mp3: bytes) -> np.ndarray:
     """MP3 -> PCM int16 mono 16 kHz (ffmpeg, qui garde le retard de l'encodeur sans en-tête LAME)."""
     try:
@@ -140,29 +169,117 @@ def _kokoro_synth(voice: str, models: Path | None) -> Callable[[str], bytes]:
         with engine.lock:
             samples, rate = engine.kokoro.create(text, voice=voice, speed=1.0, lang=lang)
         samples = np.asarray(samples, dtype=np.float32)
+        if samples.size == 0:
+            raise RuntimeError("Kokoro n'a rien synthétisé")
         samples = samples / max(1e-6, float(np.abs(samples).max())) * 0.89
         return tts_server.wav_of((samples * 32767).astype("<i2").tobytes(), rate)
 
     return synth
 
 
-def _piper_synth(voice: str, models: Path | None) -> Callable[[str], bytes]:
-    try:
-        from piper import PiperVoice
-    except ImportError:
-        raise RuntimeError("piper-tts n'est pas installé (uv sync --extra piper)") from None
-    path = (models or PIPER_MODELS) / f"{voice}.onnx"
-    if not path.is_file():
-        raise RuntimeError(f"voix Piper absente : {path}")
-    piper = PiperVoice.load(path)
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+class PiperProcess:
+    """Le worker Piper : un processus durable, relancé s'il meurt (une reprise par requête).
+    Protocole : une ligne JSON `{"text": ...}` en entrée ; en sortie `{"rate": r, "bytes": n}`
+    puis n octets de PCM int16 mono, ou `{"error": ...}` ; `{"ready": true}` au démarrage."""
+
+    def __init__(self, python: Path, model: Path, worker: Path = PIPER_WORKER):
+        self.python, self.model, self.worker = python, model, worker
+        self.proc: subprocess.Popen | None = None
+
+    def _start(self) -> None:
+        self.close()
+        self.proc = subprocess.Popen(
+            [str(self.python), "-I", str(self.worker), str(self.model)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        )  # fmt: skip
+        if self._line().get("ready") is not True:
+            raise OSError("le worker Piper n'est pas prêt")
+
+    def _line(self) -> dict:
+        assert self.proc and self.proc.stdout
+        line = self.proc.stdout.readline()
+        if not line:
+            raise EOFError("le worker Piper s'est arrêté")
+        return json.loads(line)
+
+    def _request(self, text: str) -> tuple[bytes, int]:
+        assert self.proc and self.proc.stdin and self.proc.stdout
+        self.proc.stdin.write(json.dumps({"text": text}).encode() + b"\n")
+        self.proc.stdin.flush()
+        head = self._line()
+        if "error" in head:
+            raise RuntimeError(f"Piper : {head['error']}")
+        size = int(head["bytes"])
+        pcm = self.proc.stdout.read(size)
+        if len(pcm) != size:
+            raise EOFError("PCM tronqué")
+        return pcm, int(head["rate"])
+
+    def synthesize(self, text: str) -> tuple[bytes, int]:
+        """(PCM int16 mono, fréquence). RuntimeError si Piper échoue ou ne répond pas."""
+        for attempt in (0, 1):
+            timer = None
+            try:
+                if self.proc is None or self.proc.poll() is not None:
+                    self._start()
+                timer = threading.Timer(PIPER_TIMEOUT_S, self.proc.kill)
+                timer.start()
+                return self._request(text)
+            except (OSError, EOFError, ValueError, KeyError) as e:
+                self.close()  # mort, bloqué ou protocole rompu : on repart d'un worker neuf
+                if attempt:
+                    raise RuntimeError(f"Piper ne répond pas : {e}") from e
+            finally:
+                if timer:
+                    timer.cancel()
+        raise AssertionError("inatteignable")
+
+    def close(self) -> None:
+        proc, self.proc = self.proc, None
+        if proc is None:
+            return
+        for pipe in (proc.stdin, proc.stdout):
+            try:
+                if pipe:
+                    pipe.close()
+            except OSError:
+                pass
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+
+
+def _piper_synth(voice: str, models: Path | None, python: Path | None) -> Callable[[str], bytes]:
+    pins = PIPER_VOICES.get(voice)
+    if pins is None:
+        raise RuntimeError(f"voix Piper inconnue : {voice!r} (connues : {', '.join(PIPER_VOICES)})")
+    directory = models or PIPER_MODELS
+    for name, want in pins.items():
+        path = directory / name
+        if not path.is_file():
+            raise RuntimeError(f"voix Piper absente : {path} (python -m lapinou.voice.models fetch)")
+        if _sha256(path) != want:
+            raise RuntimeError(f"{path} : pas le fichier attendu (SHA-256)")
+    python = python or PIPER_PYTHON
+    if not python.is_file():
+        raise RuntimeError(
+            f"Python de Piper absent : {python} (python -m lapinou.voice.models piper-setup)"
+        )
+    process = PiperProcess(python, directory / f"{voice}.onnx")
 
     def synth(text: str) -> bytes:
-        chunks = list(piper.synthesize(text))
-        if not chunks:
-            raise RuntimeError("Piper n'a rien synthétisé")
-        pcm = np.concatenate([c.audio_int16_array for c in chunks]).astype("<i2")
-        return tts_server.wav_of(pcm.tobytes(), chunks[0].sample_rate)
+        pcm, rate = process.synthesize(text)
+        return tts_server.wav_of(pcm, rate)
 
+    synth.close = process.close  # type: ignore[attr-defined]
     return synth
 
 
@@ -176,6 +293,7 @@ class Voice:
         voice: str,
         *,
         models: Path | None = None,
+        piper_python: Path | None = None,
         base_url: str = "",
         store: Mp3Store | None = None,
         synth: Callable[[str], bytes] | None = None,
@@ -183,6 +301,7 @@ class Voice:
         if engine not in ENGINES:
             raise ValueError(f"moteur de synthèse inconnu : {engine!r} (kokoro ou piper)")
         self.engine, self.voice, self.models = engine, voice, models
+        self.piper_python = piper_python
         self.base_url = base_url.rstrip("/")
         self.store = store if store is not None else Mp3Store()
         self._synth = synth
@@ -195,14 +314,27 @@ class Voice:
 
     def load(self) -> None:
         """Charge le moteur (long : quelques secondes) ; sinon fait à la première phrase.
-        RuntimeError si les modèles manquent, ValueError pour une voix inconnue."""
+        RuntimeError si les modèles ou ffmpeg manquent, ValueError pour une voix Kokoro inconnue."""
+        _need_ffmpeg()
         with self._lock:
             self._load()
 
+    def attach(self, app: FastAPI) -> None:
+        """Fait de la boutique de cette voix celle de `GET /tts/<id>.mp3` de l'application."""
+        app.state.tts_store = self.store
+
+    def close(self) -> None:
+        """Arrête le worker Piper s'il y en a un."""
+        close = getattr(self._synth, "close", None)
+        if close:
+            close()
+
     def _load(self) -> Callable[[str], bytes]:
         if self._synth is None:
-            make = _kokoro_synth if self.engine == "kokoro" else _piper_synth
-            self._synth = make(self.voice, self.models)
+            if self.engine == "kokoro":
+                self._synth = _kokoro_synth(self.voice, self.models)
+            else:
+                self._synth = _piper_synth(self.voice, self.models, self.piper_python)
         return self._synth
 
     @staticmethod
@@ -241,6 +373,7 @@ class Voice:
         return mp3
 
     def speak_sync(self, text: str) -> Speech:
+        _need_ffmpeg()
         mp3 = self.render_mp3(text)
         pcm = decode_mp3_16k(mp3)
         speech_id = uuid.uuid4().hex

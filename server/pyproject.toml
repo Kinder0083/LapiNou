@@ -21,10 +21,6 @@ dependencies = [
     "kokoro-onnx==0.6.1",
 ]
 
-[project.optional-dependencies]
-# Piper (GPL-3.0-or-later, d'où l'option : non installé par défaut, R24)
-piper = ["piper-tts>=1.5"]
-
 [dependency-groups]
 dev = [
     "pytest>=8",

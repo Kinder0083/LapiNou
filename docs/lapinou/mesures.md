@@ -28,12 +28,22 @@ définitivement (Tâche 27) : `[voice] tts_engine = "kokoro"` / `"piper"` et `vo
 
 Remarques :
 
-- Piper est GPL-3.0-or-later (paquet `piper-tts`) : extra optionnel `uv sync --extra piper`, non
-  installé par défaut ; le serveur MIT l'importe seulement à l'exécution (R24). L'installateur
-  devra l'installer (ou choisir Kokoro, plus lent).
-- Les voix Piper vont dans `~/.cache/lapinou/piper/` (`<voix>.onnx` et `<voix>.onnx.json`, de
-  `huggingface.co/rhasspy/piper-voices`) ; les modèles Kokoro dans `~/.cache/lapinlibre/kokoro/`
-  (vérifiés par SHA-256 par `KokoroEngine`).
+- Piper (`piper-tts`) est GPL-3.0-or-later (R30) : le serveur MIT ne l'importe jamais. Il tourne
+  dans un processus séparé et durable (`server/lapinou/voice/piper_worker.py`, texte en entrée,
+  PCM en sortie sur stdin/stdout, relancé s'il meurt) exécuté par le Python d'un venv à part,
+  `~/.local/share/lapinou/piper-venv`, créé par `python -m lapinou.voice.models piper-setup`
+  (uv si présent, sinon venv + pip ; `piper-tts==1.8.0`). Le processus ajoute environ 0,4 s de
+  chargement du modèle à la première phrase seulement ; la communication par tubes est négligeable.
+- Installation (Tâche 25) : `uv run python -m lapinou.voice.models fetch` télécharge les modèles
+  de transcription et la voix Piper `fr_FR-siwis-medium` (`~/.cache/lapinou/piper/`, révision
+  `e9ab671f` de rhasspy/piper-voices, SHA-256 vérifiés au téléchargement et à chaque chargement) ;
+  `... models piper-setup` crée le venv Piper. Les modèles Kokoro vont dans
+  `~/.cache/lapinlibre/kokoro/` (vérifiés par SHA-256 par `KokoroEngine`). Seule la voix
+  `fr_FR-siwis-medium` est épinglée : une autre voix Piper demande d'ajouter ses SHA-256 à
+  `tts.PIPER_VOICES`.
+- **ffmpeg est un prérequis** de l'installateur et de l'image Docker : `Voice.load()` et `speak()`
+  s'en servent pour décoder le MP3 en PCM de référence et refusent de démarrer sans lui (le
+  serveur de compatibilité du port 8081 n'en a pas besoin).
 - Kokoro ne tient pas le temps réel sur ces 4 vCPU ; sur une machine plus rapide ou avec
   GPU cela peut changer.
 

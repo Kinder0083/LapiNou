@@ -94,3 +94,67 @@ def test_main_reports_a_failure_without_traceback(tmp_path, monkeypatch, capsys)
     monkeypatch.setattr(models, "fetch", offline)
     assert models.main(["models", "fetch", "--dir", str(tmp_path)]) == 1
     assert "échec du téléchargement : réseau coupé" in capsys.readouterr().err
+
+
+# --- voix Piper (R31) et venv Piper (R30) -------------------------------------------------------
+
+from lapinou.voice import tts  # noqa: E402
+
+VOICE = "fr_FR-siwis-medium"
+PIPER_CONTENT = {f"{VOICE}.onnx": b"faux modele", f"{VOICE}.onnx.json": b'{"audio": {}}'}
+
+
+@pytest.fixture
+def piper_pins(monkeypatch):
+    monkeypatch.setitem(
+        tts.PIPER_VOICES, VOICE, {n: hashlib.sha256(c).hexdigest() for n, c in PIPER_CONTENT.items()}
+    )
+
+
+def piper_served() -> dict[str, bytes]:
+    return {url: PIPER_CONTENT[name] for name, url in models.piper_sources(VOICE).items()}
+
+
+def test_piper_sources_are_pinned_to_a_revision():
+    urls = models.piper_sources(VOICE)
+    assert set(urls) == {f"{VOICE}.onnx", f"{VOICE}.onnx.json"}
+    for url in urls.values():
+        assert f"rhasspy/piper-voices/resolve/{tts.PIPER_REVISION}/fr/fr_FR/siwis/medium/" in url
+    assert len(tts.PIPER_REVISION) == 40
+
+
+def test_fetch_piper_downloads_verifies_and_skips(tmp_path, piper_pins):
+    seen: list[str] = []
+    assert models.fetch_piper(VOICE, tmp_path, make_opener(piper_served(), seen)) == tmp_path
+    assert len(seen) == 2
+    assert (tmp_path / f"{VOICE}.onnx").read_bytes() == PIPER_CONTENT[f"{VOICE}.onnx"]
+    models.fetch_piper(VOICE, tmp_path, make_opener({}, seen))  # déjà là : aucune requête
+    assert len(seen) == 2
+
+
+def test_fetch_piper_rejects_a_wrong_hash(tmp_path, piper_pins):
+    served = {url: b"autre chose" for url in piper_served()}
+    with pytest.raises(RuntimeError, match="SHA-256"):
+        models.fetch_piper(VOICE, tmp_path, make_opener(served, []))
+    assert not list(tmp_path.iterdir())
+
+
+def test_main_fetch_gets_asr_and_the_piper_voice(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(models, "fetch", lambda d=None: calls.append(("asr", d)) or tmp_path)
+    monkeypatch.setattr(
+        models, "fetch_piper", lambda voice, d=None: calls.append(("piper", voice, d)) or tmp_path
+    )
+    assert models.main(["models", "fetch"]) == 0
+    assert calls == [("asr", None), ("piper", tts.DEFAULT_PIPER_VOICE, None)]
+
+
+def test_piper_setup_creates_a_separate_venv(tmp_path, monkeypatch):
+    ran = []
+    monkeypatch.setattr(models.shutil, "which", lambda n: "/usr/bin/uv" if n == "uv" else None)
+    venv = tmp_path / "piper-venv"
+    models.piper_setup(venv, run=lambda cmd, **k: ran.append(cmd))
+    assert ran[0][:3] == ["/usr/bin/uv", "venv", str(venv)]
+    assert ran[1][:3] == ["/usr/bin/uv", "pip", "install"]
+    assert f"piper-tts=={models.PIPER_TTS_VERSION}" in ran[1]
+    assert str(venv / "bin" / "python") in ran[1]

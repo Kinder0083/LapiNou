@@ -5,7 +5,11 @@ de compatibilité (protocole de voice-daemon). Moteur factice pour la logique ; 
 
 from __future__ import annotations
 
+import hashlib
 import io
+import socket
+import sys
+import textwrap
 import threading
 import urllib.error
 import urllib.request
@@ -213,6 +217,147 @@ def test_compat_echec_de_synthese_500(voice, compat):
     assert e.value.code == 500
 
 
+# --- store partagé, ffmpeg, Kokoro vide, en-têtes -----------------------------------------------
+
+
+async def test_attach_une_seule_boutique_get_sert_le_mp3(voice):
+    app = create_app(Settings())
+    voice.attach(app)
+    speech = await voice.speak("Bonjour.")
+    path = speech.mp3_url.removeprefix("http://10.0.0.5:8080")
+    r = TestClient(app).get(path)
+    assert r.status_code == 200 and r.content == voice.store.get(speech.id)
+    assert is_mp3(r.content)
+
+
+def test_ffmpeg_absent_refuse_clairement(voice, monkeypatch):
+    monkeypatch.setattr(tts.shutil, "which", lambda name: None)
+    with pytest.raises(RuntimeError, match="ffmpeg"):
+        voice.load()
+
+
+def test_kokoro_sortie_vide_est_une_erreur_explicite(monkeypatch, tmp_path):
+    class Lock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class FakeKokoro:
+        def get_voices(self):
+            return ["ff_siwis"]
+
+        def create(self, *a, **k):
+            return np.zeros(0, dtype=np.float32), 24000
+
+    class FakeEngine:
+        def __init__(self, models):
+            self.kokoro, self.lock = FakeKokoro(), Lock()
+
+    monkeypatch.setattr(tts.tts_server, "KokoroEngine", FakeEngine)
+    v = tts.Voice("kokoro", "ff_siwis")
+    with pytest.raises(RuntimeError, match="rien"):
+        v.render_mp3("Bonjour.")
+
+
+def raw_post(port: int, headers: str, body: bytes = b"") -> int:
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as s:
+        s.sendall(f"POST /fr HTTP/1.1\r\nHost: x\r\n{headers}\r\n".encode() + body)
+        return int(s.recv(200).split()[1])
+
+
+@pytest.mark.parametrize("length", ["abc", "-5", "1e3"])
+def test_compat_content_length_invalide_400(compat, length):
+    port = int(compat.rsplit(":", 1)[1])
+    assert raw_post(port, f"Content-Length: {length}\r\nConnection: close\r\n") == 400
+
+
+# --- Piper : processus séparé (GPL-3 : le serveur MIT n'importe rien de piper) -----------------
+
+FAKE_WORKER = textwrap.dedent(
+    r"""
+    import json, os, struct, sys
+    out = os.fdopen(os.dup(1), "wb", buffering=0)
+    out.write(b'{"ready": true}\n')
+    for line in sys.stdin.buffer:
+        text = json.loads(line)["text"]
+        if text == "boom":
+            out.write(b'{"error": "boom"}\n')
+            continue
+        if text == "die":
+            os._exit(3)
+        pcm = struct.pack("<h", 1000) * 2205 * (1 + len(text) % 3)
+        out.write(json.dumps({"rate": 22050, "bytes": len(pcm)}).encode() + b"\n" + pcm)
+    """
+)
+
+
+@pytest.fixture
+def piper_proc(tmp_path):
+    worker = tmp_path / "worker.py"
+    worker.write_text(FAKE_WORKER)
+    proc = tts.PiperProcess(Path(sys.executable), tmp_path / "m.onnx", worker=worker)
+    yield proc
+    proc.close()
+
+
+def test_piper_process_synthetise(piper_proc):
+    pcm, rate = piper_proc.synthesize("a")
+    assert rate == 22050 and len(pcm) == 2205 * 2 * 2 and pcm[:2] == bytes([0xE8, 0x03])
+
+
+def test_piper_process_erreur_du_worker(piper_proc):
+    with pytest.raises(RuntimeError, match="boom"):
+        piper_proc.synthesize("boom")
+    assert piper_proc.synthesize("a")[1] == 22050  # le worker vit toujours
+
+
+def test_piper_process_redemarre_si_mort(piper_proc):
+    piper_proc.synthesize("a")
+    first = piper_proc.proc.pid
+    piper_proc.proc.kill()
+    piper_proc.proc.wait()
+    assert piper_proc.synthesize("a")[1] == 22050  # redémarré
+    assert piper_proc.proc.pid != first
+    with pytest.raises(RuntimeError):  # meurt à chaque fois : une seule reprise
+        piper_proc.synthesize("die")
+
+
+def test_le_serveur_n_importe_pas_piper():
+    code = "import sys, lapinou.voice.tts, lapinou.web.tts_compat, lapinou.app; "            "sys.exit(any(m == 'piper' or m.startswith('piper.') for m in sys.modules))"
+    import subprocess
+
+    assert subprocess.run([sys.executable, "-c", code]).returncode == 0
+    assert "import piper" not in Path(tts.__file__).read_text().replace("`", "")
+    assert "from piper" not in Path(tts.__file__).read_text()
+
+
+def test_voix_piper_verifiee_par_sha256(tmp_path, monkeypatch):
+    (tmp_path / "v.onnx").write_bytes(b"modele")
+    (tmp_path / "v.onnx.json").write_bytes(b"{}")
+    py = tmp_path / "py"
+    py.write_text("")
+    with pytest.raises(RuntimeError, match="inconnue"):
+        tts.Voice("piper", "v", models=tmp_path, piper_python=py).load()
+    pins = {"v.onnx": hashlib.sha256(b"modele").hexdigest(), "v.onnx.json": "0" * 64}
+    monkeypatch.setitem(tts.PIPER_VOICES, "v", pins)
+    with pytest.raises(RuntimeError, match="SHA-256"):
+        tts.Voice("piper", "v", models=tmp_path, piper_python=py).load()
+
+
+def test_piper_sans_venv_indique_la_commande(tmp_path, monkeypatch):
+    (tmp_path / "v.onnx").write_bytes(b"m")
+    (tmp_path / "v.onnx.json").write_bytes(b"{}")
+    monkeypatch.setitem(
+        tts.PIPER_VOICES,
+        "v",
+        {"v.onnx": hashlib.sha256(b"m").hexdigest(), "v.onnx.json": hashlib.sha256(b"{}").hexdigest()},
+    )
+    with pytest.raises(RuntimeError, match="piper-setup"):
+        tts.Voice("piper", "v", models=tmp_path, piper_python=tmp_path / "absent").load()
+
+
 # --- vrais moteurs (ignorés sans modèles) ------------------------------------------------------
 
 KOKORO_DIR = Path.home() / ".cache" / "lapinlibre" / "kokoro"
@@ -228,11 +373,16 @@ async def test_kokoro_reel():
     assert np.abs(speech.pcm16k).max() > 3000
 
 
-@pytest.mark.skipif(not (PIPER_DIR / "fr_FR-siwis-medium.onnx").is_file(), reason="voix Piper absente")
-async def test_piper_reel():
-    pytest.importorskip("piper")
+@pytest.mark.skipif(
+    not ((PIPER_DIR / "fr_FR-siwis-medium.onnx").is_file() and tts.PIPER_PYTHON.is_file()),
+    reason="voix Piper ou venv Piper absents (python -m lapinou.voice.models piper-setup)",
+)
+async def test_piper_reel_par_sous_processus():
     v = tts.Voice("piper", "fr_FR-siwis-medium")
-    speech = await v.speak("Bonjour, je suis Lapinou.")
-    assert is_mp3(v.store.get(speech.id))
-    assert 1.0 < speech.duration_s < 4.0
-    assert np.abs(speech.pcm16k).max() > 3000
+    try:
+        speech = await v.speak("Bonjour, je suis Lapinou.")
+        assert is_mp3(v.store.get(speech.id))
+        assert 1.0 < speech.duration_s < 4.0
+        assert np.abs(speech.pcm16k).max() > 3000
+    finally:
+        v.close()
