@@ -16,7 +16,14 @@ dependencies = [
     # Annulation d'écho (SpeexDSP). Roues PyPI pour Python 3.13 seulement ; en 3.12, compilée à
     # l'installation (paquets libspeexdsp-dev, python3-dev, gcc)
     "speexaec==0.1.3",
+    # Synthèse vocale : MP3 (lameenc) et Kokoro (versions de tools/app-server)
+    "lameenc>=1.7",
+    "kokoro-onnx==0.6.1",
 ]
+
+[project.optional-dependencies]
+# Piper (GPL-3.0-or-later, d'où l'option : non installé par défaut, R24)
+piper = ["piper-tts>=1.5"]
 
 [dependency-groups]
 dev = [
