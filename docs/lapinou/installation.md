@@ -50,6 +50,10 @@ Le script reprend le jeton de `LAPINOU_GITHUB_TOKEN` : appuyez sur Entrée à la
 « Jeton GitHub ». Le jeton n'apparaît jamais dans la ligne de commande d'un processus (`ps`),
 ni dans l'historique du shell.
 
+Si rien ne s'affiche après la commande, ou qu'elle rend aussitôt la main, le script n'a pas
+été téléchargé : vérifiez le jeton (droit « Contents : Read » sur ce dépôt) et l'accès de
+l'hôte à internet (`curl -sI https://api.github.com`).
+
 ## Ce qui est demandé
 
 | Question | Défaut |
@@ -60,7 +64,7 @@ ni dans l'historique du shell.
 | Réseau | IP fixe (proposée : `.160` du réseau du pont) ou DHCP |
 | Broker MQTT : adresse, port, identifiant, mot de passe | port 1883 |
 | Home Assistant : URL et jeton longue durée (profil HA → Sécurité) | vide : sans HA |
-| Lyrion : adresse, port | l'adresse de HA, port 9000 ; vide : sans Lyrion |
+| Lyrion : adresse, port | vide ou `-` : sans Lyrion (l'adresse de HA est rappelée, à retaper) ; port 9000 |
 | Cerveau : Anthropic, compatible OpenAI, ou les deux | Anthropic |
 | Budget mensuel, fuseau horaire | 20 $, celui de l'hôte |
 | Mot de passe admin de la page de réglages (deux fois) | 8 caractères au moins |
@@ -72,7 +76,8 @@ plusieurs).
 
 **Avant de créer quoi que ce soit**, le script teste le dépôt GitHub, le broker MQTT
 (connexion avec vos identifiants), l'API de Home Assistant, Lyrion et la clé du fournisseur.
-Au moindre échec il s'arrête avec un message clair : corrigez et relancez. Puis il affiche un
+Au moindre échec il s'arrête avec un message clair : corrigez et relancez (un Lyrion protégé
+par mot de passe n'est qu'un avertissement). À toute question, `-` veut dire « aucun ». Puis il affiche un
 récapitulatif (les secrets n'y figurent pas) et demande confirmation.
 
 ## Ce que fait le script
@@ -116,7 +121,9 @@ Le script affiche l'adresse de la page de réglages, `http://<IP du conteneur>:8
 Le script reconnaît un conteneur LapiNou existant (étiquette ou nom `lapinou`) et propose :
 
 1. **Mettre à jour** (défaut) : `git pull`, dépendances, modèles, services ; réglages et
-   données gardés ; le jeton est repris du conteneur ;
+   données gardés ; le jeton est repris du conteneur. Le dépôt et la branche sont ceux notés à
+   l'installation dans `/usr/local/lib/lapinou/install.conf` (fichier root), jamais ceux du
+   clone ; pour en changer, retapez-les à la question ;
 2. **Réinstaller** : efface le conteneur et ses données (il faut retaper son ID), puis
    installation complète ;
 3. installer un autre conteneur à côté ;

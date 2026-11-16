@@ -4,7 +4,7 @@
 # LapiNou - installation du serveur DANS le conteneur (lancé par lapinou-install.sh)
 #
 #   bash provision.sh --install <fichier-réponses>   première installation
-#   bash provision.sh --update                       mise à jour (git pull + dépendances)
+#   bash provision.sh --update <dépôt> <branche>     mise à jour (git pull + dépendances)
 #   bash provision.sh --post-update                  dépendances seules (post-update.sh)
 #
 # Lancé en root dans le LXC (pct exec). Le fichier de réponses (0600, une ligne
@@ -58,6 +58,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Branche git : ni « - » au début (option), ni « .. » (chemin).
+is_branch() { [[ "$1" =~ ^[A-Za-z0-9_][A-Za-z0-9._/-]*$ && "$1" != *..* ]]; }
+
 # Lance une commande en tant que lapinou (HOME = dossier de données, outils de ~/.local/bin).
 as_lapinou() {
     runuser -u lapinou -- env HOME="$DATA" PATH="$DATA/.local/bin:$PATH" "$@"
@@ -72,8 +75,8 @@ load_answers() {
         [[ "$key" =~ ^[A-Z0-9_]+$ ]] || continue
         A[$key]="$(printf '%s' "${line#*=}" | base64 -d)"
     done < "$ANSWERS"
-    [[ "${A[GH_REPO]:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || err "Dépôt GitHub invalide."
-    [[ "${A[GH_BRANCH]:-}" =~ ^[A-Za-z0-9._/-]+$ ]] || err "Branche invalide."
+    [[ "${A[GH_REPO]:-}" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || err "Dépôt GitHub invalide."
+    is_branch "${A[GH_BRANCH]:-}" || err "Branche invalide."
     [[ "${A[GH_TOKEN]:-}" =~ ^[A-Za-z0-9_]*$ ]] || err "Jeton GitHub invalide."
 }
 
@@ -103,10 +106,33 @@ create_user_and_dirs() {
         useradd --system --user-group --home-dir /var/lib/lapinou --shell /usr/sbin/nologin lapinou
         ok "Utilisateur système lapinou créé"
     fi
-    mkdir -p "$ETC" "$DATA" "$DATA/update" "$OPT"
-    chown lapinou:lapinou "$ETC" "$DATA" "$DATA/update" "$OPT"
+    local d
+    for d in "$ETC" "$DATA" "$DATA/update" "$OPT"; do
+        [ ! -L "$d" ] || err "$d est un lien symbolique : refusé."
+        [ ! -e "$d" ] || [ -d "$d" ] || err "$d existe et n'est pas un dossier : refusé."
+        mkdir -p "$d"
+    done
+    chown -h lapinou:lapinou "$ETC" "$DATA" "$DATA/update" "$OPT"
     chmod 0750 "$ETC" "$DATA" "$DATA/update"
     chmod 0755 "$OPT"
+}
+
+# Mise à jour : ces dossiers appartiennent à lapinou, qui peut y remplacer un dossier par un
+# lien symbolique. En root on ne fait que vérifier (pas de lien, de vrais dossiers) ; seul
+# update/, s'il manque (installation ancienne), est créé dans un dossier vérifié.
+check_dirs() {
+    local d
+    for d in "$ETC" "$DATA" "$OPT"; do
+        { [ ! -L "$d" ] && [ -d "$d" ]; } || err "$d n'est pas un dossier (lien symbolique ?) : mise à jour refusée."
+    done
+    if [ -L "$DATA/update" ] || { [ -e "$DATA/update" ] && [ ! -d "$DATA/update" ]; }; then
+        err "$DATA/update n'est pas un dossier (lien symbolique ?) : mise à jour refusée."
+    fi
+    if [ ! -e "$DATA/update" ]; then
+        mkdir "$DATA/update"
+        chown -h lapinou:lapinou "$DATA/update"
+        chmod 0750 "$DATA/update"
+    fi
 }
 
 # Accès git du dépôt privé : fichier d'identifiants 0600 lu par « git credential store »
@@ -129,8 +155,16 @@ clone_repo() {
         helper=(-c credential.helper= -c "credential.helper=store --file=/etc/lapinou/git-credentials")
     fi
     if [ -d "$OPT/.git" ]; then
-        msg "Dépôt déjà présent : git pull..."
-        as_lapinou git -C "$OPT" pull -q --ff-only || err "git pull a échoué dans /opt/lapinou"
+        # Dépôt et branche : ceux d'install.conf (ou retapés sur l'hôte), pas ceux du clone.
+        msg "Dépôt déjà présent : mise à jour depuis ${A[GH_REPO]} (branche ${A[GH_BRANCH]})..."
+        as_lapinou git -C "$OPT" remote set-url origin "https://github.com/${A[GH_REPO]}.git"
+        as_lapinou git -C "$OPT" fetch -q origin "${A[GH_BRANCH]}" || err "git fetch a échoué dans /opt/lapinou"
+        if [ "$(as_lapinou git -C "$OPT" rev-parse --abbrev-ref HEAD)" = "${A[GH_BRANCH]}" ]; then
+            as_lapinou git -C "$OPT" merge -q --ff-only FETCH_HEAD || err "git pull a échoué dans /opt/lapinou"
+        else
+            as_lapinou git -C "$OPT" checkout -q -B "${A[GH_BRANCH]}" FETCH_HEAD \
+                || err "Passage à la branche ${A[GH_BRANCH]} impossible"
+        fi
     else
         msg "Clonage de ${A[GH_REPO]} (branche ${A[GH_BRANCH]})..."
         as_lapinou git "${helper[@]}" clone -q --branch "${A[GH_BRANCH]}" \
@@ -240,6 +274,13 @@ install_units() {
     mv -f "$LIB/provision.sh.new" "$LIB/provision.sh"
     chown root:root "$LIB/post-update.sh" "$LIB/provision.sh"
     chmod 0755 "$LIB/post-update.sh" "$LIB/provision.sh"
+    # Dépôt et branche de cette installation, relus par lapinou-install.sh à la mise à jour
+    # (le clone, à lapinou, ne fait pas foi).
+    printf '# SPDX-License-Identifier: MIT\n# Écrit par provision.sh (root) : lu par lapinou-install.sh.\nREPO=%s\nBRANCH=%s\n' \
+        "${A[GH_REPO]}" "${A[GH_BRANCH]}" > "$LIB/install.conf.new"
+    chown root:root "$LIB/install.conf.new"
+    chmod 0644 "$LIB/install.conf.new"
+    mv -f "$LIB/install.conf.new" "$LIB/install.conf"
     cp "$SELF_DIR/lapinou.service" "$UNITS/lapinou.service"
     chmod 0644 "$UNITS/lapinou.service"
 
@@ -365,10 +406,16 @@ case "$MODE" in
         ok "Installation terminée"
         ;;
     --update)
+        A[GH_REPO]="${2:-}"
+        A[GH_BRANCH]="${3:-}"
+        ANSWERS=""
+        [[ "${A[GH_REPO]}" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || err "usage : provision.sh --update <dépôt> <branche>"
+        is_branch "${A[GH_BRANCH]}" || err "Branche invalide."
+        id lapinou >/dev/null 2>&1 || err "Pas d'utilisateur lapinou : choisissez la réinstallation."
+        check_dirs
         [ -d "$OPT/.git" ] || err "Aucune installation dans /opt/lapinou : choisissez la réinstallation."
         install_packages
         install_uv
-        create_user_and_dirs
         clone_repo
         python_deps
         install_units
@@ -383,12 +430,16 @@ case "$MODE" in
         install_packages
         install_uv
         python_deps
-        if ! cmp -s "$OPT/server/systemd/lapinou.service" "$UNITS/lapinou.service"; then
-            warn "lapinou.service a changé dans le dépôt : relancez l'installateur sur Proxmox (mise à jour) pour l'appliquer."
+        changed=()
+        cmp -s "$OPT/server/systemd/lapinou.service" "$UNITS/lapinou.service" || changed+=(lapinou.service)
+        cmp -s "$OPT/installer/provision.sh" "$LIB/provision.sh" || changed+=(provision.sh)
+        cmp -s "$OPT/installer/post-update.sh" "$LIB/post-update.sh" || changed+=(post-update.sh)
+        if [ "${#changed[@]}" -gt 0 ]; then
+            warn "${changed[*]} : changé dans le dépôt ; relancez l'installateur sur Proxmox (mise à jour) pour l'appliquer."
         fi
         ok "Dépendances à jour"
         ;;
     *)
-        err "usage : provision.sh --install <fichier-réponses> | --update | --post-update"
+        err "usage : provision.sh --install <fichier-réponses> | --update <dépôt> <branche> | --post-update"
         ;;
 esac

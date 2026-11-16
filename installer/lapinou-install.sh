@@ -32,12 +32,13 @@ TTY="${LAPINOU_TTY:-/dev/tty}"
 ( : < "$TTY" ) 2>/dev/null || err "Pas de terminal : lancez ce script dans un shell interactif (console Proxmox ou ssh)."
 exec 3<"$TTY"
 
-# ask VAR "Question" [défaut]
+# ask VAR "Question" [défaut] : Entrée garde le défaut ; « - » veut dire « aucun ».
 ask() {
     local prompt="$2" answer=""
     [ -n "${3:-}" ] && prompt="$prompt [$3]"
     IFS= read -r -u 3 -p "$prompt: " answer || true
-    printf -v "$1" '%s' "${answer:-${3:-}}"
+    if [ "$answer" = "-" ]; then answer=""; else answer="${answer:-${3:-}}"; fi
+    printf -v "$1" '%s' "$answer"
 }
 
 # ask_secret VAR "Question" : rien d'affiché, rien dans l'historique ni les journaux.
@@ -48,17 +49,30 @@ ask_secret() {
     printf -v "$1" '%s' "$answer"
 }
 
-is_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
-is_ipv4() { [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; }
+is_uint() { [[ "$1" =~ ^[0-9]{1,9}$ ]]; }
+in_range() { is_uint "$1" && [ "$((10#$1))" -ge "$2" ] && [ "$((10#$1))" -le "$3" ]; }
+is_ipv4() {
+    local o
+    [[ "$1" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+    for o in "${BASH_REMATCH[@]:1}"; do [ "$((10#$o))" -le 255 ] || return 1; done
+}
+# Branche git : ni « - » au début (option), ni « .. » (chemin).
+is_branch() { [[ "$1" =~ ^[A-Za-z0-9_][A-Za-z0-9._/-]*$ && "$1" != *..* ]]; }
+is_hostname() { [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,62})(\.[A-Za-z0-9]([A-Za-z0-9-]{0,62}))*$ ]]; }
+is_host() { is_ipv4 "$1" || { ! [[ "$1" =~ ^[0-9.]+$ ]] && is_hostname "$1"; }; }
+# Clés et jetons envoyés en en-tête (configuration curl entre guillemets) : ni " ni \.
+is_header_safe() { [[ "$1" != *\"* && "$1" != *\\* ]]; }
 is_port() { is_uint "$1" && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
 is_http_url() { [[ "$1" =~ ^https?://[^/[:space:]]+(/[^[:space:]]*)?$ ]]; }
 shown() { if [ -n "$1" ]; then echo "(saisi)"; else echo "(aucun)"; fi; }
 
 WORK=$(mktemp -d)
 CT_SETUP="/root/lapinou-setup"
+INSTALL_CONF="/usr/local/lib/lapinou/install.conf"
 CTID=""
 PUSHED=0
 cleanup() {
+    if [ -f "$WORK/answers" ]; then shred -u "$WORK/answers" 2>/dev/null || rm -f "$WORK/answers"; fi
     rm -rf "$WORK"
     if [ "$PUSHED" = 1 ] && [ -n "$CTID" ]; then
         pct exec "$CTID" -- rm -rf "$CT_SETUP" >/dev/null 2>&1 || true
@@ -139,34 +153,49 @@ push_setup() {
 # Tests de connexion (avant toute création)
 ###############################################################################
 
-# MQTT 3.1.1 : CONNECT écrit directement sur une connexion TCP de bash, CONNACK lu.
+# MQTT 3.1.1 : CONNECT écrit sur une connexion TCP de bash, CONNACK lu. Tout l'échange tourne
+# dans un bash enfant sous timeout ; identifiant et mot de passe lui arrivent sur son entrée
+# standard (jamais en argument). Il écrit le CONNACK, ou sort en 10 (connexion refusée).
+# shellcheck disable=SC2016  # script de l'enfant : ses variables sont les siennes
+MQTT_SCRIPT='
+set -u
+LC_ALL=C
+host=$1 port=$2
+IFS= read -r user || true
+IFS= read -r pass || true
+byte() { printf "%b" "\\x$(printf "%02x" "$1")"; }
+field() { byte $((${#1} >> 8)); byte $((${#1} & 255)); printf "%s" "$1"; }
+cid="lapinou-install-$$" flags=2
+len=$((10 + 2 + ${#cid}))
+if [ -n "$user" ]; then
+    flags=$((flags | 0x80)); len=$((len + 2 + ${#user}))
+    if [ -n "$pass" ]; then flags=$((flags | 0x40)); len=$((len + 2 + ${#pass})); fi
+fi
+[ "$len" -lt 16384 ] || exit 11
+exec 9<>"/dev/tcp/$host/$port" || exit 10
+{
+    byte 16
+    if [ "$len" -lt 128 ]; then byte "$len"; else byte $(((len & 127) | 128)); byte $((len >> 7)); fi
+    field "MQTT"; byte 4; byte "$flags"; byte 0; byte 30
+    field "$cid"
+    if [ -n "$user" ]; then field "$user"; fi
+    if [ -n "$user" ] && [ -n "$pass" ]; then field "$pass"; fi
+} >&9
+od -An -tx1 -N4 <&9
+'
+
 mqtt_check() {
-    local host="$1" port="$2" user="$3" pass="$4" fd resp rc
-    local LC_ALL=C
-    local cid="lapinou-install-$$" flags=2 len
-    # shellcheck disable=SC2016  # $0 et $1 : arguments de ce bash -c
-    if ! timeout 5 bash -c 'exec 9<>"/dev/tcp/$0/$1"' "$host" "$port" 2>/dev/null; then
-        MQTT_PROBLEM="broker MQTT injoignable sur $host:$port"
-        return 1
-    fi
-    len=$((10 + 2 + ${#cid}))
-    if [ -n "$user" ]; then
-        flags=$((flags | 0x80)); len=$((len + 2 + ${#user}))
-        if [ -n "$pass" ]; then flags=$((flags | 0x40)); len=$((len + 2 + ${#pass})); fi
-    fi
-    [ "$len" -lt 16384 ] || { MQTT_PROBLEM="identifiants MQTT trop longs"; return 1; }
-    exec {fd}<>"/dev/tcp/$host/$port"
-    {
-        byte 16
-        if [ "$len" -lt 128 ]; then byte "$len"; else byte $(((len & 127) | 128)); byte $((len >> 7)); fi
-        field "MQTT"; byte 4; byte "$flags"; byte 0; byte 30
-        field "$cid"
-        if [ -n "$user" ]; then field "$user"; fi
-        if [ -n "$user" ] && [ -n "$pass" ]; then field "$pass"; fi
-    } >&"$fd"
-    resp=$(timeout 5 od -An -tx1 -N4 <&"$fd" 2>/dev/null | tr -s ' \n' ' ' || true)
-    exec {fd}>&-
-    read -r -a resp <<<"$resp"
+    local host="$1" port="$2" user="$3" pass="$4" out rc=0 resp
+    out=$(timeout 8 bash -c "$MQTT_SCRIPT" mqtt "$host" "$port" 2>/dev/null <<<"$user
+$pass") || rc=$?
+    case "$rc" in
+        0) ;;
+        10) MQTT_PROBLEM="broker MQTT injoignable sur $host:$port (connexion refusée)"; return 1 ;;
+        11) MQTT_PROBLEM="identifiants MQTT trop longs"; return 1 ;;
+        124) MQTT_PROBLEM="broker MQTT injoignable sur $host:$port (pas de réponse en 8 s)"; return 1 ;;
+        *) MQTT_PROBLEM="broker MQTT injoignable sur $host:$port"; return 1 ;;
+    esac
+    read -r -a resp <<<"$out"
     if [ "${resp[0]:-}" != "20" ]; then
         MQTT_PROBLEM="pas de réponse MQTT de $host:$port (est-ce bien un broker MQTT ?)"
         return 1
@@ -179,8 +208,6 @@ mqtt_check() {
     esac
     return 1
 }
-byte() { printf '%b' "\\x$(printf '%02x' "$1")"; }
-field() { byte $((${#1} >> 8)); byte $((${#1} & 255)); printf '%s' "$1"; }
 
 run_checks() {
     msg "Tests de connexion..."
@@ -205,8 +232,11 @@ run_checks() {
         code=$(http_code "http://$LMS_HOST:$LMS_PORT/jsonrpc.js" "" \
             -X POST -H "Content-Type: application/json" \
             --data '{"id":1,"method":"slim.request","params":["",["serverstatus",0,0]]}')
-        [ "$code" = "200" ] || err "Lyrion injoignable à http://$LMS_HOST:$LMS_PORT (code $code). Laissez l'adresse vide pour s'en passer."
-        ok "Lyrion : serveur joignable ($LMS_HOST:$LMS_PORT)"
+        case "$code" in
+            200) ok "Lyrion : serveur joignable ($LMS_HOST:$LMS_PORT)" ;;
+            401|403) warn "Lyrion : joignable mais protégé par mot de passe ($LMS_HOST:$LMS_PORT) ; LapiNou ne pourra pas le piloter tant que la protection est active. On continue." ;;
+            *) err "Lyrion injoignable à http://$LMS_HOST:$LMS_PORT (code $code). Répondez « - » pour s'en passer." ;;
+        esac
     fi
 
     if [ -n "$ANTHROPIC_KEY" ]; then
@@ -285,21 +315,36 @@ update_existing() {
     fi
     pct exec "$id" -- test -d /opt/lapinou/.git \
         || err "Le conteneur $id n'a pas d'installation LapiNou (/opt/lapinou) : choisissez la réinstallation."
-    # Dépôt, branche et accès : ceux de l'installation.
-    local head remote
-    remote=$(pct exec "$id" -- git config --file /opt/lapinou/.git/config --get remote.origin.url || true)
-    head=$(pct exec "$id" -- cat /opt/lapinou/.git/HEAD || true)
-    GH_REPO=$(sed -n 's#^https://github.com/\([^/]*/[^/]*\)$#\1#p' <<<"${remote%.git}")
-    GH_BRANCH=${head#ref: refs/heads/}
-    [[ "$GH_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || GH_REPO="Kinder0083/LapiNou"
-    [[ "$GH_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || GH_BRANCH="main"
-    GH_TOKEN=$(pct exec "$id" -- cat /etc/lapinou/git-credentials 2>/dev/null \
+    # Dépôt et branche : ceux notés à l'installation dans un fichier root (install.conf), jamais
+    # ceux du clone, que le service (lapinou) peut modifier. Les changer : les retaper ici.
+    local conf rec_repo rec_branch
+    conf=$(pct exec "$id" -- cat "$INSTALL_CONF" 2>/dev/null || true)
+    rec_repo=$(sed -n 's/^REPO=//p' <<<"$conf" | head -n 1)
+    rec_branch=$(sed -n 's/^BRANCH=//p' <<<"$conf" | head -n 1)
+    if [[ "$rec_repo" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] && is_branch "$rec_branch"; then
+        ok "Installation trouvée : $rec_repo, branche $rec_branch ($INSTALL_CONF)"
+    else
+        warn "Pas de $INSTALL_CONF lisible (installation ancienne) : indiquez le dépôt et la branche."
+        rec_repo="Kinder0083/LapiNou" rec_branch="main"
+    fi
+    ask GH_REPO "Dépôt (Entrée : garder)" "$rec_repo"
+    ask GH_BRANCH "Branche (Entrée : garder)" "$rec_branch"
+    [[ "$GH_REPO" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || err "Dépôt invalide (forme propriétaire/nom)."
+    is_branch "$GH_BRANCH" || err "Branche invalide."
+    if [ "$GH_REPO" != "$rec_repo" ] || [ "$GH_BRANCH" != "$rec_branch" ]; then
+        warn "Nouveau dépôt ou branche : $GH_REPO ($GH_BRANCH)"
+    fi
+    # Jeton : celui du conteneur (refusé si le fichier est un lien symbolique).
+    GH_TOKEN=$(pct exec "$id" -- sh -c 'test ! -L /etc/lapinou/git-credentials && cat /etc/lapinou/git-credentials' 2>/dev/null \
         | sed -n 's#^https://x-access-token:\([A-Za-z0-9_]*\)@github.com$#\1#p' | head -n 1 || true)
-    ok "Installation trouvée : $GH_REPO, branche $GH_BRANCH"
+    echo "  Mise à jour : conteneur $id, $GH_REPO (branche $GH_BRANCH), jeton $(shown "$GH_TOKEN")"
+    ask CONFIRM "Confirmer la mise à jour ? (o/n)" o
+    [[ "$CONFIRM" =~ ^[OoYy]$ ]] || err "Mise à jour annulée."
     get_setup_files
     push_setup
     msg "Mise à jour dans le conteneur $id (git pull, dépendances, modèles, services)..."
-    pct exec "$id" -- bash "$CT_SETUP/provision.sh" --update || err "La mise à jour a échoué (voir ci-dessus)."
+    pct exec "$id" -- bash "$CT_SETUP/provision.sh" --update "$GH_REPO" "$GH_BRANCH" \
+        || err "La mise à jour a échoué (voir ci-dessus)."
     local ip
     ip=$(pct exec "$id" -- hostname -I 2>/dev/null | awk '{print $1}' || true)
     echo ""
@@ -413,27 +458,32 @@ if [ -n "$ENV_TOKEN" ]; then
 else
     ask_secret GH_TOKEN "Jeton GitHub (vide : dépôt public)"
 fi
-[[ "$GH_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || err "Dépôt invalide (forme propriétaire/nom)."
-[[ "$GH_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || err "Branche invalide."
+[[ "$GH_REPO" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]] || err "Dépôt invalide (forme propriétaire/nom)."
+is_branch "$GH_BRANCH" || err "Branche invalide."
 [[ "$GH_TOKEN" =~ ^[A-Za-z0-9_]*$ ]] || err "Jeton GitHub invalide (lettres, chiffres et _ seulement)."
 github_check
 echo ""
 
 # Conteneur
 msg "Conteneur..."
-DEFAULT_ID="$REINSTALL_ID"
-[ -n "$DEFAULT_ID" ] || DEFAULT_ID=$(pvesh get /cluster/nextid 2>/dev/null || echo 100)
-ask CTID "ID du conteneur" "$DEFAULT_ID"
-{ is_uint "$CTID" && [ "$CTID" -ge 100 ]; } || err "ID invalide (nombre ≥ 100)."
-if [ "$CTID" != "$REINSTALL_ID" ] && { pct status "$CTID" >/dev/null 2>&1 || qm status "$CTID" >/dev/null 2>&1; }; then
-    err "L'ID $CTID est déjà utilisé."
+if [ -n "$REINSTALL_ID" ]; then
+    CTID="$REINSTALL_ID"
+    echo "  ID du conteneur : $CTID (réinstallation)"
+else
+    ask CTID "ID du conteneur" "$(pvesh get /cluster/nextid 2>/dev/null || echo 100)"
+    in_range "$CTID" 100 999999999 || err "ID invalide (nombre ≥ 100)."
+    if pct status "$CTID" >/dev/null 2>&1 || qm status "$CTID" >/dev/null 2>&1; then
+        err "L'ID $CTID est déjà utilisé."
+    fi
 fi
 ask CT_HOSTNAME "Nom d'hôte" "lapinou"
 [[ "$CT_HOSTNAME" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || err "Nom d'hôte invalide."
 ask RAM "RAM (Mo)" 6144
 ask CORES "Cœurs" 4
 ask DISK "Disque (Go)" 20
-{ is_uint "$RAM" && is_uint "$CORES" && is_uint "$DISK"; } || err "RAM, cœurs et disque : des nombres entiers."
+in_range "$RAM" 1024 1048576 || err "RAM invalide (1024 à 1048576 Mo)."
+in_range "$CORES" 1 512 || err "Nombre de cœurs invalide (1 à 512)."
+in_range "$DISK" 8 65536 || err "Taille de disque invalide (8 à 65536 Go)."
 echo ""
 
 # Réseau
@@ -454,7 +504,7 @@ if [ "$NET_MODE" = "1" ]; then
     ask CT_IP "Adresse IP du conteneur" "$SUGGESTED_IP"
     ask CT_CIDR "Masque CIDR" "${BRIDGE_CIDR:-24}"
     ask CT_GW "Passerelle" "$GATEWAY"
-    { is_ipv4 "$CT_IP" && is_ipv4 "$CT_GW" && is_uint "$CT_CIDR"; } || err "Adresse, masque ou passerelle invalide."
+    { is_ipv4 "$CT_IP" && is_ipv4 "$CT_GW" && in_range "$CT_CIDR" 1 32; } || err "Adresse, masque ou passerelle invalide."
     if ping -c 1 -W 1 "$CT_IP" >/dev/null 2>&1; then
         err "L'adresse $CT_IP répond déjà sur le réseau : choisissez-en une libre."
     fi
@@ -473,6 +523,7 @@ echo ""
 msg "Broker MQTT (Home Assistant voit les lapins par MQTT)..."
 ask MQTT_HOST "Adresse du broker"
 [ -n "$MQTT_HOST" ] || err "L'adresse du broker MQTT est obligatoire."
+is_host "$MQTT_HOST" || err "Adresse du broker MQTT invalide (nom d'hôte ou IPv4)."
 ask MQTT_PORT "Port" 1883
 is_port "$MQTT_PORT" || err "Port MQTT invalide."
 ask MQTT_USER "Identifiant (vide : aucun)"
@@ -488,6 +539,7 @@ if [ -n "$HA_URL" ]; then
     is_http_url "$HA_URL" || err "URL de Home Assistant invalide (http:// ou https://)."
     ask_secret HA_TOKEN "Jeton longue durée de Home Assistant"
     [ -n "$HA_TOKEN" ] || err "Le jeton de Home Assistant est obligatoire avec une URL."
+    is_header_safe "$HA_TOKEN" || err "Jeton de Home Assistant invalide (ni guillemet ni barre oblique inverse)."
 fi
 echo ""
 
@@ -495,9 +547,14 @@ echo ""
 msg "Lyrion Music Server (musique et radio vers les Squeezebox)..."
 HA_HOST=""
 if [ -n "$HA_URL" ]; then HA_HOST=$(sed -E 's#^https?://([^/:]+).*#\1#' <<<"$HA_URL"); fi
-ask LMS_HOST "Adresse de Lyrion (vide : sans Lyrion)" "$HA_HOST"
+if [ -n "$HA_HOST" ]; then
+    ask LMS_HOST "Adresse de Lyrion (souvent celle de HA, $HA_HOST ; vide ou - : sans Lyrion)"
+else
+    ask LMS_HOST "Adresse de Lyrion (vide ou - : sans Lyrion)"
+fi
 LMS_PORT=9000
 if [ -n "$LMS_HOST" ]; then
+    is_host "$LMS_HOST" || err "Adresse de Lyrion invalide (nom d'hôte ou IPv4)."
     ask LMS_PORT "Port de Lyrion" 9000
     is_port "$LMS_PORT" || err "Port de Lyrion invalide."
 fi
@@ -514,6 +571,7 @@ case "$PROVIDER" in 1|2|3) ;; *) err "Choix de fournisseur invalide." ;; esac
 if [ "$PROVIDER" != "2" ]; then
     ask_secret ANTHROPIC_KEY "Clé API Anthropic"
     [ -n "$ANTHROPIC_KEY" ] || err "La clé API Anthropic est obligatoire pour ce choix."
+    is_header_safe "$ANTHROPIC_KEY" || err "Clé API Anthropic invalide (ni guillemet ni barre oblique inverse)."
 fi
 if [ "$PROVIDER" != "1" ]; then
     ask OAI_NAME "Nom du fournisseur" "openai"
@@ -523,6 +581,7 @@ if [ "$PROVIDER" != "1" ]; then
     ask OAI_MODEL "Modèle"
     [ -n "$OAI_MODEL" ] || err "Le modèle est obligatoire."
     ask_secret OAI_KEY "Clé API (vide : aucune, par ex. Ollama)"
+    is_header_safe "$OAI_KEY" || err "Clé API invalide (ni guillemet ni barre oblique inverse)."
 fi
 ask BUDGET "Budget mensuel (dollars)" 20
 [[ "$BUDGET" =~ ^[0-9]+([.][0-9]+)?$ ]] || err "Budget invalide."
