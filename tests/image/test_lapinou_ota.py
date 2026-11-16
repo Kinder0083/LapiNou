@@ -55,6 +55,13 @@ NEW = "v2.0.0"
 TOKEN = "github_pat_TESTONLY_0123456789abcdef"
 PROTECTED = ("mtd0", "mtd3", "mtd4", "mtd5")
 STOCK_INITTAB = "::once:/karotz/scripts/karotz_init.sh\n"
+# mtd1 and mtd2 as /proc/mtd gives them (bytes), and a partition as it is before an install: old
+# data at the start, the rest erased (0xFF), like the flash itself.
+PARTITION = {1: 0x300000, 2: 0x500000}
+
+
+def partition(data: bytes, n: int) -> bytes:
+    return data.ljust(PARTITION[n], b"\xff")
 
 
 def sysroot():
@@ -199,13 +206,18 @@ class OtaRabbit:
         stub(sb / "bin/logger", "exit 0")
         stub(sb / "bin/killall", "exit 0")
         stub(sb / "karotz/bin/led", "exit 0")
-        stub(sb / "sbin/flash_erase", f'echo "erase $1" >> {log}; : > "$1"')
-        stub(sb / "sbin/flash_eraseall", f'echo "eraseall $1" >> {log}; : > "$1"')
+        # Erasing leaves the whole partition 0xFF, writing puts the image at its start (the rest
+        # stays 0xFF): a partition is always larger than its image.
+        erase = (f'case "$1" in *mtd1) n={PARTITION[1]} ;; *mtd2) n={PARTITION[2]} ;; *) n=0 ;; esac\n'
+                 f'head -c "$n" /dev/zero | tr "\\000" "\\377" > "$1"')
+        stub(sb / "sbin/flash_erase", f'echo "erase $1" >> {log}\n' + erase)
+        stub(sb / "sbin/flash_eraseall", f'echo "eraseall $1" >> {log}\n' + erase)
         # nandwrite writes garbage while corrupt-mtdN holds a count above 0 (a write the read-back catches).
         stub(sb / "sbin/nandwrite", f'echo "write $2 $3" >> {log}\n'
                                     f'c={sb}/corrupt-$(basename "$2"); n=$(cat "$c" 2> /dev/null || echo 0)\n'
-                                    f'if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$c"; printf garbage > "$2"; '
-                                    f'else cp "$3" "$2"; fi')
+                                    f'if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$c"; img=$(mktemp); '
+                                    f'head -c "$(wc -c < "$3")" /dev/urandom > "$img"; else img=$3; fi\n'
+                                    f'dd if="$img" of="$2" conv=notrunc 2> /dev/null')
         # nanddump -q --bb=skipbad -l LEN -f FILE DEVICE: LEN bytes of the device (no OOB).
         stub(sb / "sbin/nanddump", f'len= out=\nwhile [ $# -gt 1 ]; do case "$1" in -l) len=$2; shift 2 ;; '
                                    f'-f) out=$2; shift 2 ;; *) shift ;; esac; done\n'
@@ -218,8 +230,11 @@ class OtaRabbit:
         stub(sb / "usr/etc/init.d/S40lapinlibre", f'echo "S40lapinlibre $1" >> {log}')
 
         (sb / "dev").mkdir()
+        self.before = {}
         for n in range(7):
-            (sb / f"dev/mtd{n}").write_bytes(f"old mtd{n}".encode())
+            data = f"old mtd{n}".encode()
+            self.before[n] = partition(data, n) if n in PARTITION else data
+            (sb / f"dev/mtd{n}").write_bytes(self.before[n])
         (sb / "proc/sys/vm").mkdir(parents=True)
         (sb / "proc/sys/vm/drop_caches").write_text("")
         (sb / "proc/mtd").write_text(
@@ -264,6 +279,8 @@ class OtaRabbit:
     def put_script(self, src: Path, dst: Path, api=None):
         text = src.read_text(encoding="utf-8")
         head, _, rest = text.partition("\n")
+        # Only the programs set PATH, and get the sandbox's; the libraries they source don't.
+        assert PATH_LINE not in rest or src in (OTA, RESUME), src
         rest = rest.replace(PATH_LINE, "@PATH@")
         if api:
             rest = rest.replace("api.github.com", api)
@@ -370,7 +387,7 @@ class OtaTest(unittest.TestCase):
     def assert_nothing_written(self, r):
         self.assertEqual(r.writes(), [])
         for n in range(7):
-            self.assertEqual((r.sb / f"dev/mtd{n}").read_bytes(), f"old mtd{n}".encode())
+            self.assertEqual((r.sb / f"dev/mtd{n}").read_bytes(), r.before[n], f"mtd{n}")
         self.assertEqual((r.sb / "usr/scripts/old.sh").read_text(), "wiped\n")
         self.assertEqual(r.version(), OLD)
         self.assertNotIn("reboot -f", r.actions())
@@ -386,11 +403,12 @@ class OtaTest(unittest.TestCase):
             self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         files = files or self.files
         sb = r.sb
-        self.assertEqual((sb / "dev/mtd1").read_bytes(), files["zImage"])
-        self.assertEqual((sb / "dev/mtd2").read_bytes(), files["rootfs.img.gz"])
+        # The image, then the erased rest of the partition, which the read-back took in too.
+        self.assertEqual((sb / "dev/mtd1").read_bytes(), partition(files["zImage"], 1))
+        self.assertEqual((sb / "dev/mtd2").read_bytes(), partition(files["rootfs.img.gz"], 2))
         self.assertEqual(r.writes(), writes or self.WRITES)
         for n in (0, 3, 4, 5, 6):
-            self.assertEqual((sb / f"dev/mtd{n}").read_bytes(), f"old mtd{n}".encode(), f"mtd{n}")
+            self.assertEqual((sb / f"dev/mtd{n}").read_bytes(), r.before[n], f"mtd{n}")
         actions = r.actions()
         # The daemons are stopped before the first erase; each partition is read back after its
         # write; the reboot comes last.
@@ -617,6 +635,36 @@ class OtaTest(unittest.TestCase):
         self.assertEqual((r.sb / "usr/ota/new/zImage").read_bytes(), self.files["zImage"])
         self.assertFalse((r.sb / "usr/ota/resume.conf").exists())
 
+    def test_flash_tools_checked_before_anything_is_written(self):
+        # Each tool the writing needs is there, and nanddump reads one block of mtd1 with the
+        # read-back's own options, before the daemons stop and anything is erased.
+        for name, change, why in (
+                ("no-nandwrite", lambda sb: (sb / "sbin/nandwrite").unlink(), "no /sbin/nandwrite"),
+                ("no-nanddump", lambda sb: (sb / "sbin/nanddump").unlink(), "no /sbin/nanddump"),
+                ("no-erase", lambda sb: [(sb / f"sbin/{t}").unlink() for t in ("flash_erase", "flash_eraseall")],
+                 "no /sbin/flash_erase"),
+                ("old-nanddump", lambda sb: stub(sb / "sbin/nanddump", 'case "$*" in *--bb=skipbad*) '
+                                                 'echo "nanddump: unrecognized option --bb=skipbad" >&2; exit 1 ;; esac'),
+                 "can't read mtd1")):
+            with self.subTest(name):
+                srv = self.ota_server()
+                r = self.server_rabbit(f"tools-{name}", srv)
+                change(r.sb)
+                p = r.run("install")
+                self.assertNotEqual(p.returncode, 0)
+                self.assertIn(why, p.stderr)
+                self.assertIn("nothing written", p.stderr)
+                self.assert_nothing_written(r)
+        # The probe, when it can run: one erase block of mtd1, options as the read-back's.
+        srv = self.ota_server()
+        r = self.server_rabbit("tools-probe", srv)
+        log = r.sb / "nanddump.log"
+        stub(r.sb / "sbin/nanddump", f'printf "%s\\n" "$*" >> {log}\nexit 1')
+        r.run("install")
+        self.assertEqual([line.replace(str(r.sb), "").split(" /usr/ota/")[0] for line in log.read_text().splitlines()],
+                         ["-q --bb=skipbad -l 131072 -f"])
+        self.assert_nothing_written(r)
+
     # --- Versions (R44) ----------------------------------------------------------------------------
 
     def test_downgrade_refused(self):
@@ -717,6 +765,32 @@ class OtaTest(unittest.TestCase):
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("SHA-256", p.stdout + p.stderr)
         self.assertEqual((r.sb / "usr/karotz/bin/controller").read_text(), "partial\n")
+        # lapinou-ota then says the USB key is needed, not just a reboot.
+        r.put_script(OTA, r.ota, "127.0.0.1:1")
+        r.put_script(CONF_SH, r.sb / "usr/share/lapinou/conf.sh")
+        p = r.run("check")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("USB key", p.stderr)
+        self.assertIn("SHA-256", p.stderr)
+
+    def test_resume_checks_its_marker(self):
+        # resume.conf's format (FORMAT=1) and its version (a release's, vX.Y.Z) are checked before
+        # /usr is touched.
+        for name, edit, why in (("format", lambda t: t.replace("FORMAT=1\n", "FORMAT=2\n"), "format"),
+                                ("no-format", lambda t: t.replace("FORMAT=1\n", ""), "format"),
+                                ("version", lambda t: t.replace(f"VERSION={NEW}", "VERSION=2.0"), "version")):
+            with self.subTest(name):
+                srv = self.ota_server()
+                r = self.server_rabbit(f"marker-{name}", srv)
+                r.cut_unpack()
+                r.run("install")
+                mark = r.sb / "usr/ota/resume.conf"
+                self.assertTrue(mark.read_text().startswith("FORMAT=1\n"))
+                mark.write_text(edit(mark.read_text()))
+                p = r.resume()
+                self.assertNotEqual(p.returncode, 0)
+                self.assertIn(why, p.stdout + p.stderr)
+                self.assertEqual((r.sb / "usr/karotz/bin/controller").read_text(), "partial\n")
 
     def test_linuxrc_resumes_before_usr_is_used(self):
         text = LINUXRC.read_text()
@@ -842,6 +916,15 @@ class SignToolTest(unittest.TestCase):
                 r = subprocess.run([sys.executable, "-I", str(SIGN), "--key", str(t / "k"), "--dir", str(rel), *args],
                                    capture_output=True, text=True)
                 self.assertNotEqual(r.returncode, 0, args)
+            # A built key's install.conf names the version it was built as: --version must be it.
+            (rel / "zImage").write_bytes(b"kernel")
+            (rel / "install.conf").write_text("BUILD_ID=0123456789abcdef\nRELEASE_VERSION=v2.0.1\n")
+            sign_cmd = [sys.executable, "-I", str(SIGN), "--key", str(t / "k"), "--dir", str(rel), "--version"]
+            r = subprocess.run(sign_cmd + [NEW], capture_output=True, text=True)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("RELEASE_VERSION", r.stderr)
+            r = subprocess.run(sign_cmd + ["v2.0.1"], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
 
 if __name__ == "__main__":
