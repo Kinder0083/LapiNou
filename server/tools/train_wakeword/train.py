@@ -209,6 +209,8 @@ def _voice(name: str):
             _VOICES.pop(next(iter(_VOICES)))
         path = _VOICE_DIR / f"{name}.onnx"
         model = onnx.load(str(path))
+        if name == MIX_VOICE:
+            add_mixed_speakers(model, json.loads(Path(f"{path}.json").read_text()))
         try:
             add_alignment_output(model)
         except ValueError:
@@ -226,6 +228,45 @@ def _voice(name: str):
     return _VOICES[name]
 
 
+# Voix mélangées : sans elles le classifieur retient les ~120 locuteurs d'entraînement
+# (rappel ~1 sur eux, ~0,5 sur des locuteurs MLS jamais vus). Comme le générateur
+# d'openWakeWord (piper-sample-generator), on interpole les plongements de locuteur de
+# fr_FR-mls-medium : de nouvelles lignes ajoutées à emb_g.weight, identifiants 125 et plus.
+# Seuls des locuteurs d'entraînement sont mélangés.
+MIX_VOICE = "fr_FR-mls-medium"
+MIX_SPEAKERS = 3000
+
+
+def mixed_rows(weight: np.ndarray, train_ids: list[int]) -> np.ndarray:
+    """MIX_SPEAKERS plongements, chacun entre deux locuteurs d'entraînement (déterministe)."""
+    rng = np.random.default_rng(2026)
+    a = rng.choice(train_ids, MIX_SPEAKERS)
+    b = rng.choice(train_ids, MIX_SPEAKERS)
+    b = np.where(a == b, np.roll(b, 1), b)
+    t = rng.uniform(0.2, 0.8, (MIX_SPEAKERS, 1))
+    mix = (1 - t) * weight[a] + t * weight[b]
+    norm = (1 - t) * np.linalg.norm(weight[a], axis=1, keepdims=True) + t * np.linalg.norm(
+        weight[b], axis=1, keepdims=True)
+    return (mix / np.linalg.norm(mix, axis=1, keepdims=True) * norm).astype(weight.dtype)
+
+
+def _mls_train_ids(config: dict) -> list[int]:
+    return sorted(v for k, v in config["speaker_id_map"].items() if k not in MLS_HELD_OUT)
+
+
+def add_mixed_speakers(model, config: dict) -> None:
+    from onnx import numpy_helper
+
+    for i, init in enumerate(model.graph.initializer):
+        if init.name == "emb_g.weight":
+            weight = numpy_helper.to_array(init)
+            rows = mixed_rows(weight, _mls_train_ids(config))
+            new = numpy_helper.from_array(np.concatenate((weight, rows)), init.name)
+            model.graph.initializer[i].CopyFrom(new)
+            return
+    raise ValueError("emb_g.weight absent de la voix MLS")
+
+
 def _init_worker(voice_dir: str) -> None:
     global _VOICE_DIR
     _VOICE_DIR = Path(voice_dir)
@@ -233,8 +274,11 @@ def _init_worker(voice_dir: str) -> None:
 
 
 def speakers(name: str, split: str) -> list[int | None]:
-    """Les locuteurs d'une voix pour un partage (« train » ou « test »)."""
+    """Les locuteurs d'une voix pour un partage (« train », « test » ou « mix »)."""
     config = json.loads((_VOICE_DIR / f"{name}.onnx.json").read_text())
+    if split == "mix":
+        base = len(config["speaker_id_map"])
+        return list(range(base, base + MIX_SPEAKERS)) if name == MIX_VOICE else []
     ids = config.get("speaker_id_map") or {}
     if not ids:
         return [None]
@@ -336,7 +380,7 @@ def _synth(job: tuple) -> np.ndarray | None:
 
 
 def _jobs(kind: str, split: str, count: int, rng: random.Random) -> list[tuple]:
-    voices = TRAIN_VOICES if split == "train" else TEST_VOICES
+    voices = TEST_VOICES if split == "test" else TRAIN_VOICES
     pool = [(v, s) for v in voices for s in speakers(v, split)]
     if kind == "positive":
         texts = POSITIVE_TEXTS
@@ -377,6 +421,8 @@ def cmd_generate(args: argparse.Namespace) -> None:
         ("positive", "train", args.positives), ("near", "train", args.near),
         ("sentence", "train", args.sentences),
         ("positive", "test", 200), ("near", "test", 300), ("sentence", "test", 700),
+        ("positive", "mix", args.mix_positives), ("near", "mix", args.mix_near),
+        ("sentence", "mix", args.mix_sentences),
     ]
     with Pool(args.jobs, _init_worker, (str(_VOICE_DIR),)) as pool:
         for kind, split, count in plan:
@@ -590,6 +636,11 @@ def cmd_features(args: argparse.Namespace) -> None:
     clips = work / "clips"
     out = work / "features"
     out.mkdir(exist_ok=True)
+    def train_clips(kind: str) -> list[np.ndarray]:
+        """Extraits d'entraînement : voix d'origine puis voix mélangées (si générées)."""
+        mix = clips / f"mix_{kind}.npz"
+        return load_clips(clips / f"train_{kind}.npz") + (load_clips(mix) if mix.exists() else [])
+
     babble = load_clips(clips / "train_sentence.npz")
     babble_test = load_clips(clips / "test_sentence.npz")
     sub, sub_t = "train", "test"
@@ -608,15 +659,16 @@ def cmd_features(args: argparse.Namespace) -> None:
         np.save(target, data)
         print(f"{name}: {data.shape} en {time.time() - t0:.0f} s", flush=True)
 
-    pos = load_clips(clips / "train_positive.npz")
+    pos = train_clips("positive")
     run("train_pos", _word_task,
         [(w, 1000 + i * 10 + k, sub, POS_OFFSETS) for i, w in enumerate(pos)
          for k in range(args.pos_aug)])
-    near = load_clips(clips / "train_near.npz")
+    near = train_clips("near")
     run("train_near", _word_task,
         [(w, 500000 + i * 10 + k, sub, NEAR_OFFSETS) for i, w in enumerate(near)
          for k in range(2)])
-    groups = [babble[i : i + 12] for i in range(0, len(babble), 12)]
+    speech = train_clips("sentence")
+    groups = [speech[i : i + 12] for i in range(0, len(speech), 12)]
     run("train_speech", _stream_task,
         [(g, 900000 + i * 10 + k, sub, 2) for i, g in enumerate(groups) for k in range(2)])
     run("train_noise", _noise_task, [(30.0, 1300000 + i, sub, 2) for i in range(args.noise_min * 2)])
@@ -849,6 +901,9 @@ def main() -> None:
     g.add_argument("--positives", type=int, default=10000)
     g.add_argument("--near", type=int, default=3000)
     g.add_argument("--sentences", type=int, default=4000)
+    g.add_argument("--mix-positives", type=int, default=6000, help="voix mélangées")
+    g.add_argument("--mix-near", type=int, default=3000)
+    g.add_argument("--mix-sentences", type=int, default=1500)
     f = sub.add_parser("features")
     f.add_argument("--feature-dir", default=str(ww.FEATURE_DIR))
     f.add_argument("--pos-aug", type=int, default=3)
