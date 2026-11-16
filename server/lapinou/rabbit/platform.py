@@ -96,6 +96,7 @@ class Rabbit:
         self._playback_id: str | None = None
         self._stale_stops = 0  # STOP attendus pour des lectures déjà remplacées
         self._play_req: str | None = None
+        self._events: asyncio.Queue | None = None  # file des événements (créée par le registre)
 
     @property
     def connected(self) -> bool:
@@ -264,13 +265,13 @@ class Rabbit:
             return
         log.warning("lapin %s : commande refusée (%s)", self.id, code)
         body = self._sent.pop(corr, None)
-        if corr == self._play_req and self._playback_id is not None:
+        if code == "BAD_INTERACTIVEID" and body is not None and self._link is not None:
+            self._registry._spawn(self._reenter_and_retry(body, corr == self._play_req))
+        elif corr == self._play_req and self._playback_id is not None:
             pid, self._playback_id = self._playback_id, None
             self._registry._emit("playback", self, pid, "error")
-        if code == "BAD_INTERACTIVEID" and body is not None and self._link is not None:
-            self._registry._spawn(self._reenter_and_retry(body))
 
-    async def _reenter_and_retry(self, body: str) -> None:
+    async def _reenter_and_retry(self, body: str, is_play: bool = False) -> None:
         """Le contrôleur ne reconnaît plus notre prise de main : la reprendre, renvoyer une fois."""
         link = self._link
         if link is None:
@@ -280,6 +281,8 @@ class Rabbit:
         try:
             await self._start_interactive(link)
             req = await self._command(body)
+            if is_play:
+                self._play_req = req
             self._sent.pop(req, None)  # pas de second renvoi
         except (ConnectionError, OSError):
             log.warning("lapin %s : renvoi impossible", self.id)

@@ -294,3 +294,44 @@ async def test_bad_interactive_id_reenters_and_retries_once(platform):
     await c.until(r"^interactiveMode \{")
     again = await c.until(r"^ears \{")
     assert "left: 7" in again
+
+
+async def test_events_keep_order_per_rabbit_with_slow_handler(platform):
+    seen = []
+
+    async def slow(rabbit, kind):
+        if not seen:
+            await asyncio.sleep(0.2)
+        seen.append(kind)
+
+    platform.on_button = slow
+    c = await platform.connect("lapin-1")
+    await c.send('id: "b1" buttonCallback { type: LONG_START }')
+    await c.send('id: "b2" buttonCallback { type: LONG_STOP }')
+    for _ in range(100):
+        if len(seen) == 2:
+            break
+        await asyncio.sleep(0.05)
+    assert seen == ["long_start", "long_stop"]
+
+
+async def test_bad_interactive_id_on_play_keeps_playback_events(platform):
+    c = await platform.connect("lapin-1")
+    await platform.get("lapin-1").play("http://x/a.mp3", "A")
+    play = await c.until(r"^multimedia \{")
+    pid = re.search(r'^id: "([^"]*)"', play, re.M).group(1)
+    await c.send(f'id: "e1" correlationId: "{pid}" response {{ code: BAD_INTERACTIVEID }}')
+    await c.until(r"^interactiveMode \{")
+    retry = await c.until(r"^multimedia \{")
+    rid = re.search(r'^id: "([^"]*)"', retry, re.M).group(1)
+    await c.send('id: "m1" multimediaCallback { action: PLAY }')
+    await c.send('id: "m2" multimediaCallback { action: STOP }')
+    for _ in range(100):
+        if len(platform.events) >= 2:
+            break
+        await asyncio.sleep(0.05)
+    assert rid != pid
+    assert platform.events == [
+        ("playback", "lapin-1", "A", "playing"),
+        ("playback", "lapin-1", "A", "stopped"),
+    ]

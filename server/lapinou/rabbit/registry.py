@@ -70,13 +70,24 @@ class RabbitRegistry:
         return task
 
     def _emit(self, event: str, *args) -> None:
-        """Appelle on_<event> dans sa propre tâche (un gestionnaire lent ne bloque pas le contrôleur)."""
-        if getattr(self, f"on_{event}") is not None:
-            self._spawn(self._run_handler(event, args))
+        """Met on_<event> en file chez le lapin (args[0]) : ordre conservé par lapin, lecture jamais bloquée."""
+        if getattr(self, f"on_{event}") is None:
+            return
+        rabbit = args[0]
+        if rabbit._events is None:
+            rabbit._events = asyncio.Queue()
+            self._spawn(self._worker(rabbit._events))
+        rabbit._events.put_nowait((event, args))
+
+    async def _worker(self, queue: asyncio.Queue) -> None:
+        while True:
+            event, args = await queue.get()
+            await self._run_handler(event, args)
 
     async def _run_handler(self, event: str, args: tuple) -> None:
         try:
-            result = getattr(self, f"on_{event}")(*args)
+            handler = getattr(self, f"on_{event}")
+            result = handler(*args) if handler is not None else None
             if inspect.isawaitable(result):
                 await result
         except asyncio.CancelledError:
