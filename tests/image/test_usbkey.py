@@ -516,7 +516,7 @@ class UsbKeyTest(unittest.TestCase):
                 return t.extractfile(members[name]).read()
             for name, src, mode in (("karotz/bin/lapinou-ota", "userland/src/usr/lapinou-ota/lapinou-ota.sh", 0o755),
                                     ("share/lapinou/install-lib.sh", "image/usbkey/install-lib.sh", 0o644),
-                                    ("share/lapinou/ota-pubkey.pem", "image/core/usr/share/lapinou/ota-pubkey.pem", 0o644)):
+                                    ("share/lapinou/ota-pubkey.pub", "image/core/usr/share/lapinou/ota-pubkey.pub", 0o644)):
                 self.assertIn(name, members)
                 self.assertEqual(data(name), (ROOT / src).read_bytes(), name)
                 self.assertEqual(members[name].mode & 0o777, mode, name)

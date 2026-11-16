@@ -17,8 +17,9 @@
 #   --backup DIR       the rabbit's backup (sauvegarde/): the checks say whether mtd1 and mtd2 still
 #                      hold what its data/mtd1_kernel.bin and data/mtd2_ramdisk.bin have
 #   --dhcp             LapinLibre takes its address by DHCP; by default it keeps the rabbit's current
-#                      address (IP) with the netmask, gateway and DNS it uses now. A network.conf the
-#                      rabbit already has is kept either way.
+#                      address (IP) with the netmask, gateway and DNS it uses now, once the rabbit has
+#                      seen them answer (else this PC's gateway and DNS, if they answer the rabbit,
+#                      else the check fails). A network.conf the rabbit already has is kept either way.
 #   --dry-run          every check, on the PC and on the rabbit, then stop: the flash is not touched
 #                      (the rabbit only gets the small files in /dev/shm, its RAM, removed at the end)
 #   --no-wait          after the reboot, don't wait for LapinLibre's SSH and web page
@@ -137,7 +138,32 @@ for f in install.conf build_id zImage rootfs.img.gz; do
     send "${KEY}/${f}" "${STAGE}/${f}"
 done
 
-RUN="${BACKUP_MD5} NETWORK=${NETWORK} USR_SIZE=$(size_of "${KEY}/usr.tar.gz") bash ${STAGE}/on-rabbit.sh"
+# This PC's gateway and DNS server (IPv4), which the rabbit falls back on when its own don't answer.
+# LAPINOU_PC_GATEWAY and LAPINOU_PC_DNS, when set (even empty), stand for what is found here.
+is_ipv4() { [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; }
+first_ipv4() { grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | grep -v '^127\.' | head -n 1; }
+pc_gateway() {
+    if command -v ip > /dev/null 2>&1; then
+        ip -4 route show default 2> /dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }'
+    elif command -v powershell.exe > /dev/null 2>&1; then
+        powershell.exe -NoProfile -Command "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Sort-Object RouteMetric | Select-Object -First 1).NextHop" 2> /dev/null | tr -d '\r'
+    fi
+}
+pc_dns() {
+    local d
+    d=$(awk '$1 == "nameserver" { print $2 }' /etc/resolv.conf 2> /dev/null | first_ipv4)
+    [ -n "${d}" ] || d=$(resolvectl dns 2> /dev/null | first_ipv4)
+    if [ -z "${d}" ] && command -v powershell.exe > /dev/null 2>&1; then
+        d=$(powershell.exe -NoProfile -Command "(Get-DnsClientServerAddress -AddressFamily IPv4 | Where-Object { \$_.ServerAddresses } | Select-Object -First 1).ServerAddresses[0]" 2> /dev/null | tr -d '\r')
+    fi
+    echo "${d}"
+}
+PC_GATEWAY=${LAPINOU_PC_GATEWAY-$(pc_gateway)}
+PC_DNS=${LAPINOU_PC_DNS-$(pc_dns)}
+is_ipv4 "${PC_GATEWAY}" || PC_GATEWAY=
+is_ipv4 "${PC_DNS}" || PC_DNS=
+
+RUN="${BACKUP_MD5} NETWORK=${NETWORK} PC_GATEWAY=${PC_GATEWAY} PC_DNS=${PC_DNS} USR_SIZE=$(size_of "${KEY}/usr.tar.gz") bash ${STAGE}/on-rabbit.sh"
 echo "Checking on the rabbit"
 on_rabbit check
 status=$?
@@ -178,10 +204,11 @@ sleep 5
 # 4. LapinLibre back on the network: SSH with the key, and the web page.
 echo "Waiting for LapinLibre (up to 5 minutes)"
 ssh_ok= web_ok=
-NEW_OPTS=(-o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new
+NEW_OPTS=(-o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new
     -o "UserKnownHostsFile=${WORK}/known_hosts_lapinlibre")
 [ -z "${PRIVKEY}" ] || NEW_OPTS+=(-i "${PRIVKEY}" -o IdentitiesOnly=yes)
-for _ in $(seq 60); do
+end=$((SECONDS + 300))
+while [ "${SECONDS}" -lt "${end}" ]; do
     sleep 5
     if [ -z "${ssh_ok}" ] && "${SSH}" "${NEW_OPTS[@]}" "karotz@${RABBIT}" true > /dev/null 2>&1; then
         ssh_ok=yes

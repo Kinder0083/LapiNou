@@ -6,8 +6,13 @@
 # install.conf, build_id and the settings (lapinlibre.txt). The PC streams usr.tar.gz to
 # /usr/.lapinou-migrate before "install".
 #
-#   [NETWORK=static|dhcp] [USR_SIZE=bytes] [BACKUP_MTD1_MD5=.. BACKUP_MTD2_MD5=..] on-rabbit.sh check IP
-#   [NETWORK=static|dhcp] on-rabbit.sh install IP
+#   [NETWORK=static|dhcp] [PC_GATEWAY=a.b.c.d] [PC_DNS=a.b.c.d] [USR_SIZE=bytes]
+#       [BACKUP_MTD1_MD5=.. BACKUP_MTD2_MD5=..] on-rabbit.sh check IP
+#   [NETWORK=static|dhcp] [PC_GATEWAY=a.b.c.d] [PC_DNS=a.b.c.d] on-rabbit.sh install IP
+#
+# A fixed address (NETWORK=static, no network.conf yet) takes the gateway and DNS server the rabbit
+# uses now, once they answer (a ping, a DNS lookup); else the PC's (PC_GATEWAY, PC_DNS: the PC's
+# gateway only when it is on the rabbit's network), when they answer; else the check fails.
 #
 # "check" writes nothing to the flash: it also reads mtd1 and mtd2 whole and compares them with the
 # backup's md5s, lists /usr/etc/conf and the processes "install" would stop. "install" checks
@@ -121,6 +126,58 @@ plan_network() {
     if ! is_ipv4 "${NET_DNS}"; then
         [ -z "${NET_DNS}" ] || LOG "Network: /etc/resolv.conf's nameserver isn't an IPv4 address; the gateway is used"
         NET_DNS=${NET_GW}
+    fi
+    probe_network
+}
+
+# The first of these programs the rabbit has, or nothing.
+first_tool() {
+    local t
+    for t in "$@"; do
+        [ -x "${t}" ] && { echo "${t}"; return 0; }
+    done
+    return 1
+}
+# An IPv4 address as a number.
+ip_num() {
+    local IFS=.
+    set -- $1
+    echo $(( ($1 << 24) + ($2 << 16) + ($3 << 8) + $4 ))
+}
+same_network() { # address, address, netmask
+    local m
+    m=$(ip_num "$3")
+    [ $(( $(ip_num "$1") & m )) -eq $(( $(ip_num "$2") & m )) ]
+}
+
+# Before network.conf gets them: the gateway answers a ping and the DNS server a lookup. When one
+# doesn't, the PC's (on the rabbit's network, for the gateway) takes its place if it answers;
+# else the check fails, saying so.
+probe_network() {
+    local ping lookup
+    ping=$(first_tool /bin/ping /usr/bin/ping /sbin/ping /usr/sbin/ping)
+    lookup=$(first_tool /usr/bin/nslookup /bin/nslookup /sbin/nslookup /usr/sbin/nslookup)
+    if [ -z "${ping}" ]; then
+        LOG "Network: no ping on this rabbit: the gateway ${NET_GW} isn't checked"
+    elif "${ping}" -c 1 -W 3 "${NET_GW}" > /dev/null 2>&1; then
+        LOG "Network: the gateway ${NET_GW} answers"
+    elif is_ipv4 "${PC_GATEWAY:-}" && [ "${PC_GATEWAY}" != "${NET_GW}" ] &&
+            same_network "${PC_GATEWAY}" "${NET_IP}" "${NET_MASK}" && "${ping}" -c 1 -W 3 "${PC_GATEWAY}" > /dev/null 2>&1; then
+        LOG "Network: the gateway ${NET_GW} doesn't answer; the PC's gateway ${PC_GATEWAY} does, and is used"
+        [ "${NET_DNS}" != "${NET_GW}" ] || NET_DNS=${PC_GATEWAY}
+        NET_GW=${PC_GATEWAY}
+    else
+        ERROR "the gateway ${NET_GW} doesn't answer a ping, nor does the PC's gateway${PC_GATEWAY:+ ${PC_GATEWAY}} on the rabbit's network: use --dhcp, or check the rabbit's network"
+    fi
+    if [ -z "${lookup}" ]; then
+        LOG "Network: no nslookup on this rabbit: the DNS server ${NET_DNS} isn't checked"
+    elif "${lookup}" github.com "${NET_DNS}" > /dev/null 2>&1; then
+        LOG "Network: the DNS server ${NET_DNS} answers"
+    elif is_ipv4 "${PC_DNS:-}" && [ "${PC_DNS}" != "${NET_DNS}" ] && "${lookup}" github.com "${PC_DNS}" > /dev/null 2>&1; then
+        LOG "Network: the DNS server ${NET_DNS} doesn't answer; the PC's DNS server ${PC_DNS} does, and is used"
+        NET_DNS=${PC_DNS}
+    else
+        ERROR "the DNS server ${NET_DNS} doesn't answer a lookup of github.com, nor does the PC's${PC_DNS:+ ${PC_DNS}}: use --dhcp, or check the rabbit's network"
     fi
 }
 

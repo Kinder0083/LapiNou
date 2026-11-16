@@ -400,6 +400,7 @@ usr:karotz/bin/karotzVM f 0755 0:0 own
 usr:karotz/bin/lapinou-mic f 0755 0:0 own  # LapiNou: the microphone to the server and to mic.sock
 usr:karotz/bin/lapinou-mqtt f 0755 0:0 own  # LapiNou: the rabbit in Home Assistant (MQTT)
 usr:karotz/bin/lapinou-cloud f 0755 0:0 own  # LapiNou: the mode without a server (speech to text, a language model, text to speech in the cloud)
+usr:karotz/bin/lapinou-ota f 0755 0:0 generated  # LapiNou: signed updates (userland/src/usr/lapinou-ota/lapinou-ota.sh, a shell script)
 usr:karotz/bin/led-daemon f 0755 0:0 own
 usr:karotz/bin/multimedia-daemon f 0755 0:0 own
 usr:karotz/bin/rfid-daemon f 0755 0:0 own
@@ -1386,6 +1387,8 @@ usr:share/lapinlibre/web-tags.sh f 0644 0:0 core  # the web API's URL actions an
 usr:share/lapinou d 0755 0:0
 usr:share/lapinou/persona_fr_court.txt f 0644 0:0 core  # LapiNou: lapinou-cloud's system prompt for the language model
 usr:share/lapinou/conf.sh f 0644 0:0 core  # LapiNou's settings (lapinou.conf, lapinou.secrets) for shell programs: lapinou_get, lapinou_set, lapinou_secret_get, lapinou_secret_set
+usr:share/lapinou/install-lib.sh f 0644 0:0 generated  # LapiNou: the USB key's install helpers (image/usbkey/install-lib.sh), for lapinou-ota
+usr:share/lapinou/ota-pubkey.pub f 0644 0:0 core  # LapiNou: the public key lapinou-ota checks updates with (a placeholder until the owner's real key, R42)
 usr:sbin/mdnsd f 0755 0:0 target  # mDNS: <host name>.local, and SSH advertised
 usr:lib/libmdnsd.so.1 l libmdnsd.so.1.0.0
 usr:lib/libmdnsd.so.1.0.0 f 0755 0:0 target

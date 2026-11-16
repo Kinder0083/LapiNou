@@ -1,6 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
-# The key's install helpers, sourced by autorun and applysettings.sh: the log, errors, the nose,
+# The key's install helpers, sourced by autorun and applysettings.sh (and, from
+# /usr/share/lapinou/install-lib.sh, by lapinou-ota): the log, errors, the nose,
 # the install sounds, erasing a flash partition and emptying /usr for a new install.
 #
 # Sourcing defines functions only. Runs on whichever system the rabbit has when the key's install
@@ -146,8 +147,9 @@ remove_all_but() { # directory, names to keep
 
 # Empty /usr for a new install, keeping the settings (/usr/etc/conf), the apps and messages
 # (/usr/karotz/apps, /usr/karotz/messages) and lost+found; /usr, /usr/etc and /usr/karotz stay.
-clean_usr() {
-    remove_all_but /usr etc karotz lost+found
+# Names given are kept in /usr too (lapinou-ota's downloads, /usr/ota).
+clean_usr() { # [names kept in /usr]
+    remove_all_but /usr etc karotz lost+found "$@"
     [ -d /usr/etc ] && remove_all_but /usr/etc conf
     [ -d /usr/karotz ] && remove_all_but /usr/karotz apps messages uuid.conf
     return 0

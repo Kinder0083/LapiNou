@@ -206,6 +206,14 @@ def core_generated(changes):
            ("usr", "etc/timezone.list"): timezone_list(changes)}
     for path, data in ca_certificates(changes).items():
         out[("usr", path)] = data
+    # LapiNou's updates (Task 11): lapinou-ota, a shell script (nothing to compile, so not the
+    # userland stage's), and the key's install helpers it shares with the key's autorun.
+    for path, src in (("karotz/bin/lapinou-ota", ROOT / "userland/src/usr/lapinou-ota/lapinou-ota.sh"),
+                      ("share/lapinou/install-lib.sh", IMAGE / "usbkey" / "install-lib.sh")):
+        data = src.read_bytes()
+        if b"\r" in data:
+            raise ImageError(f"{src} has CRLF line endings; the rabbit's shell can't run it")
+        out[("usr", path)] = data
     for name, notes in SOUNDS.items():
         out[("usr", f"karotz/sounds/{name}")] = tone_wav(notes)
     for name, notes in EFFECTS.items():

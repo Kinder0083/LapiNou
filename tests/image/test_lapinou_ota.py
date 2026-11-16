@@ -38,7 +38,7 @@ from test_core_boot import arm_busybox  # noqa: E402
 
 OTA = ROOT / "userland/src/usr/lapinou-ota/lapinou-ota.sh"
 SIGN = ROOT / "tools/sign-ota.py"
-PLACEHOLDER = ROOT / "image/core/usr/share/lapinou/ota-pubkey.pem"
+PLACEHOLDER = ROOT / "image/core/usr/share/lapinou/ota-pubkey.pub"
 INSTALL_LIB = ROOT / "image/usbkey/install-lib.sh"
 CONF_SH = ROOT / "image/core/usr/share/lapinou/conf.sh"
 TOP_DIRS = "mnt|karotz|bin|sbin|tmp|usr|etc|dev|proc|sys"
@@ -176,7 +176,7 @@ class OtaRabbit:
 
     def __init__(self, sb: Path, pubkey: Path, cacert: Path, conf="", secrets="", api="127.0.0.1:1"):
         self.sb = sb
-        busybox, root = arm_busybox(), sysroot()
+        busybox, root, qemu = arm_busybox(), sysroot(), shutil.which("qemu-arm")
         log = sb / "actions.log"
         for name in APPLETS:
             stub(sb / "bin" / name, f'exec {busybox} {name} "$@"')
@@ -189,8 +189,8 @@ class OtaRabbit:
         stub(sb / "sbin/reboot", f'echo "reboot $*" >> {log}')
         # The image's own curl and openssl; curl's arguments recorded (no secret may be in them).
         stub(sb / "usr/bin/curl", f'printf "%s\\n" "$*" >> {sb}/curl.log\n'
-                                  f'exec qemu-arm -cpu arm926 -L {root} {root}/usr/bin/curl "$@"')
-        stub(sb / "usr/bin/openssl", f'exec qemu-arm -cpu arm926 -L {root} {root}/usr/bin/openssl "$@"')
+                                  f'exec {qemu} -cpu arm926 -L {root} {root}/usr/bin/curl "$@"')
+        stub(sb / "usr/bin/openssl", f'exec {qemu} -cpu arm926 -L {root} {root}/usr/bin/openssl "$@"')
         stub(sb / "usr/etc/init.d/S40lapinlibre", f'echo "S40lapinlibre $1" >> {log}')
 
         (sb / "dev").mkdir()
@@ -229,7 +229,7 @@ class OtaRabbit:
         shutil.copy(cacert, usr / "etc/ssl/certs/ca-certificates.crt")
         share = usr / "share/lapinou"
         share.mkdir(parents=True)
-        shutil.copy(pubkey, share / "ota-pubkey.pem")
+        shutil.copy(pubkey, share / "ota-pubkey.pub")
         self.put_script(CONF_SH, share / "conf.sh")
         self.put_script(INSTALL_LIB, share / "install-lib.sh")
         self.ota = usr / "karotz/bin/lapinou-ota"
@@ -239,10 +239,11 @@ class OtaRabbit:
         text = src.read_text(encoding="utf-8")
         head, _, rest = text.partition("\n")
         assert PATH_LINE not in rest or src == OTA
-        rest = rest.replace(PATH_LINE, "PATH=" + ":".join(f"{self.sb}/{d}" for d in ("bin", "sbin", "usr/bin", "usr/sbin")))
+        rest = rest.replace(PATH_LINE, "@PATH@")
         if api:
             rest = rest.replace("api.github.com", api)
         rest = REWRITE.sub(lambda m: str(self.sb) + m.group(0), rest)
+        rest = rest.replace("@PATH@", "PATH=" + ":".join(f"{self.sb}/{d}" for d in ("bin", "sbin", "usr/bin", "usr/sbin")))
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_text(head + "\n" + rest, encoding="utf-8", newline="\n")
         dst.chmod(0o755)
@@ -276,12 +277,12 @@ class OtaTest(unittest.TestCase):
         t = cls.tmp
         # The throwaway signing pair (never the real one), and a second one that isn't trusted.
         for name in ("test", "other"):
-            subprocess.run(["openssl", "genpkey", "-algorithm", "ed25519", "-out", str(t / f"{name}.key")], check=True,
+            subprocess.run(["openssl", "genpkey", "-algorithm", "ed25519", "-out", str(t / f"{name}.key.test")], check=True,
                            capture_output=True)
-            pub = subprocess.run(["openssl", "pkey", "-in", str(t / f"{name}.key"), "-pubout"], check=True,
+            pub = subprocess.run(["openssl", "pkey", "-in", str(t / f"{name}.key.test"), "-pubout"], check=True,
                                  capture_output=True).stdout
             # As the real file will be: its licence line before the key, which OpenSSL skips.
-            (t / f"{name}.pem").write_bytes(b"SPDX-License-Identifier: MIT\n" + pub)
+            (t / f"{name}.pub").write_bytes(b"SPDX-License-Identifier: MIT\n" + pub)
         # A test certificate for the fake GitHub hosts (127.0.0.1 and localhost).
         subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
                         "-keyout", str(t / "tls.key"), "-out", str(t / "tls.crt"), "-days", "2", "-subj", "/CN=lapinou-test",
@@ -289,7 +290,7 @@ class OtaTest(unittest.TestCase):
         cls.tls = (str(t / "tls.crt"), str(t / "tls.key"))
         cls.release = t / "release"
         make_release(cls.release)
-        sign(cls.release, t / "test.key")
+        sign(cls.release, t / "test.key.test")
         cls.files = {p.name: p.read_bytes() for p in cls.release.iterdir()}
 
     @classmethod
@@ -311,12 +312,17 @@ class OtaTest(unittest.TestCase):
         self.servers.append(s)
         return s
 
-    def ota_server(self, files=None, prefix="/ota/"):
+    def ota_server(self, files=None, version=NEW):
+        """The LapiNou server's relay (docs/lapinou/ota.md): the manifest and its signature at
+        /ota/, every file (them too) at /ota/<version>/<name>."""
         files = dict(self.files if files is None else files)
-        return self.server({prefix + name: data for name, data in files.items()})
+        routes = {f"/ota/{version}/{name}": data for name, data in files.items()}
+        for name in ("manifest.json", "manifest.json.sig"):
+            routes[f"/ota/{name}"] = files[name]
+        return self.server(routes)
 
     def rabbit(self, name, conf="", pubkey=None, **kw):
-        return OtaRabbit(self.tmp / name, pubkey or self.tmp / "test.pem", Path(self.tls[0]), conf=conf, **kw)
+        return OtaRabbit(self.tmp / name, pubkey or self.tmp / "test.pub", Path(self.tls[0]), conf=conf, **kw)
 
     def server_rabbit(self, name, srv, path="/ota/", **kw):
         return self.rabbit(name, conf=f"[ota]\nurl=http://127.0.0.1:{srv.port}{path}\n", **kw)
@@ -384,7 +390,7 @@ class OtaTest(unittest.TestCase):
         p = r.run("install")
         self.assert_installed(r, p)
         # The USB key's archive, listed by the manifest, isn't the rabbit's to download.
-        self.assertNotIn(f"/ota/lapinou-key-{NEW}.zip", [path for path, _ in srv.log])
+        self.assertNotIn(f"/ota/{NEW}/lapinou-key-{NEW}.zip", [path for path, _ in srv.log])
 
     def test_server_from_the_settings(self):
         # No [ota] url: the LapiNou server's relay, http://<[server] host>:8080/ota/.
@@ -393,13 +399,15 @@ class OtaTest(unittest.TestCase):
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("http://127.0.0.1:8080/ota/manifest.json", (r.sb / "curl.log").read_text())
 
-    def test_version_directory_after_a_redirect(self):
-        # The server sends the rabbit to the version's own directory; the files are read from there.
-        routes = {f"/ota/{NEW}/{n}": d for n, d in self.files.items()}
-        srv = self.server(routes)
-        srv.routes["/ota/manifest.json"] = ("redirect", f"http://127.0.0.1:{srv.port}/ota/{NEW}/manifest.json")
-        r = self.server_rabbit("redirect", srv)
+    def test_files_come_from_the_manifests_version(self):
+        # The files are read from /ota/<the manifest's version>/, never the short form /ota/<name>
+        # (which is the version in service, possibly newer than the manifest the rabbit read).
+        srv = self.ota_server()
+        r = self.server_rabbit("by-version", srv)
         self.assert_installed(r, r.run("install"))
+        got = sorted(path for path, _ in srv.log)
+        self.assertEqual(got, sorted(["/ota/manifest.json", "/ota/manifest.json.sig", f"/ota/{NEW}/zImage",
+                                      f"/ota/{NEW}/rootfs.img.gz", f"/ota/{NEW}/usr.tar.gz"]))
 
     def test_same_version_installs_nothing(self):
         srv = self.ota_server()
@@ -418,7 +426,7 @@ class OtaTest(unittest.TestCase):
                 if sig is None:
                     other = self.tmp / f"release-{name}"
                     shutil.copytree(self.release, other)
-                    sign(other, self.tmp / "other.key")
+                    sign(other, self.tmp / "other.key.test")
                     files["manifest.json.sig"] = (other / "manifest.json.sig").read_bytes()
                 elif sig == "flip":
                     s = bytearray(files["manifest.json.sig"])
@@ -433,7 +441,7 @@ class OtaTest(unittest.TestCase):
                 self.assertIn("signature", p.stderr)
                 self.assert_nothing_written(r)
                 # Nothing is downloaded once the signature fails.
-                self.assertNotIn("/ota/usr.tar.gz", [path for path, _ in srv.log])
+                self.assertNotIn(f"/ota/{NEW}/usr.tar.gz", [path for path, _ in srv.log])
 
     def test_manifest_changed_after_signing(self):
         files = dict(self.files)
@@ -560,6 +568,17 @@ class OtaTest(unittest.TestCase):
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("https", p.stderr)
         self.assertEqual(storage.log, [])
+        self.assert_nothing_written(r)
+
+    def test_github_tag_must_be_the_manifests_version(self):
+        api, _ = self.github()
+        rel = json.loads(api.routes["/repos/owner/repo/releases/latest"])
+        rel["tag_name"] = "v3.0.0"
+        api.routes["/repos/owner/repo/releases/latest"] = json.dumps(rel).encode()
+        r = self.github_rabbit("github-tag", api)
+        p = r.run("install")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("v3.0.0", p.stderr)
         self.assert_nothing_written(r)
 
     def test_github_missing_asset(self):
