@@ -15,6 +15,7 @@ class FakeLms:
             {"playerid": "aa:aa:aa:aa:aa:01", "name": "Cuisine", "connected": 1},
             {"playerid": "aa:aa:aa:aa:aa:02", "name": "Salon", "connected": 1},
             {"playerid": "aa:aa:aa:aa:aa:03", "name": "Chambre des enfants", "connected": 1},
+            {"playerid": "aa:aa:aa:aa:aa:04", "name": "Chambre parents", "connected": 1},
         ]
         self.favorites = [
             {"id": "f1.0", "name": "France Inter", "isaudio": 1},
@@ -23,6 +24,7 @@ class FakeLms:
         ]
         self.commands: list[tuple[str, list[Any]]] = []
         self.down = False
+        self.rpc_error = False  # répond {"error": …} au lieu de {"result": …}
         self.status = {
             "mode": "play",
             "remote_title": "France Inter",
@@ -37,6 +39,9 @@ class FakeLms:
         assert body["method"] == "slim.request"
         player, cmd = body["params"]
         self.commands.append((player, cmd))
+        if self.rpc_error:
+            return httpx2.Response(200, json={"id": body["id"],
+                                              "error": {"code": -32601, "message": "boom"}})
         result: dict[str, Any] = {}
         if cmd[:1] == ["players"]:
             result = {"count": len(self.players), "players_loop": self.players}

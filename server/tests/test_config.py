@@ -20,7 +20,7 @@ def test_defaults(tmp_path):
     assert s.logs.retention_days == 7
     assert set(s.safety.sensitive_domains) == {"lock", "alarm_control_panel"}
     assert "cover" not in s.safety.sensitive_domains
-    assert s.safety.sensitive_cover_classes == ["garage", "gate"]
+    assert s.safety.sensitive_cover_classes == ["garage", "gate", "door"]
     assert s.safety.climate_range == [16.0, 24.0]
     assert s.rabbits == {}
 
