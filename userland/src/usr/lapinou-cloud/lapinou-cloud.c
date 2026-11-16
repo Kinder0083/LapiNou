@@ -10,9 +10,10 @@
  * the requests and reads the answers; docs/lapinou/cloud.md describes the settings.
  *
  * Settings (lapinou_conf.h), read again at each start_listening() and say(): [cloud] enabled (1,
- * else nothing is sent), stt_url, stt_model, llm_kind (anthropic or openai), llm_url, llm_model,
- * tts_url, tts_model, tts_voice; the keys are the secrets cloud_stt_key, cloud_llm_key and
- * cloud_tts_key. Keys, transcripts and answers are never logged.
+ * else nothing is sent), stt_url, stt_model, llm_kind (anthropic or openai), llm_url, llm_model
+ * (claude-haiku-5-5), llm_effort (low), tts_url, tts_model, tts_voice; the keys are the secrets
+ * cloud_stt_key, cloud_llm_key and cloud_tts_key, wiped from memory once idle again. Keys,
+ * transcripts and answers are never logged.
  *
  * The requests are libcurl's multi interface in the GLib main loop (its sockets and timer are GLib
  * sources), one at a time, so D-Bus is never kept waiting. HTTPS certificates are checked against
@@ -120,7 +121,7 @@ static gboolean lapinou_cloud_object_say(LapinouCloudObject *self, const char *t
 typedef struct {
     char *stt_url, *stt_model, *stt_key;
     LlmKind llm_kind;
-    char *llm_url, *llm_model, *llm_key;
+    char *llm_url, *llm_model, *llm_effort, *llm_key;
     char *tts_url, *tts_model, *tts_voice, *tts_key;
 } Settings;
 
@@ -164,11 +165,19 @@ static struct {
     /* the conversation */
     History history;
     char *question;      /* the transcript waiting for its answer */
-    guint led_timer, speak_timer;
+    gboolean asking;     /* from start_listening() until the answer plays (or fails) */
+    guint led_timer, speak_timer, history_timer;
 } app;
 
+static void settings_free(Settings *s);
+
+/* Idle again: the settings (and the keys they hold) are wiped until the next question. */
 static void set_state(State state)
 {
+    if (state == ST_IDLE) {
+        settings_free(app.settings);
+        app.settings = NULL;
+    }
     if (app.state == state)
         return;
     app.state = state;
@@ -227,13 +236,20 @@ static gboolean speak_guard(gpointer data)
     return G_SOURCE_REMOVE;
 }
 
-/* 3 s after an error: the LED of an available rabbit, as the controller lights it; idle again. */
+/* The LED of an available rabbit, as the controller lights it. */
+static void restore_led(void)
+{
+    CALL(app.led, "Led.pulse", "pulse", G_TYPE_STRING, "", G_TYPE_STRING, LED_GREEN, G_TYPE_STRING, LED_OFF,
+         G_TYPE_INT, PULSE_PERIOD, G_TYPE_INT, LED_FOREVER);
+}
+
+/* 3 s after an error (or the refusal's gentle sentence): the LED again; idle again if nothing else
+ * has happened. Something new beginning within the 3 s restores the LED there (begin()). */
 static gboolean error_over(gpointer data)
 {
     (void)data;
     app.led_timer = 0;
-    CALL(app.led, "Led.pulse", "pulse", G_TYPE_STRING, "", G_TYPE_STRING, LED_GREEN, G_TYPE_STRING, LED_OFF,
-         G_TYPE_INT, PULSE_PERIOD, G_TYPE_INT, LED_FOREVER);
+    restore_led();
     if (app.state == ST_ERROR)
         set_state(ST_IDLE);
     return G_SOURCE_REMOVE;
@@ -264,6 +280,7 @@ static void settings_free(Settings *s)
     g_free(s->stt_key);
     g_free(s->llm_url);
     g_free(s->llm_model);
+    g_free(s->llm_effort);
     g_free(s->llm_key);
     g_free(s->tts_url);
     g_free(s->tts_model);
@@ -305,7 +322,13 @@ static Settings *settings_load(gboolean listening)
     s->tts_url = endpoint(tts, "/v1/audio/speech");
     s->llm_url = endpoint(llm, s->llm_kind == LLM_OPENAI ? "/v1/chat/completions" : "/v1/messages");
     s->stt_model = lapinou_conf_get("cloud", "stt_model", "whisper-1");
-    s->llm_model = lapinou_conf_get("cloud", "llm_model", s->llm_kind == LLM_OPENAI ? "gpt-4o-mini" : "claude-opus-5-5");
+    s->llm_model = lapinou_conf_get("cloud", "llm_model", s->llm_kind == LLM_OPENAI ? "gpt-4o-mini" : "claude-haiku-5-5");
+    /* Anthropic's output_config.effort; "none" sends none (an empty value is the default). */
+    s->llm_effort = lapinou_conf_get("cloud", "llm_effort", "low");
+    if (strcmp(s->llm_effort, "none") == 0) {
+        g_free(s->llm_effort);
+        s->llm_effort = NULL;
+    }
     s->tts_model = lapinou_conf_get("cloud", "tts_model", "tts-1");
     s->tts_voice = lapinou_conf_get("cloud", "tts_voice", "alloy");
     s->stt_key = lapinou_secret_get("cloud_stt_key");
@@ -379,11 +402,16 @@ static void request_free(Request *r)
 
 static void request_cancel(void)
 {
+    gboolean speech;
+
     if (app.req == NULL)
         return;
+    speech = app.req->file != NULL;
     curl_multi_remove_handle(app.multi, app.req->easy);
     request_free(app.req);
     app.req = NULL;
+    if (speech)
+        unlink(TTS_PART); /* the MP3 that was coming */
 }
 
 static size_t on_body(char *data, size_t size, size_t n, void *userp)
@@ -596,6 +624,7 @@ static void cancel_all(void)
     request_cancel();
     g_free(app.question);
     app.question = NULL;
+    app.asking = FALSE;
     if (app.speak_timer != 0)
         g_source_remove(app.speak_timer);
     app.speak_timer = 0;
@@ -613,6 +642,8 @@ static void fail(const char *format, ...)
     g_log(NULL, G_LOG_LEVEL_WARNING, "%s", why);
     g_free(why);
     cancel_all();
+    settings_free(app.settings);
+    app.settings = NULL;
     set_state(ST_ERROR);
     play(ERROR_SOUND);
     error_led();
@@ -632,6 +663,7 @@ static void tts_done(Request *r, const char *failure)
         return;
     }
     play(TTS_FILE);
+    app.asking = FALSE;
     set_state(ST_SPEAKING);
     if (app.speak_timer != 0)
         g_source_remove(app.speak_timer);
@@ -670,6 +702,15 @@ static void speak(const char *text)
 
 /* --- the language model ------------------------------------------------------------------ */
 
+/* 5 minutes after the last answer: the conversation is forgotten. */
+static gboolean history_forget(gpointer data)
+{
+    (void)data;
+    app.history_timer = 0;
+    history_clear(&app.history);
+    return G_SOURCE_REMOVE;
+}
+
 static void llm_done(Request *r, const char *failure)
 {
     char *answer = NULL;
@@ -691,11 +732,18 @@ static void llm_done(Request *r, const char *failure)
         speak(GENTLE_REFUSAL);
         return;
     }
+    if (kind == ANSWER_CUT) {
+        fail("%s failed: it stopped at max_tokens with no text", r->what);
+        return;
+    }
     if (kind != ANSWER_OK) {
         fail("%s failed: not an answer", r->what);
         return;
     }
     history_add(&app.history, app.question, answer, time(NULL));
+    if (app.history_timer != 0)
+        g_source_remove(app.history_timer);
+    app.history_timer = g_timeout_add_seconds(HISTORY_S, history_forget, NULL);
     g_free(app.question);
     app.question = NULL;
     spoken = speech_text(answer);
@@ -713,7 +761,7 @@ static void ask(void)
     const char *why = NULL;
 
     history_expire(&app.history, time(NULL));
-    r->upload = llm_request(s->llm_kind, s->llm_model, system, &app.history, app.question);
+    r->upload = llm_request(s->llm_kind, s->llm_model, s->llm_effort, system, &app.history, app.question);
     g_free(system);
     curl_easy_setopt(r->easy, CURLOPT_POSTFIELDS, r->upload->str);
     curl_easy_setopt(r->easy, CURLOPT_POSTFIELDSIZE, (long)r->upload->len);
@@ -753,6 +801,7 @@ static void stt_done(Request *r, const char *failure)
         g_log(NULL, G_LOG_LEVEL_MESSAGE, "nothing heard");
         g_free(text);
         play(NOT_HEARD);
+        app.asking = FALSE;
         set_state(ST_IDLE);
         return;
     }
@@ -830,6 +879,7 @@ static void end_listening(void)
     if (app.audio->len < LISTEN_MIN) {
         g_log(NULL, G_LOG_LEVEL_MESSAGE, "a recording of %u ms: too short, nothing sent", ms);
         drop_audio();
+        app.asking = FALSE;
         set_state(ST_IDLE);
         return;
     }
@@ -885,6 +935,12 @@ static gboolean listen_guard(gpointer data)
 /* Ready for something new: anything in progress stopped (the playback too), the settings read. */
 static gboolean begin(gboolean listening)
 {
+    if (app.led_timer != 0) {
+        /* an error's orange LED, cut short */
+        g_source_remove(app.led_timer);
+        app.led_timer = 0;
+        restore_led();
+    }
     if (app.state == ST_SPEAKING)
         stop_playing();
     cancel_all();
@@ -913,6 +969,7 @@ static gboolean lapinou_cloud_object_start_listening(LapinouCloudObject *self, G
     g_byte_array_set_size(app.audio, 0);
     app.mic_source = g_unix_fd_add(fd, G_IO_IN | G_IO_HUP | G_IO_ERR, on_mic, NULL);
     app.listen_timer = g_timeout_add(LISTEN_GUARD_MS, listen_guard, NULL);
+    app.asking = TRUE;
     set_state(ST_LISTENING);
     return TRUE;
 }
@@ -932,7 +989,7 @@ static gboolean lapinou_cloud_object_say(LapinouCloudObject *self, const char *t
 
     (void)self;
     (void)error;
-    if (app.state == ST_LISTENING || app.state == ST_THINKING) {
+    if (app.asking) {
         g_log(NULL, G_LOG_LEVEL_MESSAGE, "say refused: a question is in progress");
         return TRUE;
     }
@@ -941,10 +998,14 @@ static gboolean lapinou_cloud_object_say(LapinouCloudObject *self, const char *t
         g_free(spoken);
         return TRUE;
     }
-    if (!begin(FALSE))
+    if (!begin(FALSE)) {
         fail("say refused: the cloud is not configured");
-    else
+    } else {
+        /* Not "speaking" until the new MP3 plays: a late multi_playfinished of a playback stopped
+         * here can't make it idle meanwhile. */
+        set_state(ST_THINKING);
         speak(spoken);
+    }
     g_free(spoken);
     return TRUE;
 }

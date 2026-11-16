@@ -31,6 +31,13 @@ controller_platform), so the scenario reads it back.
   8. llm_kind=openai (the settings are read again at each question; llm_url ending in /v1): OpenAI's
      chat completions, the persona as the first message, the history after it.
   9. A transcript over 64 kB, then a language model answer that isn't JSON: the error each time.
+ 10. No llm_model: claude-haiku-5-5 at output_config.effort "low" (the default [cloud] llm_effort),
+     without the server-side fallback (no "fallbacks", no anthropic-beta); then stop_reason
+     "max_tokens" with no text: the error.
+ 11. start_listening() while the language model is answering (its answer 3 s late): that question is
+     dropped (no text to speech for it, even once its answer comes), the new one is answered.
+ 12. say() while listening: refused, nothing sent; the question goes on.
+ 13. Text to speech answering 500 (a say()): the error.
 Then the daemon's log: its failures, and that it never logged a key, a transcript or an answer.
 """
 
@@ -63,6 +70,7 @@ PERSONA = ROOT / "image" / "core" / "usr" / "share" / "lapinou" / "persona_fr_co
 # Test values, not keys of any service.
 KEYS = {"cloud_stt_key": "test-stt-key-0001", "cloud_llm_key": "test-llm-key-0002", "cloud_tts_key": "test-tts-key-0003"}
 SAID = "Il est l'heure du goûter !"
+SAID_LATE = "Ceci ne doit pas être dit."
 RATE = 16000
 
 EXPECTED_WARNINGS = [
@@ -70,6 +78,8 @@ EXPECTED_WARNINGS = [
     r"^the language model refused to answer$",
     r"^speech to text failed: the answer is too long$",
     r"^the language model failed: not an answer$",
+    r"^the language model failed: it stopped at max_tokens with no text$",
+    r"^text to speech failed: HTTP 500$",
 ]
 
 FAKE = None  # tests/fakes/fake_cloud.py as a module (its answers and MP3)
@@ -255,7 +265,8 @@ def describe(e, ctrl):
         lines.append(f"    x-api-key is the LLM key: {e['x_api_key'] == KEYS['cloud_llm_key']}, "
                      f"Authorization: {e['authorization']}, anthropic-version: {e['anthropic_version']}, "
                      f"anthropic-beta: {e['anthropic_beta']}")
-        lines.append(f"    keys: {e['keys']}; model {e['model']}, max_tokens {e['max_tokens']}, fallbacks {e['fallbacks']}")
+        lines.append(f"    keys: {e['keys']}; model {e['model']}, max_tokens {e['max_tokens']}, fallbacks {e['fallbacks']}, "
+                     f"output_config {e.get('output_config')}")
         lines.append(f"    system is persona_fr_court.txt: {persona is not None and e['system'] == persona}")
         for m in e["messages"] or []:
             lines.append(f"    message: {json.dumps(m, ensure_ascii=False)}")
@@ -419,13 +430,57 @@ def drive(d, bus):
             step(title, lambda: any("Led.pulse(" in c for c in services.pending()), timeout=20)
             cloud.clear(name)
             record.append(f"idle again: {wait_until(idle_now, 10)}")
+
+        # 10. The default model: claude-haiku-5-5 at effort low, no server-side fallback
+        conf.write_text(conf.read_text().replace("llm_kind=openai", "llm_kind=anthropic")
+                        .replace(f"llm_url=http://127.0.0.1:{PORT}/v1", f"llm_url=http://127.0.0.1:{PORT}")
+                        .replace("llm_model=gpt-test\n", ""))
+        ask()
+        step("10. no llm_model: claude-haiku-5-5, effort low, no fallback", played())
+        record.append(f"idle once played: {finish_playing()}")
+        cloud.set("llm-cut")
+        ask()
+        step("max_tokens reached with no text: the error", lambda: any("Led.pulse(" in c for c in services.pending()),
+             timeout=20)
+        cloud.clear("llm-cut")
+        record.append(f"idle again: {wait_until(idle_now, 10)}")
+
+        # 11. A new question while the language model is answering: the first one dropped
+        cloud.set("llm-delay", "3")
+        call("start_listening")
+        time.sleep(1.3)
+        call("stop_listening")
+        wait_until(lambda: any(e["kind"] == "llm" for e in cloud.pending()), 20)
+        cloud.clear("llm-delay")
+        ask()
+        step("11. start_listening() while the language model answers: only the new question is answered", played())
+        time.sleep(3.5)  # the first answer comes, to a request that is no longer there
+        step("the first answer, late: nothing more")
+        record.append(f"idle once played: {finish_playing()}")
+
+        # 12. say() while listening: nothing sent
+        call("start_listening")
+        record.append(f"say while listening: {call('say', 'string:' + SAID_LATE)}")
+        time.sleep(1.3)
+        call("stop_listening")
+        step("12. say() while listening: refused, the question goes on", played())
+        record.append(f"idle once played: {finish_playing()}")
+
+        # 13. Text to speech answers 500
+        cloud.set("tts-status", "500")
+        record.append(f"say: {call('say', 'string:' + SAID)}")
+        step("13. text to speech answers 500: the error", lambda: any("Led.pulse(" in c for c in services.pending()),
+             timeout=20)
+        cloud.clear("tts-status")
+        record.append(f"state error, then idle: {wait_until(idle_now, 10)}")
+        record.append(f"still running: {d.alive()}")
         record.append(f"microphone connections: {mic.connections}")
         record.append(f"still running: {d.alive()}")
 
         record.append("== the daemon's log: failures")
         log = Path(d.syslog).read_text(errors="replace") if Path(d.syslog).exists() else ""
-        record.extend("  " + l for l in log.splitlines() if re.search(r"failed|refused|cut at|not configured", l))
-        secret = list(KEYS.values()) + [FAKE.TRANSCRIPT, SAID] + FAKE.ANSWERS
+        record.extend("  " + l for l in log.splitlines() if re.search(r"failed|refused|cut at|not configured|max_tokens", l))
+        secret = list(KEYS.values()) + [FAKE.TRANSCRIPT, SAID, SAID_LATE] + FAKE.ANSWERS
         record.append(f"the log has a key, a transcript, an answer or said text: {any(s in log for s in secret)}")
     finally:
         services.stop()

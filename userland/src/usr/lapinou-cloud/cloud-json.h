@@ -20,7 +20,7 @@ typedef struct CjNode {
 } CjNode;
 
 /* The tree of `text` (`len` bytes), or NULL if it isn't one JSON value (invalid UTF-8, nested
- * deeper than 32, trailing text). Free with cj_free(). */
+ * deeper than 32, more than 20000 values, trailing text). Free with cj_free(). */
 CjNode *cj_parse(const char *text, gsize len);
 void cj_free(CjNode *node);
 

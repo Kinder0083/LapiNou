@@ -13,7 +13,9 @@ Listens on 127.0.0.1:PORT (HTTP, in the daemon's network namespace) and answers:
                                  requests to either language model)
   POST /v1/audio/speech          text to speech, OpenAI's form (JSON): MP3 bytes (MP3)
 With CTRL/<name>-status (stt, llm, chat or tts) holding an HTTP status, that endpoint answers it instead;
-with CTRL/stt-huge, a transcript of 200 kB; with CTRL/llm-garbage, JSON cut short (either language model).
+with CTRL/stt-huge, a transcript of 200 kB; with CTRL/llm-garbage, JSON cut short (either language model);
+with CTRL/llm-cut, Anthropic's stop_reason "max_tokens" with no text; with CTRL/llm-delay holding a number
+of seconds, Anthropic's answer that much later.
 Each request is logged to CTRL/log as one JSON object (what the scenario records: the headers that
 matter, the fields, the WAV's format; the WAV itself is kept as CTRL/stt-<n>.wav). CTRL/ready is
 written once it listens.
@@ -26,6 +28,7 @@ import os
 import struct
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 TRANSCRIPT = "Pourquoi le ciel est bleu ?"
@@ -95,6 +98,8 @@ class Handler(BaseHTTPRequestHandler):
                  "authorization": self.headers.get("Authorization"), "user_agent": self.headers.get("User-Agent")}
         try:
             getattr(self, kind)(entry, body, n)
+        except OSError:  # the client has gone (a cancelled request)
+            pass
         except (ValueError, KeyError, TypeError) as e:
             entry["error"] = f"{type(e).__name__}: {e}"
             note(entry)
@@ -140,12 +145,20 @@ class Handler(BaseHTTPRequestHandler):
         entry.update({"x_api_key": self.headers.get("x-api-key"), "anthropic_version": self.headers.get("anthropic-version"),
                       "anthropic_beta": self.headers.get("anthropic-beta"), "keys": sorted(req), "model": req.get("model"),
                       "max_tokens": req.get("max_tokens"), "fallbacks": req.get("fallbacks"),
+                      "output_config": req.get("output_config"),
                       "system": req.get("system"), "messages": req.get("messages")})
         if self.failing(entry, "llm"):
             return
         note(entry)
+        delay = control("llm-delay")
+        if delay:
+            time.sleep(float(delay))
         if control("llm-garbage") is not None:
             return self.reply(200, b'{"content": [{"type": "text", "text": "pas fini', "application/json")
+        if control("llm-cut") is not None:
+            return self.reply(200, {"id": f"msg_{n}", "type": "message", "role": "assistant", "model": req.get("model"),
+                                    "content": [{"type": "thinking", "thinking": "", "signature": "c2ln"}],
+                                    "stop_reason": "max_tokens"})
         if control("llm-refusal") is not None:
             return self.reply(200, {"id": f"msg_{n}", "type": "message", "role": "assistant", "model": req.get("model"),
                                     "content": [], "stop_reason": "refusal",

@@ -19,6 +19,7 @@ typedef enum { LLM_ANTHROPIC, LLM_OPENAI } LlmKind;
 typedef enum {
     ANSWER_OK,      /* *text is the answer (not empty) */
     ANSWER_REFUSED, /* the model declined (Anthropic's stop_reason "refusal", OpenAI's refusal) */
+    ANSWER_CUT,     /* no text: the model stopped at max_tokens (Anthropic) or length (OpenAI) */
     ANSWER_BAD,     /* not an answer: not JSON, not the expected shape, no text */
 } AnswerKind;
 
@@ -63,11 +64,13 @@ void history_clear(History *h);
  * ANTHROPIC_FALLBACK_BETA and "fallbacks": "default"). */
 #define ANTHROPIC_VERSION "2023-06-01"
 #define ANTHROPIC_FALLBACK_BETA "server-side-fallback-2026-07-01"
-#define LLM_MAX_TOKENS 1024
+#define LLM_MAX_TOKENS 2048
 gboolean anthropic_has_fallback(const char *model);
 
-/* The language model's request body: the persona `system`, the history, then `question`. */
-GString *llm_request(LlmKind kind, const char *model, const char *system, const History *h, const char *question);
+/* The language model's request body: the persona `system`, the history, then `question`. For
+ * Anthropic, `effort` (when not NULL or empty) goes as "output_config": {"effort": ...}. */
+GString *llm_request(LlmKind kind, const char *model, const char *effort, const char *system, const History *h,
+                     const char *question);
 /* The text to speech request body. */
 GString *tts_request(const char *model, const char *voice, const char *input);
 

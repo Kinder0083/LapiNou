@@ -19,22 +19,28 @@ reconnaissance de la parole, un modèle de langage et la synthèse vocale. C'est
 4. La transcription part vers le modèle de langage. Le prompt système est
    `/usr/share/lapinou/persona_fr_court.txt`, sans ses lignes de commentaire du début. La
    conversation est gardée en mémoire et oubliée 5 minutes après la dernière réponse (12 tours et
-   12 000 octets de texte au plus).
+   12 000 octets de texte au plus). Les réglages lus pour la question (clés comprises) sont effacés
+   de la mémoire dès que le lapin est de nouveau au repos.
    - `llm_kind=anthropic` : `POST <llm_url>/v1/messages`, en-têtes `x-api-key` et
-     `anthropic-version: 2023-06-01`, corps `{model, max_tokens: 1024, system, messages}`. Pas de
-     `temperature`, de `top_p` ni de `thinking`. Pour `claude-opus-5-5` (et les autres modèles qui
-     l'acceptent), le repli côté serveur : en-tête `anthropic-beta: server-side-fallback-2026-07-01`
-     et `"fallbacks": "default"`. Seuls les blocs `text` de la réponse sont dits.
+     `anthropic-version: 2023-06-01`, corps `{model, max_tokens: 2048, output_config: {effort},
+     system, messages}` (`effort` : `[cloud] llm_effort`, `low` par défaut, rapide pour une
+     réponse parlée ; `none` pour ne pas l'envoyer). Pas de `temperature`, de `top_p` ni de
+     `thinking`. Le modèle par défaut est `claude-haiku-5-5`, sans repli côté serveur. Pour
+     `claude-opus-5-5` (et les autres modèles qui l'acceptent : `claude-opus-5`,
+     `claude-sonnet-5-5`, `claude-fable-5-1`, `claude-fable-5-2`), le repli côté serveur : en-tête
+     `anthropic-beta: server-side-fallback-2026-07-01` et `"fallbacks": "default"`. Seuls les blocs
+     `text` de la réponse sont dits.
    - `llm_kind=openai` : `POST <llm_url>/v1/chat/completions`, `Authorization: Bearer`, le
-     persona en premier message `system`.
+     persona en premier message `system` (ni `output_config` ni effort).
 5. La réponse (sans les marques Markdown `* # \` _`, coupée à 1 500 octets en fin de phrase) part
    vers la synthèse vocale, au format OpenAI `/v1/audio/speech` (`{model, voice, input,
    response_format: "mp3"}`). Le MP3 (4 Mo au plus) est écrit dans `/tmp/lapinou-tts.mp3` et joué par
    `Multimedia.play`.
 
 `say(s text)` dit un texte par la synthèse vocale seule (le `cmd/say` de `lapinou-mqtt` dans ce
-mode), refusé pendant une question (écoute ou réflexion). Un nouvel appui long pendant que le lapin
-parle ou réfléchit arrête ce qui est en cours.
+mode), refusé pendant une question (de l'écoute jusqu'à ce que la réponse soit jouée). Un nouvel
+appui long pendant que le lapin parle ou réfléchit arrête ce qui est en cours : la question en
+cours est abandonnée (aucune réponse n'en sera dite) et le MP3 en cours de téléchargement effacé.
 
 ## Réglages
 
@@ -47,7 +53,8 @@ Section `[cloud]` de `lapinou.conf`, relue à chaque question :
 | `stt_model` | `whisper-1` | |
 | `llm_kind` | `anthropic` | `anthropic` ou `openai` |
 | `llm_url` | `https://api.anthropic.com` (`https://api.openai.com` pour `openai`) | |
-| `llm_model` | `claude-opus-5-5` (`gpt-4o-mini` pour `openai`) | |
+| `llm_model` | `claude-haiku-5-5` (`gpt-4o-mini` pour `openai`) | |
+| `llm_effort` | `low` | `output_config.effort` d'Anthropic ; `none` : rien n'est envoyé |
 | `tts_url` | `https://api.openai.com/v1/audio/speech` | |
 | `tts_model` | `tts-1` | |
 | `tts_voice` | `alloy` | |
@@ -68,7 +75,8 @@ disponible (vert pulsé lent), et le signal `state("error")` puis `state("idle")
 Un refus du modèle (`stop_reason: "refusal"` chez Anthropic, `refusal` ou `finish_reason:
 "content_filter"` chez OpenAI) : rien de la réponse n'est dit ; la LED orange et une phrase gentille
 à la place du son d'erreur. Rien n'est entendu (transcription vide) : le son « je n'ai pas
-compris ».
+compris ». Le modèle arrêté par `max_tokens` sans aucun texte : une erreur, notée à part dans le
+journal.
 
 HTTPS : les certificats sont vérifiés avec les certificats d'autorité de `/etc/ssl/certs` (un
 fichier par certificat, comme karotzVM ; `$SSL_CERT_DIR` remplace le dossier). Tant que l'horloge

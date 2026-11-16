@@ -157,7 +157,8 @@ static void append_message(GString *out, const char *role, const char *text)
     g_string_append_c(out, '}');
 }
 
-GString *llm_request(LlmKind kind, const char *model, const char *system, const History *h, const char *question)
+GString *llm_request(LlmKind kind, const char *model, const char *effort, const char *system, const History *h,
+                     const char *question)
 {
     GString *out = g_string_new("{\"model\":");
     guint i;
@@ -168,6 +169,11 @@ GString *llm_request(LlmKind kind, const char *model, const char *system, const 
         /* No temperature, top_p or thinking: current models refuse them. */
         if (anthropic_has_fallback(model))
             g_string_append(out, ",\"fallbacks\":\"default\"");
+        if (effort != NULL && *effort != '\0') {
+            g_string_append(out, ",\"output_config\":{\"effort\":");
+            cj_append_string(out, effort);
+            g_string_append_c(out, '}');
+        }
         g_string_append(out, ",\"system\":");
         cj_append_string(out, system);
         g_string_append(out, ",\"messages\":[");
@@ -257,10 +263,16 @@ AnswerKind llm_answer(LlmKind kind, const char *body, gsize len, char **text)
             result = ANSWER_OK;
         }
     }
-    cj_free(root);
     g_strstrip(s->str);
-    if (result == ANSWER_OK && s->str[0] == '\0')
-        result = ANSWER_BAD;
+    if (result == ANSWER_OK && s->str[0] == '\0') {
+        /* No text: cut by the token limit, or not an answer. */
+        const char *stop = kind == LLM_ANTHROPIC
+                               ? cj_string(cj_member(root, "stop_reason"))
+                               : cj_string(cj_member(cj_index(cj_member(root, "choices"), 0), "finish_reason"));
+        const char *cut = kind == LLM_ANTHROPIC ? "max_tokens" : "length";
+        result = stop != NULL && strcmp(stop, cut) == 0 ? ANSWER_CUT : ANSWER_BAD;
+    }
+    cj_free(root);
     if (result == ANSWER_OK)
         *text = g_strdup(s->str);
     g_string_free(s, TRUE);

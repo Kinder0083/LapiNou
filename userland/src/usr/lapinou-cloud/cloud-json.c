@@ -6,9 +6,11 @@
 #include "cloud-json.h"
 
 #define MAX_DEPTH 32
+#define MAX_NODES 20000 /* the answers of the services called have far fewer */
 
 typedef struct {
     const char *p, *end;
+    unsigned nodes;
 } Reader;
 
 static CjNode *parse_value(Reader *r, int depth);
@@ -202,7 +204,7 @@ static CjNode *parse_value(Reader *r, int depth)
 {
     CjNode *n;
 
-    if (depth > MAX_DEPTH)
+    if (depth > MAX_DEPTH || ++r->nodes > MAX_NODES)
         return NULL;
     skip_space(r);
     if (r->p >= r->end)
@@ -241,7 +243,7 @@ static CjNode *parse_value(Reader *r, int depth)
 
 CjNode *cj_parse(const char *text, gsize len)
 {
-    Reader r = { text, text + len };
+    Reader r = { text, text + len, 0 };
     CjNode *n;
 
     if (text == NULL)
