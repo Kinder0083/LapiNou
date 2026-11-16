@@ -55,6 +55,17 @@ def shells(tmp: Path):
     return out
 
 
+def per_shell(test):
+    """Run the test once for each shell, with a fresh configuration directory."""
+    def run(self):
+        for shell in self.shells:
+            with self.subTest(shell=shell[0]):
+                shutil.rmtree(self.conf, ignore_errors=True)
+                test(self, shell)
+    run.__name__ = test.__name__
+    return run
+
+
 class ConfShellTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -69,91 +80,85 @@ class ConfShellTest(unittest.TestCase):
         full = {"PATH": path, "LAPINOU_CONF_DIR": str(self.conf), "CONF_SH": str(CONF_SH), "HOME": str(self.tmp), **env}
         return subprocess.run([*argv, "-c", f'. "$CONF_SH"; {script}'], env=full, capture_output=True, timeout=300)
 
-    def each_shell(self):
-        for shell in self.shells:
-            with self.subTest(shell=shell[0]):
-                shutil.rmtree(self.conf, ignore_errors=True)
-                yield shell
-
-    def test_roundtrip_special_chars(self):
+    @per_shell
+    def test_roundtrip_special_chars(self, shell):
         value = 'a b"c$d;e`f é'
-        for shell in self.each_shell():
-            r = self.run_in(shell, 'lapinou_set mqtt user "$V" && lapinou_get mqtt user', V=value)
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertEqual(r.stdout.decode(), value + "\n")
+        r = self.run_in(shell, 'lapinou_set mqtt user "$V" && lapinou_get mqtt user', V=value)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.decode(), value + "\n")
 
-    def test_roundtrip_every_nasty_value(self):
+    @per_shell
+    def test_roundtrip_every_nasty_value(self, shell):
         marker = self.tmp / "pwned"
-        for shell in self.each_shell():
-            for raw in NASTY:
-                value = raw.replace("{m}", str(marker))
-                r = self.run_in(shell, 'lapinou_set cloud llm_model "$V" && lapinou_get cloud llm_model', V=value)
-                self.assertEqual(r.stdout.decode("utf-8"), value + "\n", f"{raw!r}: {r.stderr!r}")
-            self.assertFalse(marker.exists())
-            # One line each: the file stays a plain INI file.
-            self.assertEqual((self.conf / "lapinou.conf").read_text(encoding="utf-8").count("\n"), 2)
+        for raw in NASTY:
+            value = raw.replace("{m}", str(marker))
+            r = self.run_in(shell, 'lapinou_set cloud llm_model "$V" && lapinou_get cloud llm_model', V=value)
+            self.assertEqual(r.stdout.decode("utf-8"), value + "\n", f"{raw!r}: {r.stderr!r}")
+        self.assertFalse(marker.exists())
+        # One line each: the file stays a plain INI file.
+        self.assertEqual((self.conf / "lapinou.conf").read_text(encoding="utf-8").count("\n"), 2)
 
-    def test_no_command_execution(self):
+    @per_shell
+    def test_no_command_execution(self, shell):
         marker = self.tmp / "pwned"
-        for shell in self.each_shell():
-            for value in (f"$(touch {marker})", f"`touch {marker}`", f"x; touch {marker}", f'"; touch {marker}; "'):
-                self.run_in(shell, 'lapinou_set mqtt user "$V"; lapinou_get mqtt user; lapinou_secret_set mqtt_password "$V"; '
-                                   'lapinou_secret_get mqtt_password; v=$(lapinou_get mqtt user); echo "$v"', V=value)
-                self.assertFalse(marker.exists(), f"{shell[0]}: {value!r} ran")
+        for value in (f"$(touch {marker})", f"`touch {marker}`", f"x; touch {marker}", f'"; touch {marker}; "'):
+            self.run_in(shell, 'lapinou_set mqtt user "$V"; lapinou_get mqtt user; lapinou_secret_set mqtt_password "$V"; '
+                               'lapinou_secret_get mqtt_password; v=$(lapinou_get mqtt user); echo "$v"', V=value)
+            self.assertFalse(marker.exists(), f"{shell[0]}: {value!r} ran")
 
-    def test_hostile_names_are_refused(self):
-        for shell in self.each_shell():
-            for section, key in (("mqtt]\n[evil", "user"), ("mqtt", "user\nx"), ("mq tt", "user"), ("mqtt", "a=b"),
-                                 ("", "user"), ("mqtt", "$(id)")):
-                r = self.run_in(shell, 'lapinou_set "$S" "$K" v', S=section, K=key)
-                self.assertNotEqual(r.returncode, 0, (section, key))
-            self.assertFalse((self.conf / "lapinou.conf").exists())
+    @per_shell
+    def test_hostile_names_are_refused(self, shell):
+        for section, key in (("mqtt]\n[evil", "user"), ("mqtt", "user\nx"), ("mq tt", "user"), ("mqtt", "a=b"),
+                             ("", "user"), ("mqtt", "$(id)")):
+            r = self.run_in(shell, 'lapinou_set "$S" "$K" v', S=section, K=key)
+            self.assertNotEqual(r.returncode, 0, (section, key))
+        self.assertFalse((self.conf / "lapinou.conf").exists())
 
-    def test_defaults(self):
-        for shell in self.each_shell():
-            r = self.run_in(shell, 'lapinou_get mqtt port 1883; lapinou_get mqtt nothing; lapinou_set mqtt port ""; '
-                                   'lapinou_get mqtt port 1883')
-            self.assertEqual(r.stdout.decode(), "1883\n\n1883\n")
+    @per_shell
+    def test_defaults(self, shell):
+        r = self.run_in(shell, 'lapinou_get mqtt port 1883; lapinou_get mqtt nothing; lapinou_set mqtt port ""; '
+                               'lapinou_get mqtt port 1883')
+        self.assertEqual(r.stdout.decode(), "1883\n\n1883\n")
 
-    def test_set_replaces_in_place_and_keeps_the_rest(self):
-        for shell in self.each_shell():
-            self.conf.mkdir()
-            (self.conf / "lapinou.conf").write_text(
-                "# mine\n[server]\nhost=a\n[mqtt]\nhost=h\nport=1\nport=2\n[audio]\nvolume=5\n", newline="\n")
-            r = self.run_in(shell, "lapinou_set mqtt port 1884; lapinou_set mqtt user u; lapinou_set ota url http://x; "
-                                   "lapinou_set audio volume 7; lapinou_get mqtt port")
-            self.assertEqual(r.stdout.decode(), "1884\n")
-            self.assertEqual((self.conf / "lapinou.conf").read_text(),
-                             "# mine\n[server]\nhost=a\n[mqtt]\nhost=h\nport=1884\nuser=u\n[audio]\nvolume=7\n"
-                             "[ota]\nurl=http://x\n")
+    @per_shell
+    def test_set_replaces_in_place_and_keeps_the_rest(self, shell):
+        self.conf.mkdir()
+        (self.conf / "lapinou.conf").write_text(
+            "# mine\n[server]\nhost=a\n[mqtt]\nhost=h\nport=1\nport=2\n[audio]\nvolume=5\n", newline="\n")
+        r = self.run_in(shell, "lapinou_set mqtt port 1884; lapinou_set mqtt user u; lapinou_set ota url http://x; "
+                               "lapinou_set audio volume 7; lapinou_get mqtt port")
+        self.assertEqual(r.stdout.decode(), "1884\n")
+        self.assertEqual((self.conf / "lapinou.conf").read_text(),
+                         "# mine\n[server]\nhost=a\n[mqtt]\nhost=h\nport=1884\nuser=u\n[audio]\nvolume=7\n"
+                         "[ota]\nurl=http://x\n")
 
-    def test_secrets_mode_0600(self):
-        for shell in self.each_shell():
-            r = self.run_in(shell, 'umask 022; lapinou_secret_set mqtt_password "$V"; lapinou_secret_set ota_token t2; '
-                                   'lapinou_secret_get mqtt_password', V='p@ss "w"$rd')
-            self.assertEqual(r.stdout.decode(), 'p@ss "w"$rd\n')
-            self.assertEqual(stat.S_IMODE((self.conf / "lapinou.secrets").stat().st_mode), 0o600)
-            self.run_in(shell, "umask 077; lapinou_set mqtt user u")
-            self.assertEqual(stat.S_IMODE((self.conf / "lapinou.conf").stat().st_mode), 0o644)
-            self.assertEqual(list(self.conf.glob("*.new")), [], "no temporary file left behind")
+    @per_shell
+    def test_secrets_mode_0600(self, shell):
+        r = self.run_in(shell, 'umask 022; lapinou_secret_set mqtt_password "$V"; lapinou_secret_set ota_token t2; '
+                               'lapinou_secret_get mqtt_password', V='p@ss "w"$rd')
+        self.assertEqual(r.stdout.decode(), 'p@ss "w"$rd\n')
+        self.assertEqual(stat.S_IMODE((self.conf / "lapinou.secrets").stat().st_mode), 0o600)
+        self.run_in(shell, "umask 077; lapinou_set mqtt user u")
+        self.assertEqual(stat.S_IMODE((self.conf / "lapinou.conf").stat().st_mode), 0o644)
+        self.assertEqual(list(self.conf.glob("*.new")), [], "no temporary file left behind")
 
-    def test_secret_absent_from_conf(self):
-        for shell in self.each_shell():
-            self.run_in(shell, 'lapinou_set mqtt user u; lapinou_secret_set mqtt_password "$V"', V="hunter2-secret")
-            self.assertNotIn("hunter2-secret", (self.conf / "lapinou.conf").read_text())
-            self.assertNotIn("mqtt_password", (self.conf / "lapinou.conf").read_text())
-            self.assertIn("mqtt_password=", (self.conf / "lapinou.secrets").read_text())
-            r = self.run_in(shell, "lapinou_secret_get cloud_llm_key; lapinou_get mqtt mqtt_password")
-            self.assertEqual(r.stdout.decode(), "\n\n")
+    @per_shell
+    def test_secret_absent_from_conf(self, shell):
+        self.run_in(shell, 'lapinou_set mqtt user u; lapinou_secret_set mqtt_password "$V"', V="hunter2-secret")
+        self.assertNotIn("hunter2-secret", (self.conf / "lapinou.conf").read_text())
+        self.assertNotIn("mqtt_password", (self.conf / "lapinou.conf").read_text())
+        self.assertIn("mqtt_password=", (self.conf / "lapinou.secrets").read_text())
+        r = self.run_in(shell, "lapinou_secret_get cloud_llm_key; lapinou_get mqtt mqtt_password")
+        self.assertEqual(r.stdout.decode(), "\n\n")
 
-    def test_failed_write_keeps_the_old_file(self):
+    @per_shell
+    def test_failed_write_keeps_the_old_file(self, shell):
         # The new file is written beside the old and moved over it.
-        for shell in self.each_shell():
-            self.run_in(shell, "lapinou_set mqtt user first")
-            before = (self.conf / "lapinou.conf").read_text()
-            self.run_in(shell, "awk() { return 1; }; lapinou_set mqtt user second")
-            self.assertEqual((self.conf / "lapinou.conf").read_text(), before)
-            self.assertEqual(list(self.conf.glob("*.new")), [])
+        self.run_in(shell, "lapinou_set mqtt user first")
+        before = (self.conf / "lapinou.conf").read_text()
+        self.run_in(shell, "awk() { return 1; }; lapinou_set mqtt user second")
+        self.assertEqual((self.conf / "lapinou.conf").read_text(), before)
+        self.assertEqual(list(self.conf.glob("*.new")), [])
 
 
 class ApplySettingsTest(unittest.TestCase):

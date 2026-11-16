@@ -18,16 +18,16 @@ static char *decode(const char *v)
 {
     GString *out = g_string_new(NULL);
     for (; *v; v++) {
-        if (*v == '\' && v[1]) {
+        if (*v == '\\' && v[1]) {
             v++;
             if (*v == 'n')
                 g_string_append_c(out, '\n');
             else if (*v == 'r')
                 g_string_append_c(out, '\r');
-            else if (*v == '\' || *v == '=')
+            else if (*v == '\\' || *v == '=')
                 g_string_append_c(out, *v);
             else {
-                g_string_append_c(out, '\');
+                g_string_append_c(out, '\\');
                 g_string_append_c(out, *v);
             }
         } else {

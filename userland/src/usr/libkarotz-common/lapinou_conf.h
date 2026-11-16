@@ -3,7 +3,7 @@
  * LapiNou's settings on the rabbit, for C programs: /usr/etc/conf/lapinou.conf (INI, not secret)
  * and /usr/etc/conf/lapinou.secrets (mode 0600, [secrets] section), the files lapinou_get and
  * lapinou_secret_get read in image/core/usr/share/lapinou/conf.sh. A value is one line, with \ as
- * \, a line feed as \n, a carriage return as \r and = as \=. The environment variable
+ * \\, a line feed as \n, a carriage return as \r and = as \=. The environment variable
  * LAPINOU_CONF_DIR moves both files (tests). Nothing here writes: the shell library does.
  */
 #ifndef LAPINOU_CONF_H

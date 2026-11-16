@@ -246,8 +246,8 @@ _lapinou_write() {
                 v = ENVIRON["LAPINOU_V"]; enc = ""; n = length(v)
                 for (i = 1; i <= n; i++) {
                     c = substr(v, i, 1)
-                    if (c == "\\") c = "\\\\"; else if (c == "\n") c = "\n"
-                    else if (c == "\r") c = "\r"; else if (c == "=") c = "\="
+                    if (c == "\\") c = "\\\\"; else if (c == "\n") c = "\\n"
+                    else if (c == "\r") c = "\\r"; else if (c == "=") c = "\\="
                     enc = enc c
                 }
                 line = k "=" enc
@@ -280,6 +280,7 @@ lapinou_secret_set() { # key value
     _lapinou_name_ok "$1" || { echo "lapinou_secret_set: bad key" >&2; return 2; }
     mkdir -p "$(_lapinou_dir)" && _lapinou_write "$(_lapinou_dir)/lapinou.secrets" 600 secrets "$1" "$2"
 }
+# <<< the functions conf.sh has
 # A value left empty keeps what the rabbit has. Never logs a password or key.
 ln_set() { lapinou_set "$1" "$2" "$3" || ERROR "can't write ${CONF}/lapinou.conf"; }
 ln_secret() { lapinou_secret_set "$1" "$2" || ERROR "can't write ${CONF}/lapinou.secrets"; }

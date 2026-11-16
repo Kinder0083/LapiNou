@@ -12,7 +12,7 @@
 # the secrets (mqtt_password, cloud_stt_key, cloud_llm_key, cloud_tts_key, ota_token) are in
 # /usr/etc/conf/lapinou.secrets (mode 0600, [secrets] section). LAPINOU_CONF_DIR moves both (tests).
 #
-# A value is written as one line, key=value, with \ as \, a line feed as \n, a carriage return
+# A value is written as one line, key=value, with \ as \\, a line feed as \n, a carriage return
 # as \r and = as \=; reading undoes that. Nothing is ever evaluated, so quotes, $, ;, backticks
 # and accents are only text. Writes go to a temporary file that replaces the old one in one step.
 # A section or key is letters, digits, _, - and . only; anything else fails (status 2) and writes
@@ -69,8 +69,8 @@ _lapinou_write() {
                 v = ENVIRON["LAPINOU_V"]; enc = ""; n = length(v)
                 for (i = 1; i <= n; i++) {
                     c = substr(v, i, 1)
-                    if (c == "\\") c = "\\\\"; else if (c == "\n") c = "\n"
-                    else if (c == "\r") c = "\r"; else if (c == "=") c = "\="
+                    if (c == "\\") c = "\\\\"; else if (c == "\n") c = "\\n"
+                    else if (c == "\r") c = "\\r"; else if (c == "=") c = "\\="
                     enc = enc c
                 }
                 line = k "=" enc
