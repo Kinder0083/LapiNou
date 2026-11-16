@@ -4,13 +4,18 @@
 # the rabbit). Runs on a PC on the rabbit's network (Linux, or Git Bash on Windows), with ssh, md5sum,
 # gzip and sed.
 #
-#   migrate-from-fros.sh --rabbit IP --key DIR --ssh-pubkey KEY [--dhcp] [--dry-run] [--no-wait]
+#   migrate-from-fros.sh --rabbit IP --key DIR --ssh-pubkey KEY [--ssh-key FILE] [--backup DIR]
+#                        [--dhcp] [--dry-run] [--no-wait]
 #
 #   --rabbit IP        the rabbit's address; Free Rabbits OS takes ssh karotz@IP with an empty password
 #   --key DIR          the built USB key (out/usbkey): zImage, rootfs.img.gz, usr.tar.gz, install.conf...
 #   --ssh-pubkey KEY   the public key LapinLibre's SSH will take (a line "ssh-ed25519 AAAA... name", or
 #                      a .pub file); LapinLibre has no password login. Not needed when the key's
 #                      lapinlibre.txt has an SSH_PUBKEY.
+#   --ssh-key FILE     its private key, used to log in to LapinLibre after the reboot (else ssh's
+#                      default identity); FILE.pub stands for --ssh-pubkey when that isn't given
+#   --backup DIR       the rabbit's backup (sauvegarde/): the checks say whether mtd1 and mtd2 still
+#                      hold what its data/mtd1_kernel.bin and data/mtd2_ramdisk.bin have
 #   --dhcp             LapinLibre takes its address by DHCP; by default it keeps the rabbit's current
 #                      address (IP) with the netmask, gateway and DNS it uses now. A network.conf the
 #                      rabbit already has is kept either way.
@@ -31,17 +36,19 @@ STAGE=/dev/shm/lapinou-migrate
 USR_STAGE=/usr/.lapinou-migrate
 MiB=1048576
 
-RABBIT= KEY= PUBKEY= NETWORK=static DRY=0 WAIT=1
+RABBIT= KEY= PUBKEY= PRIVKEY= BACKUP= NETWORK=static DRY=0 WAIT=1
 die() { # status, message
     echo "migrate-from-fros: $2" >&2
     exit "$1"
 }
-usage() { sed -n '7,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '7,25p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 while [ $# -gt 0 ]; do
     case "$1" in
     --rabbit) RABBIT=${2:-}; shift 2 || usage ;;
     --key) KEY=${2:-}; shift 2 || usage ;;
     --ssh-pubkey) PUBKEY=${2:-}; shift 2 || usage ;;
+    --ssh-key) PRIVKEY=${2:-}; shift 2 || usage ;;
+    --backup) BACKUP=${2:-}; shift 2 || usage ;;
     --dhcp) NETWORK=dhcp; shift ;;
     --dry-run) DRY=1; shift ;;
     --no-wait) WAIT=0; shift ;;
@@ -66,10 +73,26 @@ done
 [ "$(size_of "${KEY}/zImage")" -le $((3 * MiB)) ] || die 2 "zImage is bigger than mtd1 (3 MiB)"
 [ "$(size_of "${KEY}/rootfs.img.gz")" -le $((5 * MiB)) ] || die 2 "rootfs.img.gz is bigger than mtd2 (5 MiB)"
 gzip -t "${KEY}/rootfs.img.gz" && gzip -t "${KEY}/usr.tar.gz" || die 2 "an image doesn't decompress"
+# The root filesystem must fit 5 MiB uncompressed too (the RAM disk it is loaded into).
+raw=$(($(gzip -dc "${KEY}/rootfs.img.gz" | wc -c)))
+[ "${raw}" -le $((5 * MiB)) ] || die 2 "the root filesystem is ${raw} bytes uncompressed: more than 5 MiB"
+
+# The backup's md5s of mtd1 and mtd2 (without OOB), for the rabbit's comparison.
+BACKUP_MD5=
+if [ -n "${BACKUP}" ]; then
+    for f in mtd1_kernel mtd2_ramdisk; do
+        [ -f "${BACKUP}/data/${f}.bin" ] || die 2 "${BACKUP}/data/${f}.bin is missing"
+    done
+    BACKUP_MD5="BACKUP_MTD1_MD5=$(md5_of "${BACKUP}/data/mtd1_kernel.bin") BACKUP_MTD2_MD5=$(md5_of "${BACKUP}/data/mtd2_ramdisk.bin")"
+fi
 
 # The settings: the key's lapinlibre.txt, then the SSH key given here (a later line wins).
 WORK=$(mktemp -d) || die 1 "no temporary directory"
 trap 'rm -rf "${WORK}"' EXIT
+if [ -z "${PUBKEY}" ] && [ -n "${PRIVKEY}" ] && [ -f "${PRIVKEY}.pub" ]; then
+    PUBKEY=${PRIVKEY}.pub
+fi
+[ -z "${PRIVKEY}" ] || [ -f "${PRIVKEY}" ] || die 2 "--ssh-key ${PRIVKEY}: no such file"
 if [ -n "${PUBKEY}" ] && [ -f "${PUBKEY}" ]; then
     PUBKEY=$(head -n 1 "${PUBKEY}" | tr -d '\r')
 fi
@@ -114,7 +137,7 @@ for f in install.conf build_id zImage rootfs.img.gz; do
     send "${KEY}/${f}" "${STAGE}/${f}"
 done
 
-RUN="NETWORK=${NETWORK} USR_SIZE=$(size_of "${KEY}/usr.tar.gz") bash ${STAGE}/on-rabbit.sh"
+RUN="${BACKUP_MD5} NETWORK=${NETWORK} USR_SIZE=$(size_of "${KEY}/usr.tar.gz") bash ${STAGE}/on-rabbit.sh"
 echo "Checking on the rabbit"
 on_rabbit check
 status=$?
@@ -155,10 +178,12 @@ sleep 5
 # 4. LapinLibre back on the network: SSH with the key, and the web page.
 echo "Waiting for LapinLibre (up to 5 minutes)"
 ssh_ok= web_ok=
+NEW_OPTS=(-o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new
+    -o "UserKnownHostsFile=${WORK}/known_hosts_lapinlibre")
+[ -z "${PRIVKEY}" ] || NEW_OPTS+=(-i "${PRIVKEY}" -o IdentitiesOnly=yes)
 for _ in $(seq 60); do
     sleep 5
-    if [ -z "${ssh_ok}" ] && "${SSH}" -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
-        -o "UserKnownHostsFile=${WORK}/known_hosts_lapinlibre" "karotz@${RABBIT}" true > /dev/null 2>&1; then
+    if [ -z "${ssh_ok}" ] && "${SSH}" "${NEW_OPTS[@]}" "karotz@${RABBIT}" true > /dev/null 2>&1; then
         ssh_ok=yes
     fi
     if [ -z "${web_ok}" ] && curl -fsS -m 5 "http://${RABBIT}/" 2> /dev/null | grep -qi lapinlibre; then

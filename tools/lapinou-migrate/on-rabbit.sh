@@ -6,10 +6,13 @@
 # install.conf, build_id and the settings (lapinlibre.txt). The PC streams usr.tar.gz to
 # /usr/.lapinou-migrate before "install".
 #
-#   [NETWORK=static|dhcp] [USR_SIZE=bytes] on-rabbit.sh check RABBIT_IP     checks only
-#   [NETWORK=static|dhcp] on-rabbit.sh install RABBIT_IP                     checks, then installs
+#   [NETWORK=static|dhcp] [USR_SIZE=bytes] [BACKUP_MTD1_MD5=.. BACKUP_MTD2_MD5=..] on-rabbit.sh check IP
+#   [NETWORK=static|dhcp] on-rabbit.sh install IP
 #
-# "check" writes nothing to the flash. "install" checks everything again (usr.tar.gz too), then
+# "check" writes nothing to the flash: it also reads mtd1 and mtd2 whole and compares them with the
+# backup's md5s, lists /usr/etc/conf and the processes "install" would stop. "install" checks
+# everything again (usr.tar.gz too), stops Free Rabbits OS's programs (the controller, immortaldog,
+# crond...: none may reboot the rabbit half-way), then
 # does what the key's autorun does: the kernel to mtd1 and the root filesystem to mtd2, each read
 # back and compared, then /usr replaced, keeping its settings (/usr/etc/conf), apps, messages and
 # uuid.conf, and the settings applied, and the rabbit reboots 2 s after it exits. Only mtd1 and mtd2
@@ -111,10 +114,116 @@ plan_network() {
             NET_MASK=$(hex_ip "${mask}")
         fi
     done < /proc/net/route
+    is_ipv4 "${NET_IP}" || ERROR "the rabbit's address ${NET_IP} isn't an IPv4 address: use --dhcp"
+    is_ipv4 "${NET_MASK}" && is_ipv4 "${NET_GW}" || ERROR "no netmask or default route on wlan0: use --dhcp"
+    # network.conf is sourced as root: only an address goes in, else the gateway serves as DNS.
     NET_DNS=$(awk '$1 == "nameserver" { print $2; exit }' /etc/resolv.conf 2> /dev/null)
-    NET_DNS=${NET_DNS:-${NET_GW}}
-    [[ "${NET_IP}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || ERROR "the rabbit's address ${NET_IP} isn't an IPv4 address: use --dhcp"
-    [ -n "${NET_MASK}" ] && [ -n "${NET_GW}" ] || ERROR "no netmask or default route on wlan0: use --dhcp"
+    if ! is_ipv4 "${NET_DNS}"; then
+        [ -z "${NET_DNS}" ] || LOG "Network: /etc/resolv.conf's nameserver isn't an IPv4 address; the gateway is used"
+        NET_DNS=${NET_GW}
+    fi
+}
+
+is_ipv4() { [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; }
+
+# A setting's value in the staged lapinlibre.txt, read as applysettings.sh reads it (the last line
+# wins, CR, byte-order mark, spaces and quotes taken off).
+setting() { # NAME
+    local line key value v= bom
+    bom=$(printf '\357\273\277')
+    while IFS= read -r line || [ -n "${line}" ]; do
+        line=${line%$'\r'}
+        line=${line#${bom}}
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        case "${line}" in ''|'#'*) continue ;; *=*) ;; *) continue ;; esac
+        key=${line%%=*}
+        key="${key%"${key##*[![:space:]]}"}"
+        [ "${key}" = "$1" ] || continue
+        value=${line#*=}
+        value="${value#"${value%%[![:space:]]*}"}"
+        case "${value}" in \"*\") value=${value#\"}; value=${value%\"} ;; \'*\') value=${value#\'}; value=${value%\'} ;; esac
+        v=${value}
+    done < "${STAGE}/lapinlibre.txt"
+    printf '%s' "${v}"
+}
+
+# Free Rabbits OS's processes, kernel threads left out: "pid name ppid" per line.
+proc_list() {
+    local d stat comm rest
+    for d in /proc/[0-9]*; do
+        [ -s "${d}/cmdline" ] || continue
+        stat=$(cat "${d}/stat" 2> /dev/null) || continue
+        comm=${stat#*\(}
+        comm=${comm%\)*}
+        rest=${stat##*\) }
+        set -- ${rest}
+        echo "${d##*/} ${comm// /_} $2"
+    done
+}
+
+# This script and the processes it runs under (the SSH session).
+ancestors() {
+    local p=$$ i=0 stat
+    while [ -n "${p}" ] && [ "${p}" != 0 ] && [ ${i} -lt 30 ]; do
+        echo "${p}"
+        stat=$(cat "/proc/${p}/stat" 2> /dev/null) || break
+        set -- ${stat##*\) }
+        p=$2
+        i=$((i + 1))
+    done
+}
+
+# What keeps running during the install: the system, the network, the SSH session, init's respawned
+# programs, and a process that holds the watchdog (stopping it would let the watchdog reboot).
+KEEP_PROCS="init syslogd klogd inetd dropbear wpa_supplicant udhcpc power getty"
+
+# Stop everything else (the controller, immortaldog, crond, OpenKarotz...), which could otherwise
+# reboot the rabbit between erasing mtd1 and the end of mtd2's read-back: all are frozen first (so
+# none can react to another's end), then killed. With "list", only says what it would stop.
+stop_fros() { # [list]
+    local ours pid comm ppid targets=
+    ours=" $(ancestors | tr '\n' ' ') "
+    while read -r pid comm ppid; do
+        [ -n "${pid}" ] || continue
+        case " ${KEEP_PROCS} " in *" ${comm} "*) LOG "Process ${pid} ${comm}: kept"; continue ;; esac
+        case "${ours}" in *" ${pid} "*) continue ;; esac
+        if ls -l "/proc/${pid}/fd" 2> /dev/null | grep -q watchdog; then
+            LOG "Process ${pid} ${comm}: holds the watchdog, kept"
+            continue
+        fi
+        LOG "Process ${pid} ${comm} ($(tr '\000' ' ' < "/proc/${pid}/cmdline" 2> /dev/null | cut -c 1-80 | sed 's/ *$//')): to stop"
+        targets="${targets} ${pid}"
+    done <<EOF
+$(proc_list)
+EOF
+    [ "$1" = list ] && return 0
+    if [ -n "${targets}" ]; then
+        LOG "Stopping Free Rabbits OS's processes:${targets}"
+        /bin/kill -STOP ${targets} 2> /dev/null
+        /bin/kill -KILL ${targets} 2> /dev/null
+        sleep 1
+    fi
+    LOG "Still running: $(proc_list | awk '{ printf "%s ", $2 }')"
+}
+
+# The rollback writes back sauvegarde/data: say whether mtd1 and mtd2 still hold just that.
+compare_backup() { # mtdN md5
+    local sum
+    [ -n "$2" ] || return 0
+    mtd_info "$1"
+    rm -f "${STAGE}/whole"
+    if /sbin/nanddump -o -b -l "${MTD_SIZE}" -f "${STAGE}/whole" "/dev/$1" > /dev/null 2>&1; then
+        sum=$(md5_of "${STAGE}/whole")
+    else
+        sum=unreadable
+    fi
+    rm -f "${STAGE}/whole"
+    if [ "${sum}" = "$2" ]; then
+        LOG "Backup: $1 MATCH (${sum}): the backup restores it as it is now"
+    else
+        LOG "Backup: $1 DIFFERENT (${sum}, backup $2)"
+    fi
 }
 
 # Everything that must hold before the flash is touched. With USR, usr.tar.gz too.
@@ -132,6 +241,7 @@ check_all() { # [usr]
         [ -x "${f}" ] || ERROR "no ${f}"
     done
     [ -x /sbin/flash_erase ] || [ -x /sbin/flash_eraseall ] || ERROR "no flash_erase or flash_eraseall"
+    [ -x /bin/kill ] || ERROR "no /bin/kill"
     # / must be the RAM disk (the root filesystem is then not read from mtd2 while it is rewritten)
     # and /usr the yaffs partition mtd6.
     awk '$2 == "/usr" && $3 == "yaffs" && $1 == "/dev/mtdblock6" { found = 1 } END { exit !found }' /proc/mounts ||
@@ -164,6 +274,13 @@ check_all() { # [usr]
     # The Wi-Fi network the rabbit uses now: LapinLibre starts the same wpa_supplicant with it.
     [ -s "${CONF}/wpa.conf" ] && grep -q 'network={' "${CONF}/wpa.conf" && grep -q 'ssid=' "${CONF}/wpa.conf" ||
         ERROR "${CONF}/wpa.conf has no Wi-Fi network"
+    # The migration keeps that network: settings that would replace it (applysettings.sh rewrites
+    # wpa.conf and network.conf when WIFI_SSID is set) are refused.
+    for f in WIFI_SSID WIFI_PASSWORD IP; do
+        [ -z "$(setting "${f}")" ] ||
+            ERROR "lapinlibre.txt sets ${f}: the migration keeps the rabbit's Wi-Fi and address; leave it empty"
+    done
+    LOG "Settings files: $(ls "${CONF}" | tr '\n' ' ')"
     plan_network
     case "${NET_PLAN}" in
     kept) LOG "Network: ${CONF}/network.conf kept: $(tr '\n' ' ' < "${CONF}/network.conf")" ;;
@@ -181,6 +298,11 @@ check_all() { # [usr]
     fi
     case "${free}" in ''|*[!0-9]*) ERROR "can't read /usr's free space" ;; esac
     [ "${free}" -ge "${need}" ] || ERROR "/usr has ${free} kB free; ${need} kB needed"
+    if [ "${MODE}" = check ]; then
+        compare_backup mtd1 "${BACKUP_MTD1_MD5:-}"
+        compare_backup mtd2 "${BACKUP_MTD2_MD5:-}"
+        stop_fros list
+    fi
     LOG "Checks passed"
 }
 
@@ -227,6 +349,7 @@ install() {
     # From here on, a dropped SSH session must not stop the script half-way.
     trap '' HUP PIPE
     FAIL_CODE=1
+    stop_fros
     nose_pulse FFFF00 500
     write_partition mtd1 "${STAGE}/zImage"
     write_partition mtd2 "${STAGE}/rootfs.img.gz"

@@ -54,6 +54,20 @@ PROC_ROUTE = textwrap.dedent("""\
 WPA = 'ctrl_interface=/var/run/wpa_supplicant\nnetwork={\nssid="maison"\npsk="motdepasse"\n}\n'
 NETWORK_CONF = 'IP="192.168.1.103"\nNETMASK="255.255.255.0"\nGATEWAY="192.168.1.1"\nDNS="192.168.1.1"\n'
 PROTECTED = ("/dev/mtd0", "/dev/mtd3", "/dev/mtd4", "/dev/mtd5")
+# pid, name, parent, command line (empty: a kernel thread).
+PROCESSES = (
+    (1, "init", 0, "init"),
+    (2, "kthreadd", 0, ""),
+    (1241, "power", 1, "/karotz/bin/power"),
+    (1242, "inetd", 1, "/sbin/inetd -f /usr/etc/inetd.conf"),
+    (1283, "wpa_supplicant", 1, "/usr/sbin/wpa_supplicant -iwlan0 -Dwext -B -c/usr/etc/conf/wpa.conf"),
+    (1645, "dropbear", 1242, "dropbear -i -B -R"),
+    (1700, "immortaldog", 1, "/usr/karotz/bin/immortaldog /var/run/controller.pid /usr/karotz/bin/controller"),
+    (1701, "controller", 1700, "/usr/karotz/bin/controller"),
+    (1702, "crond", 1, "crond -c /usr/spool/cron/crontabs"),
+    (1703, "watchdogd", 1, "watchdogd"),
+)
+STOPPED = "1700 1701 1702"
 
 # The fake ssh: "ssh [options] user@host command" runs the command in the sandbox.
 FAKE_SSH = r'''#!/usr/bin/env python3
@@ -160,6 +174,15 @@ class FrosRabbit(Rabbit):
             echo "dump $1" >> {log}
             {nanddump or 'head -c "$len" "$1" > "$out"'}
             """))
+        # Free Rabbits OS's processes: what the install keeps, what it stops, a kernel thread.
+        for pid, comm, ppid, cmdline in PROCESSES:
+            d = sb / "proc" / str(pid)
+            (d / "fd").mkdir(parents=True)
+            (d / "stat").write_text(f"{pid} ({comm}) S {ppid} {pid} {pid} 0 -1\n", newline="\n")
+            (d / "cmdline").write_bytes(cmdline.replace(" ", "\0").encode() + (b"\0" if cmdline else b""))
+            if comm == "watchdogd":
+                (d / "fd" / "3").symlink_to("/dev/watchdog")
+        stub(sb / "bin/kill", f'echo "kill $*" >> {log}')
         fake = sb / "fake-ssh"
         fake.write_text(FAKE_SSH, newline="\n")
         fake.chmod(0o755)
@@ -304,6 +327,83 @@ class MigrateTest(unittest.TestCase):
         self.assertNotIn("usr.tar.gz", (r.sb / "ssh.log").read_text())
         self.assertEqual((r.sb / "usr/scripts/old.sh").read_text(), "wiped\n")
         self.assertIn("Checks passed", p.stdout)
+        # What the install would stop, and the settings files, are shown; nothing is stopped.
+        self.assertIn("Process 1701 controller (/usr/karotz/bin/controller): to stop", p.stdout)
+        self.assertIn("Process 1283 wpa_supplicant: kept", p.stdout)
+        self.assertRegex(p.stdout, r"Settings files: .*karotz\.conf .*wpa\.conf")
+        self.assertFalse([a for a in r.actions() if a.startswith("kill")])
+
+    def test_stops_fros_before_writing(self):
+        r = self.rabbit("stops")
+        self.run_ok(r)
+        actions = r.actions()
+        first_erase = next(i for i, a in enumerate(actions) if a.startswith("erase"))
+        # Frozen first, then killed, before the first erase; the system, the network, SSH and the
+        # watchdog's holder are kept.
+        self.assertEqual([a for a in actions[:first_erase] if a.startswith("kill")],
+                         [f"kill -STOP {STOPPED}", f"kill -KILL {STOPPED}"])
+        self.assertFalse([a for a in actions[first_erase:] if a.startswith("kill")])
+
+    def key_with_settings(self, name, extra):
+        key = self.tmp / name
+        shutil.copytree(self.key, key)
+        with open(key / "lapinlibre.txt", "a", encoding="utf-8", newline="\n") as f:
+            f.write(extra)
+        return key
+
+    def test_wifi_settings_are_refused(self):
+        # applysettings.sh would replace the rabbit's wpa.conf and network.conf: refused up front.
+        for name, extra in (("ssid", 'WIFI_SSID = "autre"\nWIFI_PASSWORD=motdepasse2\n'), ("ip", "IP=192.168.1.50\n")):
+            with self.subTest(name):
+                r = self.rabbit(f"settings-{name}")
+                p = r.migrate(self.key_with_settings(f"key-{name}", extra))
+                self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+                self.assertIn("the migration keeps the rabbit's Wi-Fi", p.stdout)
+                self.assertEqual(r.writes(), [])
+                self.assertEqual(r.conf("wpa.conf"), WPA)
+
+    def test_rootfs_too_big_uncompressed(self):
+        key = self.tmp / "big-rootfs"
+        shutil.copytree(self.key, key)
+        rootfs = gzip.compress(b"\0" * (5 * MiB + 1), mtime=0)
+        (key / "rootfs.img.gz").write_bytes(rootfs)
+        conf = (key / "install.conf").read_text()
+        (key / "install.conf").write_text(re.sub(r"ROOTFS_MD5=\w+", f"ROOTFS_MD5={md5(rootfs)}", conf), newline="\n")
+        r = self.rabbit("big-rootfs")
+        p = r.migrate(key)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("more than 5 MiB", p.stderr)
+        self.assertFalse((r.sb / "ssh.log").exists(), "nothing should reach the rabbit")
+
+    def test_hostile_dns_is_not_written(self):
+        # network.conf is sourced as root: a resolv.conf line that isn't an address must not get in.
+        r = self.rabbit("hostile-dns", network_conf=None)
+        (r.sb / "etc/resolv.conf").write_text('nameserver 1.1.1.1";touch /tmp/pwned;"\n', newline="\n")
+        self.run_ok(r)
+        self.assertEqual(r.conf("network.conf"),
+                         'IP="192.168.1.103"\nNETMASK="255.255.255.0"\nGATEWAY="192.168.1.1"\nDNS="192.168.1.1"\n')
+
+    def test_backup_compared(self):
+        backup = self.tmp / "backup"
+        (backup / "data").mkdir(parents=True)
+        r = self.rabbit("backup")
+        (backup / "data/mtd1_kernel.bin").write_bytes((r.sb / "dev/mtd1").read_bytes())
+        (backup / "data/mtd2_ramdisk.bin").write_bytes(b"something else")
+        p = r.migrate(self.key, "--dry-run", "--backup", str(backup))
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn(f"Backup: mtd1 MATCH ({r.before[1]})", p.stdout)
+        self.assertIn(f"Backup: mtd2 DIFFERENT ({r.before[2]}, backup {md5(b'something else')})", p.stdout)
+
+    def test_private_key_gives_the_public_one(self):
+        keyfile = self.tmp / "id_test"
+        keyfile.write_text("not a real private key\n")
+        (self.tmp / "id_test.pub").write_text(TEST_KEY + "\n")
+        r = self.rabbit("ssh-key")
+        env = dict(os.environ, LAPINOU_SSH=str(r.sb / "fake-ssh"), FAKE_RABBIT=str(r.sb))
+        p = subprocess.run(["bash", str(MIGRATE), "--rabbit", IP, "--key", str(self.key), "--ssh-key", str(keyfile),
+                            "--no-wait"], capture_output=True, text=True, env=env, timeout=600)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(r.conf("authorized_keys"), TEST_KEY + "\n")
 
     def test_no_ssh_key_writes_nothing(self):
         r = self.rabbit("no-ssh-key")
@@ -330,6 +430,9 @@ class MigrateTest(unittest.TestCase):
         self.run_ok(r, key)
         self.assert_migrated(r, key)
         self.assertTrue((r.sb / "usr/karotz/bin/controller").is_file())
+        # The built key's settings keep the rabbit's Wi-Fi and address.
+        self.assertEqual(r.conf("wpa.conf"), WPA)
+        self.assertEqual(r.conf("network.conf"), NETWORK_CONF)
 
 
 if __name__ == "__main__":
