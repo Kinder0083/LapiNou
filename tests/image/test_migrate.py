@@ -394,6 +394,16 @@ class MigrateTest(unittest.TestCase):
                 self.assertEqual(r.writes(), [])
                 self.assertEqual(r.conf("wpa.conf"), WPA)
 
+    def test_key_without_the_settings_library_is_refused(self):
+        key = self.tmp / "no-conf-lib"
+        shutil.copytree(self.key, key)
+        (key / "lapinou-conf.sh").unlink()
+        r = self.rabbit("no-conf-lib")
+        p = r.migrate(key)
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+        self.assertIn("lapinou-conf.sh is missing", p.stderr)
+        self.assertFalse((r.sb / "ssh.log").exists(), "nothing should reach the rabbit")
+
     def test_rootfs_too_big_uncompressed(self):
         key = self.tmp / "big-rootfs"
         shutil.copytree(self.key, key)

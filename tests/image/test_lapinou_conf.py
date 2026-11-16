@@ -240,6 +240,20 @@ class ApplySettingsTest(unittest.TestCase):
                 _, r = self.apply(line + "\n", "--check")
                 self.assertNotEqual(r.returncode, 0)
 
+    def test_missing_library_fails_the_check_and_writes_nothing(self):
+        for args in (("--check",), ()):
+            with self.subTest(args=args):
+                self.setUp()
+                sb = self.sandbox("WIFI_SSID=testssid
+WIFI_PASSWORD=testpassword
+MQTT_HOST=192.168.1.50
+")
+                (sb / "mnt/usbkey/lapinou-conf.sh").unlink()
+                r = self.run_script(sb, *args)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn("lapinou-conf.sh is missing", (sb / "mnt/usbkey/install-log.txt").read_text())
+                self.assertEqual(list((sb / "usr/etc/conf").iterdir()), [], "nothing is written")
+
     def test_check_writes_nothing(self):
         sb, r = self.apply("MQTT_HOST=192.168.1.50\n", "--check")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

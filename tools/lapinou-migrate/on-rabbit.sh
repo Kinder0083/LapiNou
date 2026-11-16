@@ -258,6 +258,9 @@ check_all() { # [usr]
     awk '$2 == "/usr" && $3 == "yaffs" && $1 == "/dev/mtdblock6" { found = 1 } END { exit !found }' /proc/mounts ||
         ERROR "/usr is not mtd6's yaffs"
     grep -q 'root=/dev/ram' /proc/cmdline 2> /dev/null || ERROR "the root filesystem isn't the RAM disk"
+    for f in install-lib.sh applysettings.sh lapinou-conf.sh lapinlibre.txt; do
+        [ -f "${STAGE}/${f}" ] || ERROR "${f} is missing from the staged install files"
+    done
     check_md5 "${STAGE}/zImage" "${KERNEL_MD5}" zImage
     check_md5 "${STAGE}/rootfs.img.gz" "${ROOTFS_MD5}" rootfs.img.gz
     gzip -t "${STAGE}/rootfs.img.gz" 2> /dev/null || ERROR "rootfs.img.gz doesn't decompress"

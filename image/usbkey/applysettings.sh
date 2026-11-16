@@ -13,7 +13,9 @@
 # quote its values. Never logs the Wi-Fi password or the web password.
 
 source /mnt/usbkey/install-lib.sh
-source /mnt/usbkey/lapinou-conf.sh
+# LapiNou's settings library, shipped on the key: without it the check fails, before anything is written.
+source /mnt/usbkey/lapinou-conf.sh 2> /dev/null && type lapinou_set > /dev/null 2>&1 ||
+    ERROR "lapinou-conf.sh is missing from the key or unreadable"
 
 FILE=/mnt/usbkey/lapinlibre.txt
 CONF=/usr/etc/conf
