@@ -429,6 +429,8 @@ def test_own_lan_address_is_accepted(env, monkeypatch):
 def test_rabbit_paths_ignore_the_host_check(env):
     client, _, _ = env
     assert client.get("/api/health", headers={"Host": "lapin"}).status_code == 200
+    r = client.get("/health", headers={"Host": "lapin"})
+    assert r.status_code == 200 and r.json() == {"status": "ok"}
     assert client.get("/ota/manifest.json", headers={"Host": "lapin"}).status_code == 404
     assert client.get("/tts/x.mp3", headers={"Host": "lapin"}).status_code == 404
 

@@ -965,6 +965,32 @@ async def test_announcement_abandoned_by_its_caller_is_not_spoken(world):
     assert world.rabbit.played == []  # le minuteur la redira : pas de double annonce
 
 
+def test_every_close_step_runs_even_if_one_fails(tmp_path, caplog):
+    from lapinou import app as app_mod
+
+    caplog.set_level(logging.INFO, logger="lapinou.app")
+    settings = Settings()
+    services = app_mod.build_services(settings, db_path=tmp_path / "db.sqlite", voice=FakeVoice(),
+                                      recogniser=None, brain=ScriptedBrain())
+    done = []
+
+    async def broken():
+        raise RuntimeError("minuteurs en panne")
+
+    class Asr:
+        def stop(self):
+            done.append("asr")
+
+    services.asr_server = Asr()
+    services.timers.close = broken
+    services.voice.close = lambda: done.append("voice")
+    services.db.close = lambda: done.append("db")
+    with pytest.raises(RuntimeError, match="minuteurs"):
+        asyncio.run(services.close())
+    assert done == ["asr", "voice", "db"]  # ASR coupé avant la voix ; la suite a eu lieu
+    assert "serveur LapiNou arrêté" in caplog.text
+
+
 def test_services_started_partly_are_closed_on_failure(tmp_path):
     from fastapi.testclient import TestClient
 
