@@ -72,6 +72,12 @@ _SCENE_KEYS = {"id", "name", "icon", "entities", "metadata"}
 _COMMON = {"alias", "enabled", "continue_on_error"}
 _SERVICE_STEP = _COMMON | {"action", "service", "target", "data", "entity_id", "metadata"}
 _TARGET_KEYS = {"entity_id"}
+# Clés de `data` permises dans un script (HA résout aussi area_id, device_id… placés dans
+# `data` : toute autre clé rend le script sensible). `entity_id` y est revérifié comme cible.
+_DATA_KEYS = {"brightness", "brightness_pct", "color_temp_kelvin", "rgb_color", "transition",
+              "position", "tilt_position", "temperature", "target_temp_low", "target_temp_high",
+              "hvac_mode", "volume_level", "is_volume_muted", "entity_id"}
+MAX_CONFIG_CHARS = 256 * 1024  # avant et après analyse (alias YAML développés)
 _WRAPPERS = {
     "delay": _COMMON | {"delay"},
     "stop": _COMMON | {"stop", "error"},
@@ -89,17 +95,28 @@ class Sensitive(Exception):
     """Le contenu sort de la liste blanche : la raison est le message."""
 
 
+class _NoAliasLoader(yaml.SafeLoader):
+    """Chargeur YAML sûr qui refuse ancres et alias (pas d'expansion explosive)."""
+
+    def compose_node(self, parent: Any, index: Any) -> Any:
+        if self.check_event(yaml.AliasEvent):
+            raise yaml.YAMLError("alias YAML refusé")
+        return super().compose_node(parent, index)
+
+
 def _parse_config(text: str) -> Any:
     """La configuration renvoyée par ha-mcp : JSON, chaîne JSON échappée ou YAML (sûr)."""
     value: Any = text
     for _ in range(3):
         if not isinstance(value, str):
             break
+        if len(value) > MAX_CONFIG_CHARS:
+            return None
         try:
             value = json.loads(value)
         except ValueError:
             try:
-                value = yaml.safe_load(value)
+                value = yaml.load(value, Loader=_NoAliasLoader)  # noqa: S506 - chargeur sûr
             except yaml.YAMLError:
                 return None
     if isinstance(value, dict) and "config" in value:
@@ -448,11 +465,17 @@ class HomeAssistantTools:
         config = _parse_config(text)
         if not isinstance(config, dict):
             return UNREAD
-        if _TEMPLATE.search(json.dumps(config, ensure_ascii=False)):
+        try:
+            dumped = json.dumps(config, ensure_ascii=False)
+        except (TypeError, ValueError):  # dates, ensembles… venus du YAML
+            return f"{entity_id} : contenu non représentable en JSON"
+        if len(dumped) > MAX_CONFIG_CHARS:
+            return f"{entity_id} : contenu trop grand"
+        if _TEMPLATE.search(dumped):
             return f"{entity_id} contient un modèle (template) : contenu imprévisible"
         try:
             if entity_id.startswith("scene."):
-                await self._check_scene(config)
+                await self._check_scene(config, depth)
             else:
                 unknown = set(config) - _SCRIPT_KEYS
                 if unknown:
@@ -462,7 +485,7 @@ class HomeAssistantTools:
             return f"{entity_id} : {e}"
         return None
 
-    async def _check_scene(self, config: dict[str, Any]) -> None:
+    async def _check_scene(self, config: dict[str, Any], depth: int) -> None:
         unknown = set(config) - _SCENE_KEYS
         if unknown:
             raise Sensitive(f"clé inconnue {sorted(unknown)[0]!r}")
@@ -475,7 +498,7 @@ class HomeAssistantTools:
             if not services:
                 raise Sensitive(f"{ent} : domaine non permis")
             data = state if isinstance(state, dict) else None
-            await self._require_allowed(domain, sorted(services)[0], str(ent), data, 0)
+            await self._require_allowed(domain, sorted(services)[0], str(ent), data, depth)
 
     async def _check_steps(self, steps: Any, depth: int, require: bool = False) -> None:
         items = _steps(steps)
@@ -538,6 +561,9 @@ class HomeAssistantTools:
         data = step.get("data")
         if data is not None and not isinstance(data, dict):
             raise Sensitive("données illisibles")
+        extra = set(data or {}) - _DATA_KEYS
+        if extra:
+            raise Sensitive(f"donnée non permise {sorted(extra)[0]!r} (cible cachée possible)")
         target = step.get("target")
         if target is not None and (not isinstance(target, dict) or set(target) - _TARGET_KEYS):
             raise Sensitive("cible autre qu'une liste d'entités (zone, appareil, étiquette)")
