@@ -499,19 +499,25 @@ def equalize(audio: np.ndarray, rng: np.random.Generator) -> np.ndarray:
     return audio
 
 
-def background(n: int, rng: np.random.Generator, babble: list[np.ndarray] | None) -> np.ndarray:
-    """Fond sonore (amplitude pleine échelle = 1)."""
+def background(n: int, rng: np.random.Generator, babble: list[np.ndarray] | None,
+               ref_rms: float) -> np.ndarray:
+    """Fond sonore relatif à la parole de niveau efficace `ref_rms` (pleine échelle = 1).
+
+    Rapport signal/bruit de 10 à 40 dB pour le bruit, de 8 à 25 dB pour les paroles
+    lointaines : le mot reste audible, sinon l'étiquette « positif » serait fausse.
+    """
     kind = rng.random()
     if kind < 0.12:
         return np.zeros(n)
-    level = 10 ** (rng.uniform(-75, -35) / 20)
+    level = ref_rms * 10 ** (-rng.uniform(10, 40) / 20)
     bg = colored_noise(n, rng) * level
     if kind < 0.2:
         bg += hum(n, rng) * level
     if kind > 0.6 and babble:  # paroles lointaines (autres phrases)
         speech = np.concatenate([babble[i] for i in rng.integers(0, len(babble), 4)])
         speech = np.resize(speech, n)
-        bg += speech * 10 ** (rng.uniform(-45, -20) / 20)
+        speech = speech / (np.sqrt(np.mean(speech**2)) + 1e-9)
+        bg += speech * ref_rms * 10 ** (-rng.uniform(8, 25) / 20)
     return bg
 
 
@@ -532,7 +538,7 @@ def scene(word: np.ndarray, rng: np.random.Generator, babble: list[np.ndarray],
     if rev and rng.random() < 0.4:
         word = reverb(np.concatenate((word, np.zeros(int(0.15 * SR)))), rng)
     pre, post = int(pre_s * SR), int(post_s * SR)
-    audio = background(pre + len(word) + post, rng, babble)
+    audio = background(pre + len(word) + post, rng, babble, float(np.sqrt(np.mean(word**2))))
     audio[pre : pre + len(word)] += word
     return channel(audio, rng), pre + len(word)
 
@@ -591,7 +597,7 @@ def _noise_task(task: tuple) -> np.ndarray:
     babble = _BABBLE[split]
     rng = np.random.default_rng(seed)
     n = int(seconds * SR)
-    audio = background(n, rng, babble) * 10 ** (rng.uniform(0, 40) / 20)  # parfois fort
+    audio = background(n, rng, babble, 10 ** (rng.uniform(-45, -12) / 20))  # parfois fort
     feats = ww.clip_features(_MODELS, channel(np.clip(audio, -1, 1), rng))
     return windows(feats, np.arange(ww.N_FEATURES, len(feats), stride))
 
