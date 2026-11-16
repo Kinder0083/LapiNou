@@ -204,6 +204,10 @@ def serve(ctrl):
                     # must be silence, not stale memory.
                     if os.environ.get("KAROTZ_ASR_LOG_SILENCE"):
                         log(f"asr: audio chunk {'silent' if not value.strip(bytes(1)) else 'NOT silent'}")
+                    # tests/scenarios/lapinou_shared_mic: the audio itself, to compare with the microphone.
+                    if os.environ.get("KAROTZ_ASR_SAVE_AUDIO"):
+                        with open(os.path.join(ctrl, "audio"), "ab") as saved:
+                            saved.write(value)
                 else:
                     log(f"asr: field {number} {value!r}")
             if audio_count >= 3 and not answered and mode != "hold":

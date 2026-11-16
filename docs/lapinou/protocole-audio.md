@@ -32,3 +32,12 @@ Quand un lapin se reconnecte, le serveur garde le même `RabbitStream` : `seq` r
 - Reconnexion toutes les 2 s (5 fois), puis toutes les 10 s ; le compte ne repart de zéro qu'une fois qu'une connexion a envoyé sa première trame et tenu 10 s (un serveur qui accepte puis ferme atteint le palier de 10 s). Toutes les adresses de l'hôte sont essayées ; une adresse IP est utilisée telle quelle, un nom est résolu dans un fil d'exécution à part (la boucle principale n'attend jamais le DNS).
 - Coupure Wi-Fi : le tampon d'envoi TCP est réduit à 16 Ko (≈ 1 s d'audio) ; une connexion qui n'avance plus pendant 10 s alors que des trames attendent est abandonnée.
 - Le même audio (gain compris) est servi localement sur `/var/run/lapinou/mic.sock` (mode 0666). Un client trop lent est déconnecté : il doit se reconnecter.
+
+## Clients locaux du micro
+
+Quand `lapinou-mic` tourne, il est le seul à ouvrir `/dev/audio` : `voice-daemon` (reconnaissance vocale) et `multimedia-daemon` (`record`) lisent le micro sur `/var/run/lapinou/mic.sock` ; sans cette socket, ils ouvrent `/dev/audio` comme avant.
+
+- `voice-daemon` garde le format réseau historique de `asr_server.py` (mu-law 8 kHz : un octet sur deux du flux 16 kHz, par blocs de 1024 octets).
+- `multimedia-daemon` convertit le mu-law en échantillons 16 bits non signés avant `flac`. Le gain de `lapinou-mic` (`mic_gain_db`) s'applique aussi à ces deux clients.
+- Si `lapinou-mic` déconnecte un client trop lent, le client se reconnecte à la socket et comble le trou par du silence.
+- À chaque `Multimedia.play(id, …)` joué par `karotz-player`, `multimedia-daemon` appelle `mark_playback(id, true)` dès que le lecteur a ouvert `/dev/dsp` (sondé toutes les 100 ms dans `/proc/<pid>/fd`), puis `mark_playback(id, false)` à la fin ou à l'arrêt du son (et quand un nouveau `play` remplace le son en cours). Si `lapinou-mic` n'est pas sur le bus, rien n'est appelé et rien n'est journalisé. Les lectures de MPD et la synthèse vocale (`voice-daemon`) ne sont pas marquées.

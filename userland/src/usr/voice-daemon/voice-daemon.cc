@@ -54,6 +54,7 @@
 #include "karotz-marshal.h"
 extern "C" {
 #include "karotz-messages.h"
+#include "lapinou-mic-client.h"
 }
 
 using lapinlibre::asr::AsrMsg;
@@ -101,7 +102,8 @@ typedef struct {
     /* ASR */
     GString *asr_uid;  /* uid of the current (or last) session */
     int asr_socket;    /* connection to the server, 0 when no session */
-    int audio_fd;      /* /dev/audio, 0 when closed */
+    int audio_fd;      /* /dev/audio, or lapinou-mic's socket, 0 when closed */
+    int audio_shared;  /* audio_fd is lapinou-mic's socket (the same mu-law 16 kHz) */
     char *asr_server;  /* host of the server in use */
     int asr_port;
     guint asr_source;  /* the idle callback streaming the audio */
@@ -614,10 +616,22 @@ static gboolean asr_stream(gpointer data)
 
     /* After a short or failed read the unread audio is silence, so no stale
      * stack bytes are sent as audio. */
-    ssize_t n = read(self->audio_fd, raw, sizeof raw);
-    if (n < 0)
-        n = 0;
-    memset(raw + n, 0, sizeof raw - n);
+    ssize_t n;
+    if (self->audio_shared) {
+        /* A whole block, or the connection is gone (lapinou-mic drops a slow client): connect again,
+         * and what is missing is silence (mu-law's, not zero bytes). */
+        n = (ssize_t)lapinou_mic_read_full(self->audio_fd, raw, sizeof raw);
+        if (n < (ssize_t)sizeof raw) {
+            close(self->audio_fd);
+            self->audio_fd = lapinou_mic_connect();
+        }
+        memset(raw + n, LAPINOU_MIC_SILENCE, sizeof raw - n);
+    } else {
+        n = read(self->audio_fd, raw, sizeof raw);
+        if (n < 0)
+            n = 0;
+        memset(raw + n, 0, sizeof raw - n);
+    }
     /* Keep every second byte. */
     for (i = 0; i < AUDIO_CHUNK_SIZE; i++)
         chunk[i] = raw[i * 2];
@@ -715,16 +729,21 @@ static void asr_connected(VoiceObject *self, int ret)
         g_log(NULL, G_LOG_LEVEL_DEBUG, "asr server connection FAIL");
         goto fail;
     }
-    self->audio_fd = open(AUDIO_DEVICE, O_RDONLY);
-    if (self->audio_fd == -1) {
-        g_log(NULL, G_LOG_LEVEL_DEBUG, "asr server cant open /dev/audio");
-        ret = -3;
-        goto fail;
-    }
-    if (audio_setup(self->audio_fd) != 0) {
-        g_log(NULL, G_LOG_LEVEL_DEBUG, "asr server cant set /dev/audio parameters");
-        ret = -3;
-        goto fail;
+    /* With lapinou-mic running, the microphone comes from its socket, already mu-law 16 kHz. */
+    self->audio_fd = lapinou_mic_connect();
+    self->audio_shared = self->audio_fd >= 0;
+    if (!self->audio_shared) {
+        self->audio_fd = open(AUDIO_DEVICE, O_RDONLY);
+        if (self->audio_fd == -1) {
+            g_log(NULL, G_LOG_LEVEL_DEBUG, "asr server cant open /dev/audio");
+            ret = -3;
+            goto fail;
+        }
+        if (audio_setup(self->audio_fd) != 0) {
+            g_log(NULL, G_LOG_LEVEL_DEBUG, "asr server cant set /dev/audio parameters");
+            ret = -3;
+            goto fail;
+        }
     }
 
     if (self->asr_file == NULL) {

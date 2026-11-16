@@ -22,6 +22,7 @@
  * external MPD client appeared) and, on stop or pause,
  * multi_playfinished(id, 4).
  */
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -45,6 +46,7 @@
 #include "karotz-common.h"
 #include "karotz-messages.h"
 #include "karotz-marshal.h"
+#include "lapinou-mic-client.h"
 
 /*
  * Extensions in the rabbit's libmpd 0.17.0 that stock libmpd lacks (so the
@@ -105,7 +107,8 @@ typedef struct {
     GString *record_uuid;   /* id of the running recording, "" if none */
     FILE *record_pipe;      /* flac's stdin */
     guint record_timeout;
-    int audio_fd;           /* /dev/audio, 0 once a recording is stopped */
+    int audio_fd;           /* /dev/audio, or lapinou-mic's socket, 0 once a recording is stopped */
+    int audio_shared;       /* audio_fd is lapinou-mic's socket: mu-law 16 kHz, not the device's format */
     int skip_silence;       /* still skipping the device's initial silence */
 } MultimediaObject;
 
@@ -765,10 +768,119 @@ static int api_get_genre(MpdObj *mpd, char **out)
  */
 static guint player_watch;  /* the current player's child watch, 0 for none */
 
+/* ---- playback marks for lapinou-mic ---------------------------------------- */
+
+/*
+ * lapinou-mic (the shared microphone) is told when a play really starts and ends on the speaker,
+ * so the server can cancel the echo: LapinouMic.mark_playback(id, TRUE) once karotz-player has
+ * opened /dev/dsp, mark_playback(id, FALSE) when it has ended or stopped, or is given another
+ * sound to play. Where lapinou-mic isn't on the bus there is nothing to tell and nothing is logged.
+ * Only karotz-player's plays are marked (MPD's output is another process, not tracked here).
+ * $LAPINOU_DSP_DEVICE names the device instead of /dev/dsp (tests).
+ */
+#define LAPINOU_MIC_NAME "com.mindscape.karotz.LapinouMic"
+#define LAPINOU_MIC_PATH "/com/mindscape/karotz/LapinouMic"
+#define LAPINOU_MIC_PLAYER_POLL_MS 100
+
+static char *mark_id;       /* the play being marked, NULL when none */
+static int mark_pid;        /* the player that plays it */
+static int mark_started;    /* its start mark is sent */
+static guint mark_timer;    /* the poll for /dev/dsp being opened, 0 when not polling */
+
+static void send_mark(const char *id, gboolean start)
+{
+    DBusGProxy *proxy;
+    gboolean has_owner = FALSE;
+    GError *error = NULL;
+
+    if (multimedia == NULL || multimedia->bus == NULL || multimedia->bus_proxy == NULL)
+        return;
+    if (!org_freedesktop_DBus_name_has_owner(multimedia->bus_proxy, LAPINOU_MIC_NAME, &has_owner, &error)) {
+        g_clear_error(&error);
+        return;
+    }
+    if (!has_owner)
+        return;
+    proxy = dbus_g_proxy_new_for_name(multimedia->bus, LAPINOU_MIC_NAME, LAPINOU_MIC_PATH, LAPINOU_MIC_NAME);
+    dbus_g_proxy_call_no_reply(proxy, "mark_playback", G_TYPE_STRING, id, G_TYPE_BOOLEAN, start, G_TYPE_INVALID);
+    g_object_unref(proxy);
+}
+
+/* 1 if process pid holds the sound device open. */
+static int dsp_open_in(int pid)
+{
+    const char *device = g_getenv("LAPINOU_DSP_DEVICE");
+    char dir[48], link[320], target[256];
+    struct dirent *entry;
+    int found = 0;
+    DIR *fds;
+
+    if (device == NULL || *device == '\0')
+        device = "/dev/dsp";
+    snprintf(dir, sizeof dir, "/proc/%d/fd", pid);
+    fds = opendir(dir);
+    if (fds == NULL)
+        return 0;
+    while (!found && (entry = readdir(fds)) != NULL) {
+        ssize_t n;
+
+        if (entry->d_name[0] == '.')
+            continue;
+        snprintf(link, sizeof link, "%s/%s", dir, entry->d_name);
+        n = readlink(link, target, sizeof target - 1);
+        if (n > 0) {
+            target[n] = '\0';
+            found = strcmp(target, device) == 0;
+        }
+    }
+    closedir(fds);
+    return found;
+}
+
+/* The play's end mark, if its start mark was sent; stop watching. */
+static void mark_end(void)
+{
+    if (mark_timer != 0) {
+        g_source_remove(mark_timer);
+        mark_timer = 0;
+    }
+    if (mark_id != NULL && mark_started)
+        send_mark(mark_id, FALSE);
+    g_free(mark_id);
+    mark_id = NULL;
+    mark_started = 0;
+}
+
+/* Every few tenths of a second after a play, until the player has the sound device open. */
+static gboolean mark_poll(gpointer data)
+{
+    (void)data;
+    if (mark_id == NULL || multimedia->player_pid != mark_pid) {
+        mark_timer = 0;
+        return FALSE;
+    }
+    if (!dsp_open_in(mark_pid))
+        return TRUE;
+    mark_started = 1;
+    mark_timer = 0;
+    send_mark(mark_id, TRUE);
+    return FALSE;
+}
+
+/* A play of id has been given to the player with this pid (the one before it is over). */
+static void mark_begin(const char *id, int pid)
+{
+    mark_end();
+    mark_id = g_strdup(id);
+    mark_pid = pid;
+    mark_timer = g_timeout_add(LAPINOU_MIC_PLAYER_POLL_MS, mark_poll, NULL);
+}
+
 /* player has ended (its waitpid status): the player is stopped. stopped: a stop
  * killed it with SIGTERM, so that death is its normal end. */
 static void player_ended(int status, int stopped)
 {
+    mark_end();
     if (WIFEXITED(status) || (stopped && WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM))
         g_log(NULL, G_LOG_LEVEL_DEBUG, "Multimedia: player end process: %d", multimedia->player_pid);
     else
@@ -1309,6 +1421,15 @@ static int skip_initial_silence(const guint8 *buf, int len, MultimediaObject *se
     return i;
 }
 
+/* G.711 mu-law byte to a signed 16-bit sample. */
+static int mulaw_to_s16(guint8 byte)
+{
+    unsigned u = ~byte & 0xff;
+    int t = (int)(((u & 0x0f) << 3) + 0x84) << ((u >> 4) & 7);
+
+    return (u & 0x80) ? 0x84 - t : t - 0x84;
+}
+
 static gboolean record_stop(gpointer data);
 
 /* Idle callback: move one block from /dev/audio to flac, amplified. */
@@ -1324,9 +1445,28 @@ static gboolean record_pump(gpointer data)
     /* After a short or failed read, the buffer is silence (the unsigned
      * midpoint, little-endian) from the first incomplete sample on, so no
      * stale stack bytes go into the recording. */
-    n = read(self->audio_fd, buf, sizeof buf);
-    if (n < 0)
-        n = 0;
+    if (self->audio_shared) {
+        /* lapinou-mic's socket: mu-law bytes, one per sample. A whole block, or the connection is
+         * gone (lapinou-mic drops a slow client): connect again, and what is missing is silence. */
+        guint8 mulaw[sizeof buf / 2];
+        size_t got = lapinou_mic_read_full(self->audio_fd, mulaw, sizeof mulaw);
+
+        if (got < sizeof mulaw) {
+            close(self->audio_fd);
+            self->audio_fd = lapinou_mic_connect();
+        }
+        for (i = 0; i < (int)got; i++) {
+            unsigned sample = (unsigned)(mulaw_to_s16(mulaw[i]) + 0x8000) & 0xffff;
+
+            buf[2 * i] = (guint8)sample;
+            buf[2 * i + 1] = (guint8)(sample >> 8);
+        }
+        n = (ssize_t)got * 2;
+    } else {
+        n = read(self->audio_fd, buf, sizeof buf);
+        if (n < 0)
+            n = 0;
+    }
     for (i = (int)n & ~1; i < (int)sizeof buf; i += 2) {
         buf[i] = SAMPLE_SILENCE & 0xff;
         buf[i + 1] = SAMPLE_SILENCE >> 8;
@@ -1408,19 +1548,24 @@ static gboolean record_stop(gpointer data)
 static int record_go(MultimediaObject *self, const char *id)
 {
     g_log(NULL, G_LOG_LEVEL_DEBUG, "Record Go %s\n", id);
-    self->audio_fd = open("/dev/audio", O_RDONLY);
-    if (self->audio_fd < 0) {
-        g_log(NULL, G_LOG_LEVEL_WARNING, "Record Go: can't open /dev/audio: %s\n", strerror(errno));
-        self->audio_fd = 0; /* 0 is "no recording" for record_pump() */
-        return -1;
-    }
-    /* A device left in another format or rate would record noise that flac
-     * then encodes as 16 kHz, 16-bit: no recording rather than a garbled one. */
-    if (audio_setup(self->audio_fd) < 0) {
-        g_log(NULL, G_LOG_LEVEL_WARNING, "Record Go: /dev/audio setup failed\n");
-        close(self->audio_fd);
-        self->audio_fd = 0;
-        return -1;
+    /* With lapinou-mic running it is the only one to open /dev/audio: the microphone comes from its socket. */
+    self->audio_fd = lapinou_mic_connect();
+    self->audio_shared = self->audio_fd >= 0;
+    if (!self->audio_shared) {
+        self->audio_fd = open("/dev/audio", O_RDONLY);
+        if (self->audio_fd < 0) {
+            g_log(NULL, G_LOG_LEVEL_WARNING, "Record Go: can't open /dev/audio: %s\n", strerror(errno));
+            self->audio_fd = 0; /* 0 is "no recording" for record_pump() */
+            return -1;
+        }
+        /* A device left in another format or rate would record noise that flac
+         * then encodes as 16 kHz, 16-bit: no recording rather than a garbled one. */
+        if (audio_setup(self->audio_fd) < 0) {
+            g_log(NULL, G_LOG_LEVEL_WARNING, "Record Go: /dev/audio setup failed\n");
+            close(self->audio_fd);
+            self->audio_fd = 0;
+            return -1;
+        }
     }
     self->record_pipe = popen(RECORD_COMMAND, "w");
     if (self->record_pipe == NULL) {
@@ -1446,12 +1591,16 @@ gboolean multimedia_object_play(MultimediaObject *self, const char *id, char *ur
     (void)behaviour;
     (void)error;
     g_log(NULL, G_LOG_LEVEL_MESSAGE, "play url: %s :: id:%s", url, id);
-    switch (api_play(self, url)) {
+    int played = api_play(self, url);
+
+    switch (played) {
     case PLAY_PLAYER:
     case PLAY_MPD:
         /* The play's id, for its playFinished. ("" when nobody waits for it.) */
         *result = TRUE;
         g_string_assign(self->uid, id);
+        if (played == PLAY_PLAYER)
+            mark_begin(id, self->player_pid);
         g_log(NULL, G_LOG_LEVEL_DEBUG, "Multimedia play: obj. uid: %s", self->uid->str);
         break;
     case PLAY_SETTING:
