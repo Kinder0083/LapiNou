@@ -29,7 +29,7 @@ MIN_SPEECH_S = 0.25
 PAD_S = 0.3  # silence ajouté de chaque côté d'un segment : Parakeet entend mieux un mot isolé
 
 
-class Transcriber(Protocol):
+class Recognising(Protocol):
     def transcribe(self, samples: np.ndarray) -> str:
         """Texte de `samples` (float32, -1..1, 16 kHz)."""
 
@@ -82,7 +82,7 @@ class SileroSegmenter:
         self._pending = np.zeros(0, np.float32)
 
 
-def transcribe_padded(transcriber: Transcriber, samples: np.ndarray) -> str:
+def transcribe_padded(transcriber: Recognising, samples: np.ndarray) -> str:
     """Transcription d'un segment entouré de silence (PAD_S de chaque côté)."""
     pad = np.zeros(int(PAD_S * SAMPLE_RATE), np.float32)
     return transcriber.transcribe(np.concatenate((pad, samples, pad))).strip()

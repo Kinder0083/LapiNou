@@ -34,7 +34,7 @@ from lapinou.voice.vad import (  # noqa: F401  (ré-exportés : modèles, VAD pa
     SAMPLE_RATE,
     VAD_THRESHOLD,
     SileroSegmenter,
-    Transcriber,
+    Recognising,
     asr_server,
     load_recogniser,
     models_present,
@@ -144,7 +144,7 @@ class AsrWakeDetector:
 
     def __init__(
         self,
-        transcriber: Transcriber,
+        transcriber: Recognising,
         names: Sequence[str] = ("lapinou",),
         max_segment_s: float = 6.0,
         *,
@@ -260,7 +260,7 @@ class AsrWakeDetector:
 # ---- configuration ----
 
 
-def build_detector(voice, recogniser: Transcriber) -> AsrWakeDetector:
+def build_detector(voice, recogniser: Recognising) -> AsrWakeDetector:
     """Le détecteur de la configuration `voice` (VoiceConfig) pour un nouveau flux.
 
     « asr » : transcription seule. « both » : transcription gardée par le classifieur
