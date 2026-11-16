@@ -55,14 +55,40 @@ class ProviderConfig(_Section):
 class BrainConfig(_Section):
     primary: str = "claude-opus-5-5"
     fast: str = "claude-haiku-5-5"
+    # Fournisseurs essayés si le cerveau choisi échoue : « homeassistant » (Assist), un
+    # identifiant de modèle Claude, ou « fournisseur:modèle » (clé de `providers`).
     fallback_chain: list[str] = Field(default_factory=lambda: ["homeassistant"])
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
+    web_search: bool = True  # recherche web (outil serveur) pour le modèle principal
+
+
+class ModelPrice(_Section):
+    """Prix en dollars par million de jetons."""
+
+    input: float = 0.0
+    output: float = 0.0
+    cache_read: float = 0.0
+    cache_write: float = 0.0
+
+
+def _default_prices() -> dict[str, ModelPrice]:
+    # Écriture en cache (5 min) : 1,25 x l'entrée ; lecture : 0,1 x. Haiku 5.5 : prix des
+    # requêtes jusqu'à 100 000 jetons d'entrée.
+    return {
+        "claude-opus-5-5": ModelPrice(input=4.0, output=20.0, cache_read=0.20, cache_write=5.0),
+        "claude-haiku-5-5": ModelPrice(
+            input=0.10, output=0.50, cache_read=0.01, cache_write=0.125
+        ),
+    }
 
 
 class BudgetConfig(_Section):
     monthly_usd: float = 20.0
     warn_pct: int = 80
     stop_pct: int = 100
+    # Modèle absent de la table : gratuit (modèle local, Assist).
+    prices: dict[str, ModelPrice] = Field(default_factory=_default_prices)
+    web_search_per_1k: float = 10.0
 
 
 class VoiceConfig(_Section):
