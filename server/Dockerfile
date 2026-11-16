@@ -7,11 +7,12 @@
 # Les modèles ne sont PAS dans l'image : ils vont dans le volume /var/lib/lapinou (HOME du
 # service), récupérés une fois (voir la doc), puis gardés d'une image à l'autre.
 
-ARG PYTHON_IMAGE=python:3.12-slim-bookworm
+# Images épinglées par empreinte (index multi-architecture, relevé le 2026-11-16).
+ARG PYTHON_IMAGE=python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df
 
 # ---- construction : venv avec les dépendances figées (uv.lock) ----
 FROM ${PYTHON_IMAGE} AS build
-COPY --from=ghcr.io/astral-sh/uv:0.13.8 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.8@sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85 /uv /usr/local/bin/uv
 # speexaec se compile en 3.12 (libspeexdsp-dev, gcc ; les en-têtes Python sont dans l'image).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends gcc libc6-dev libspeexdsp-dev \
@@ -45,5 +46,5 @@ VOLUME ["/etc/lapinou", "/var/lib/lapinou"]
 EXPOSE 9123 9300 8080 8081 8443
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s \
-  CMD ["python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8080/api/health', timeout=4)"]
+  CMD ["python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8080/health', timeout=4)"]
 ENTRYPOINT ["python", "-m", "lapinou", "--config", "/etc/lapinou/config.toml", "--db", "/var/lib/lapinou/lapinou.db"]

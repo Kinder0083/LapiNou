@@ -614,7 +614,7 @@ def host_allowed(header: str, settings: Settings) -> bool:
 # Les endpoints LapinLibre des applications (web/apps.py) en font partie : le lapin les joint
 # par le nom ou l'adresse de `url_app`, quel qu'il soit.
 RABBIT_PREFIXES = ("/ota/", "/tts/", "/file/", "/asr/grammar/", "/upload/")
-RABBIT_PATHS = frozenset({"/api/health", "/log", "/upload", "/text"})
+RABBIT_PATHS = frozenset({"/api/health", "/health", "/log", "/upload", "/text"})
 
 
 def _guarded(path: str) -> bool:

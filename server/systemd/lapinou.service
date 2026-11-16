@@ -16,6 +16,9 @@ Description=LapiNou, serveur vocal des lapins Karotz
 Documentation=https://github.com/Kinder0083/LapiNou/blob/main/docs/lapinou/service.md
 Wants=network-online.target
 After=network-online.target
+# Pas de boucle sans fin si le service échoue au démarrage (10 essais en 5 minutes).
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 Type=exec
@@ -35,8 +38,11 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=lapinou
 
-# Durcissement (compatible avec un conteneur LXC non privilégié).
+# Durcissement. /opt/lapinou est inscriptible (bouton « Mettre à jour ») : qui prend la main
+# sur le service peut donc modifier son code, qui reste confiné par ce qui suit (aucune
+# capacité, pas de root). Retirer /opt/lapinou de ReadWritePaths désactive ce bouton.
 NoNewPrivileges=yes
+CapabilityBoundingSet=
 ProtectSystem=strict
 ReadWritePaths=/var/lib/lapinou /etc/lapinou /opt/lapinou
 ProtectHome=yes
@@ -45,6 +51,12 @@ PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+SystemCallArchitectures=native
 RestrictSUIDSGID=yes
 RestrictRealtime=yes
 LockPersonality=yes

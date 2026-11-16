@@ -12,8 +12,10 @@ importée et non copiée (R4) :
 - `GET /text` : une page de test pour `http.get`.
 
 Comme chez LapinLibre, rien de tout cela ne demande de mot de passe (réseau local). En plus :
-un envoi est borné (MAX_UPLOAD), seuls les KEEP_UPLOADS derniers sont gardés, et deux envois
-de la même seconde ne s'écrasent pas.
+un envoi est borné (MAX_UPLOAD), écrit sur le disque au fil de l'eau, au plus MAX_UPLOADS_AT_ONCE
+à la fois (sinon 503) ; seuls les KEEP_UPLOADS derniers sont gardés, KEEP_BYTES en tout ; deux
+envois de la même seconde ne s'écrasent pas. Un compte rendu est mis sur une ligne (retours à
+la ligne échappés) et coupé à MAX_LOG_LINE.
 """
 
 from __future__ import annotations
@@ -21,7 +23,9 @@ from __future__ import annotations
 import asyncio
 import email
 import email.policy
+import os
 import re
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -33,12 +37,22 @@ from fastapi.responses import PlainTextResponse, Response
 from ..rabbit.platform import app_server
 
 MAX_UPLOAD = 32 * 1024 * 1024
-MAX_LOG = 64 * 1024
+MAX_UPLOADS_AT_ONCE = 2
 KEEP_UPLOADS = 200
+KEEP_BYTES = 512 * 1024 * 1024
+MAX_LOG = 64 * 1024  # corps de POST /log lu au plus
+MAX_LOG_LINE = 1024  # ce qui en est gardé (AppReports : 1000 lignes, donc ~1 Mio au plus)
 DEFAULT_LANG = "fr-FR"
 
 _SAFE = re.compile(r"[^A-Za-z0-9_.-]")
+_PART = ".part-"  # envoi en cours d'écriture (ignoré par le ménage)
 TEXT = "text/plain; charset=UTF-8"
+
+
+def one_line(text: str) -> str:
+    """Un compte rendu sur une ligne (CR, LF échappés), coupé à MAX_LOG_LINE."""
+    text = text.replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n")
+    return text[:MAX_LOG_LINE]
 
 
 class AppHost:
@@ -53,6 +67,7 @@ class AppHost:
         self.lang = lang
         self.reports = app_server.AppReports()
         self._lock = threading.Lock()
+        self._uploading = 0
 
     def _apps(self) -> app_server.Apps | None:
         if self.folder is None or not self.folder.is_dir():
@@ -68,6 +83,10 @@ class AppHost:
     def grammar_text(self) -> str:
         return (self._apps() or _NoApps(self.lang)).grammar_text()
 
+    def void_grammar(self) -> str:
+        """Une grammaire sans alternative ($VOID)."""
+        return _NoApps(self.lang).grammar_text()
+
     def zip(self, key: str) -> bytes | None:
         apps = self._apps()
         if apps is None or key not in apps.keys():
@@ -75,37 +94,63 @@ class AppHost:
         return apps.zip(key)
 
     def grammar_source(self, url: str) -> str | None:
-        """Pour asr_server.set_grammar_source : la grammaire de lancement nommée par URL."""
+        """La grammaire de lancement nommée par URL (`…/asr/grammar/<id>.abnf`), ou None."""
         return self.grammar_text() if re.search(r"/asr/grammar/[^/]+\.abnf$", url) else None
 
-    def save(self, name: str, ctype: str, body: bytes) -> list[str]:
-        """Range un envoi (corps brut, ou une pièce par fichier d'un multipart) ; ce qui a été
-        rangé, pour le journal."""
+    def report(self, text: str) -> None:
+        self.reports.add(one_line(text))
+
+    # ---- envois ----
+
+    def begin_upload(self) -> bool:
+        """Une place pour un envoi (False : trop d'envois en cours)."""
+        with self._lock:
+            if self._uploading >= MAX_UPLOADS_AT_ONCE:
+                return False
+            self._uploading += 1
+            return True
+
+    def end_upload(self) -> None:
+        with self._lock:
+            self._uploading -= 1
+
+    def part_file(self) -> tuple[int, Path]:
+        """Un fichier temporaire dans le dossier des envois (rangé ensuite par `store`)."""
         assert self.uploads is not None
         self.uploads.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(prefix=_PART, dir=self.uploads)
+        return fd, Path(name)
+
+    def store(self, name: str, ctype: str, part: Path) -> list[str]:
+        """Range l'envoi écrit dans `part` (corps brut, ou une pièce par fichier d'un multipart)
+        et retire `part` ; ce qui a été rangé, pour le journal."""
+        assert self.uploads is not None
         saved: list[str] = []
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        with self._lock:
-            if ctype.startswith("multipart/form-data"):
-                msg = email.message_from_bytes(
-                    b"Content-Type: " + ctype.encode("latin-1", "replace") + b"\r\n\r\n" + body,
-                    policy=email.policy.HTTP)
-                parts = msg.iter_parts() if msg.is_multipart() else ()
-                for part in parts:
-                    field = part.get_param("name", header="content-disposition") or "field"
-                    data = part.get_payload(decode=True) or b""
-                    if part.get_filename():
-                        safe = _SAFE.sub("_", part.get_filename())[-100:]
-                        target = self._target(f"{stamp}-{name}-{safe}")
-                        target.write_bytes(data)
-                        saved.append(f"{field}={target.name} ({len(data)} bytes)")
-                    else:
-                        saved.append(f"{field}=({len(data)} bytes)")
-            else:
-                target = self._target(f"{stamp}-{name}.bin")
-                target.write_bytes(body)
-                saved.append(f"{target.name} ({len(body)} bytes, {ctype or 'no type'})")
-            self._prune()
+        try:
+            with self._lock:
+                if ctype.startswith("multipart/form-data"):
+                    msg = email.message_from_bytes(
+                        b"Content-Type: " + ctype.encode("latin-1", "replace") + b"\r\n\r\n"
+                        + part.read_bytes(), policy=email.policy.HTTP)
+                    for piece in msg.iter_parts() if msg.is_multipart() else ():
+                        field = piece.get_param("name", header="content-disposition") or "field"
+                        data = piece.get_payload(decode=True) or b""
+                        if piece.get_filename():
+                            safe = _SAFE.sub("_", piece.get_filename())[-100:]
+                            target = self._target(f"{stamp}-{name}-{safe}")
+                            target.write_bytes(data)
+                            saved.append(f"{field}={target.name} ({len(data)} bytes)")
+                        else:
+                            saved.append(f"{field}=({len(data)} bytes)")
+                else:
+                    target = self._target(f"{stamp}-{name}.bin")
+                    size = part.stat().st_size
+                    os.replace(part, target)
+                    saved.append(f"{target.name} ({size} bytes, {ctype or 'no type'})")
+                self._prune()
+        finally:
+            part.unlink(missing_ok=True)
         return saved
 
     def _target(self, filename: str) -> Path:
@@ -119,11 +164,16 @@ class AppHost:
         return target
 
     def _prune(self) -> None:
+        """Garde les KEEP_UPLOADS envois les plus récents, KEEP_BYTES au plus en tout."""
         assert self.uploads is not None
-        files = sorted((p for p in self.uploads.iterdir() if p.is_file()),
-                       key=lambda p: (p.stat().st_mtime_ns, p.name))
-        for old in files[:-KEEP_UPLOADS] if len(files) > KEEP_UPLOADS else ():
-            old.unlink(missing_ok=True)
+        files = [(p, p.stat()) for p in self.uploads.iterdir()
+                 if p.is_file() and not p.name.startswith(_PART)]
+        files.sort(key=lambda f: (f[1].st_mtime_ns, f[0].name), reverse=True)
+        total = 0
+        for i, (path, st) in enumerate(files):
+            total += st.st_size
+            if i >= KEEP_UPLOADS or total > KEEP_BYTES:
+                path.unlink(missing_ok=True)
 
 
 class _NoApps(app_server.Apps):
@@ -147,7 +197,7 @@ def _host(request: Request) -> AppHost:
 def app_zip(key: str, version: str, request: Request) -> Response:
     data = _host(request).zip(key)
     if data is None:
-        app_server.log(f"http: /file/{key}/{version}/get: not found")
+        app_server.log(f"http: /file/{one_line(key)}/{one_line(version)}/get: not found")
         raise HTTPException(404)
     app_server.log(f"http: sending {key} ({len(data)} bytes)")
     return Response(data, media_type="application/zip")
@@ -168,26 +218,25 @@ def text() -> PlainTextResponse:
 @router.get("/log")
 def log_get(request: Request) -> PlainTextResponse:
     params = urllib.parse.parse_qs(request.url.query)
-    _host(request).reports.add(" ".join(params.get("msg", ["(no msg)"]))[:MAX_LOG])
+    _host(request).report(" ".join(params.get("msg", ["(no msg)"])))
     return PlainTextResponse("OK", media_type=TEXT)
 
 
-async def _body(request: Request, limit: int) -> bytes:
+def _too_large(request: Request, limit: int) -> bool:
     declared = request.headers.get("content-length", "")
-    if declared.isdigit() and int(declared) > limit:
-        raise HTTPException(413)
-    body = bytearray()
-    async for chunk in request.stream():
-        body += chunk
-        if len(body) > limit:
-            raise HTTPException(413)
-    return bytes(body)
+    return declared.isdigit() and int(declared) > limit
 
 
 @router.post("/log")
 async def log_post(request: Request) -> PlainTextResponse:
-    body = await _body(request, MAX_LOG)
-    _host(request).reports.add(body.decode(errors="replace"))
+    if _too_large(request, MAX_LOG):
+        raise HTTPException(413)
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > MAX_LOG:
+            raise HTTPException(413)
+    _host(request).report(body.decode(errors="replace"))
     return PlainTextResponse("OK", media_type=TEXT)
 
 
@@ -197,9 +246,27 @@ async def upload(request: Request, name: str = "") -> PlainTextResponse:
     host = _host(request)
     if host.uploads is None:
         raise HTTPException(404)
-    body = await _body(request, MAX_UPLOAD)
-    safe = _SAFE.sub("_", name.strip("/"))[:100] or "upload"
-    saved = await asyncio.to_thread(host.save, safe, request.headers.get("content-type", ""),
-                                    body)
+    if _too_large(request, MAX_UPLOAD):
+        raise HTTPException(413)
+    if not host.begin_upload():
+        raise HTTPException(503, "trop d'envois en cours")
+    try:
+        fd, part = await asyncio.to_thread(host.part_file)
+        try:
+            size = 0
+            with os.fdopen(fd, "wb") as f:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > MAX_UPLOAD:
+                        raise HTTPException(413)
+                    await asyncio.to_thread(f.write, chunk)
+        except BaseException:
+            part.unlink(missing_ok=True)
+            raise
+        safe = _SAFE.sub("_", name.strip("/"))[:100] or "upload"
+        saved = await asyncio.to_thread(host.store, safe,
+                                        request.headers.get("content-type", ""), part)
+    finally:
+        host.end_upload()
     app_server.log(f"http: upload /upload/{safe}: {', '.join(saved) or 'nothing'}")
     return PlainTextResponse("OK", media_type=TEXT)

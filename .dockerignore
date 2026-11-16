@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: MIT
+# Contexte de server/Dockerfile (docker build -f server/Dockerfile .) : seulement ce que
+# l'image copie, sans environnements, caches, réglages locaux, clés, données ni modèles.
+*
+!server/
+!tools/app-server/
+!userland/proto/
+
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+
+# Réglages locaux (config.toml, secrets.toml…) : seul pyproject.toml est utile
+**/*.toml
+!server/pyproject.toml
+
+# Clés : aucune, sauf la clé publique OTA livrée
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pub
+!server/lapinou/ota-pubkey.pub
+
+# Données et modèles (montés dans le volume /var/lib/lapinou)
+**/data
+**/models
+**/uploads
+**/*.db
+**/*.sqlite
+**/*.onnx
+**/*.bin
+**/*.tar.bz2
+**/.cache

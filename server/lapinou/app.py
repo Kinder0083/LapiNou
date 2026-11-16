@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import os
 import socket
@@ -79,6 +80,11 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok", "version": __version__}
 
+    @app.get("/health", include_in_schema=False)
+    def health_alias() -> dict[str, str]:
+        """Alias de /api/health (sondes de supervision, Docker)."""
+        return {"status": "ok"}
+
     return app
 
 
@@ -136,24 +142,46 @@ class Services:
         threading.Thread(target=server.serve_forever, name=name, daemon=True).start()
 
     async def close(self) -> None:
-        if self.ota is not None:
-            await self.ota.close()
-        for attr in ("asr_server", "tts_server"):
+        """Ferme tout dans l'ordre inverse ; chaque étape a lieu même si une précédente échoue
+        (la première erreur est relancée à la fin). Les sessions ASR sont coupées avant la voix."""
+
+        async def stop_server(attr: str) -> None:
             srv = getattr(self, attr)
             if srv is not None:
-                await asyncio.to_thread(srv.shutdown)
-                srv.server_close()
                 setattr(self, attr, None)
-        await self.orchestrator.close()
-        await self.timers.close()
-        if self.ha is not None:
-            await self.ha.close()
-        await self.gateway.stop()
-        await self.registry.close()
-        await asyncio.to_thread(self.state.close)
-        self.voice.close()
-        self.db.close()
+                stop = getattr(srv, "stop", None)  # asr_compat : coupe aussi les sessions
+                await (asyncio.to_thread(stop) if stop else asyncio.to_thread(_stop_http, srv))
+
+        steps: list[tuple[str, Any]] = [
+            ("ota", lambda: self.ota.close() if self.ota is not None else None),
+            ("asr", lambda: stop_server("asr_server")),
+            ("tts", lambda: stop_server("tts_server")),
+            ("orchestrator", self.orchestrator.close),
+            ("timers", self.timers.close),
+            ("ha", lambda: self.ha.close() if self.ha is not None else None),
+            ("gateway", self.gateway.stop),
+            ("registry", self.registry.close),
+            ("state", lambda: asyncio.to_thread(self.state.close)),
+            ("voice", self.voice.close),
+            ("db", self.db.close),
+        ]
+        first: BaseException | None = None
+        for name, step in steps:
+            try:
+                result = step()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception as e:  # noqa: BLE001 (on continue de fermer le reste)
+                log.exception("arrêt : %s en échec", name)
+                first = first or e
         log.info("serveur LapiNou arrêté")
+        if first is not None:
+            raise first
+
+
+def _stop_http(srv: Any) -> None:
+    srv.shutdown()
+    srv.server_close()
 
 
 def _lan_address() -> str:
