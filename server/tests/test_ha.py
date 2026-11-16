@@ -361,15 +361,61 @@ async def test_global_pin_lockout_after_five_failures(ha):
     box = ToolBox(tools.tools())
     unlock_a = args("lock", "unlock", "lock.porte_entree")
     unlock_b = args("lock", "unlock", "lock.porte_arriere")
-    # 5 codes faux répartis : jamais 3 pour une même paire (lapin, entité).
-    for rabbit, request in [("l1", unlock_a), ("l1", unlock_a), ("l2", unlock_a),
-                            ("l2", unlock_b), ("l3", unlock_b)]:
+
+    async def fail(rabbit, request):
         r = await box.call("ha_call_service", request, ToolContext(rabbit_id=rabbit))
         assert not r.is_error, r.content
         await tools.confirm(rabbit, "9 9 9 9")
+
+    # 4 codes faux répartis : jamais 3 pour une même paire (lapin, entité) ; pas encore bloqué.
+    for rabbit, request in [("l1", unlock_a), ("l1", unlock_a), ("l2", unlock_a),
+                            ("l2", unlock_b)]:
+        await fail(rabbit, request)
+    waiting = await box.call("ha_call_service", unlock_b, ToolContext(rabbit_id="l5"))
+    assert not waiting.is_error and tools.pending("l5") is not None
+    # Le 5e code faux bloque tout.
+    await fail("l3", unlock_b)
+    good = await tools.confirm("l5", "1 2 3 4")  # bon code, mais pendant le blocage
+    assert good is not None and good.is_error
     blocked = await box.call("ha_call_service", unlock_b, ToolContext(rabbit_id="l4"))
     assert blocked.is_error and tools.pending("l4") is None
+    assert service_calls(log) == []
     tools.test_clock.t += 601
     again = await box.call("ha_call_service", unlock_b, ToolContext(rabbit_id="l4"))
     assert not again.is_error
+    done = await tools.confirm("l4", "1 2 3 4")
+    assert done is not None and not done.is_error
+    assert [c["entity_id"] for c in service_calls(log)] == ["lock.porte_arriere"]
+
+
+# --- Correction 3 : cibles dans `data`, boucles, YAML piégé ------------------------------
+
+
+@pytest.mark.parametrize("entity", [
+    "script.zone_dans_data",   # cover sur une entité permise, mais data.area_id = garage
+    "script.prise_zone",       # switch.turn_on avec data.area_id
+    "script.yaml_date",        # YAML : date (non sérialisable en JSON)
+    "script.yaml_alias",       # YAML : ancre et alias
+    "script.enorme",           # configuration trop grande
+])
+async def test_hidden_targets_and_odd_configs_are_refused(ha, entity):
+    tools, log, _ = ha
+    result = await call(tools, "script", "turn_on", entity)
+    assert result.is_error and result.content.startswith("REFUSÉ"), result.content
     assert service_calls(log) == []
+
+
+async def test_benign_data_still_allowed(ha):
+    tools, log, _ = ha
+    result = await call(tools, "script", "turn_on", "script.lumiere_douce")
+    assert not result.is_error, result.content
+    assert [c["entity_id"] for c in service_calls(log)] == ["script.lumiere_douce"]
+
+
+@pytest.mark.parametrize("entity", ["scene.boucle", "scene.ping"])
+async def test_reference_cycles_stop_at_depth_limit(ha, entity):
+    tools, log, _ = ha
+    result = await call(tools, "scene", "turn_on", entity)
+    assert result.is_error and result.content.startswith("REFUSÉ"), result.content
+    assert service_calls(log) == []
+    assert len(calls(log)) <= 12  # nombre d'appels à ha-mcp borné

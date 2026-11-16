@@ -90,6 +90,22 @@ SCRIPTS: dict[str, dict[str, Any]] = {
     "commande": {"sequence": [{"action": "shell_command.ouvrir"}]},
     "appareil": {"sequence": [{"device_id": "abc123", "domain": "cover", "type": "open"}]},
     "sans_cible": {"sequence": [{"action": "light.turn_off"}]},
+    # Correction 3 : cibles cachées dans `data`, données permises, boucles, YAML piégé.
+    "zone_dans_data": {"sequence": [{"action": "cover.open_cover",
+                                     "target": {"entity_id": "cover.volet_chambre"},
+                                     "data": {"area_id": "garage"}}]},
+    "prise_zone": {"sequence": [{"action": "switch.turn_on",
+                                 "target": {"entity_id": "switch.prise_salon"},
+                                 "data": {"area_id": "salon"}}]},
+    "lumiere_douce": {"sequence": [{"action": "light.turn_on",
+                                    "target": {"entity_id": "light.salon"},
+                                    "data": {"brightness": 100, "transition": 2}}]},
+    "pong": {"sequence": [{"scene": "scene.ping"}]},
+    "yaml_date": "sequence:\n  - delay: 2026-01-01\n",
+    "yaml_alias": ("x: &a [1]\nalias: *a\nsequence:\n  - action: light.turn_on\n"
+                   "    target:\n      entity_id: light.salon\n"),
+    "enorme": {"alias": "x" * 300_000, "sequence": [
+        {"action": "light.turn_on", "target": {"entity_id": "light.salon"}}]},
     # Formats de réponse : YAML brut, ou configuration en chaîne JSON échappée.
     "yaml_zone": "sequence:\n  - action: cover.open_cover\n    target:\n      area_id: garage\n",
     "yaml_sur": "sequence:\n  - action: light.turn_on\n    target:\n      entity_id: light.salon\n",
@@ -103,12 +119,16 @@ SCENES: dict[str, dict[str, Any]] = {
     "depart": {"entities": {"light.salon": {"state": "off"},
                             "lock.porte_entree": {"state": "locked"}}},
     "chaud": {"entities": {"climate.salon": {"state": "heat", "temperature": 28}}},
+    "boucle": {"entities": {"scene.boucle": {"state": "on"}}},
+    "ping": {"entities": {"script.pong": {"state": "on"}}},
 }
 
 for _key in SCRIPTS:
     STATES.setdefault(f"script.{_key}", {"state": "off", "attributes": {"friendly_name": _key}})
 for _key in SCENES:
     STATES.setdefault(f"scene.{_key}", {"state": "unknown", "attributes": {"friendly_name": _key}})
+STATES.setdefault("switch.prise_salon", {"state": "off",
+                                         "attributes": {"friendly_name": "Prise salon"}})
 STATES.setdefault("climate.salon", {"state": "heat", "attributes": {"friendly_name": "Salon"}})
 
 server = MCPServer("fake-ha-mcp")
