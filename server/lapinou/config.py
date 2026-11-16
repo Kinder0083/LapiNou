@@ -75,8 +75,12 @@ class VoiceConfig(_Section):
 
 class SafetyConfig(_Section):
     sensitive_domains: list[str] = Field(
-        default_factory=lambda: ["lock", "alarm_control_panel", "cover"]
+        default_factory=lambda: ["lock", "alarm_control_panel"]
     )
+    # `cover` n'est sensible que pour ces device_class (garage, portail).
+    sensitive_cover_classes: list[str] = Field(default_factory=lambda: ["garage", "gate"])
+    # `climate` hors de cette plage (°C) est sensible.
+    climate_range: list[float] = Field(default_factory=lambda: [16.0, 24.0])
     allowed_entities: list[str] = Field(default_factory=list)
     pin: str = ""  # secret
 

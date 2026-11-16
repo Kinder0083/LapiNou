@@ -33,12 +33,20 @@ class Database:
                 continue
             script = sql_file.read_text(encoding="utf-8")
             # Une migration est atomique : tout ou rien.
-            self.conn.executescript(
-                "BEGIN;\n"
-                + script
-                + "\nINSERT INTO schema_migrations(version, name) "
-                + f"VALUES ({version}, '{sql_file.stem}');\nCOMMIT;"
-            )
+            try:
+                self.conn.executescript(
+                    "BEGIN;
+"
+                    + script
+                    + "
+INSERT INTO schema_migrations(version, name) "
+                    + f"VALUES ({version}, '{sql_file.stem}');
+COMMIT;"
+                )
+            except BaseException:
+                if self.conn.in_transaction:
+                    self.conn.rollback()
+                raise
         return self.version()
 
     def version(self) -> int:

@@ -55,3 +55,31 @@ def test_health_endpoint():
     client = TestClient(create_app(Settings()))
     r = client.get("/api/health")
     assert r.status_code == 200 and r.json()["status"] == "ok"
+
+
+def test_failed_migration_rolls_back(tmp_path, monkeypatch):
+    import shutil
+
+    from lapinou import db as dbmod
+
+    mig = tmp_path / "mig"
+    mig.mkdir()
+    shutil.copy(dbmod.MIGRATIONS_DIR / "001_init.sql", mig / "001_init.sql")
+    (mig / "002_broken.sql").write_text(
+        "-- SPDX-License-Identifier: MIT\n"
+        "CREATE TABLE half (id INTEGER);\n"
+        "INSERT INTO nonexistent VALUES (1);\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(dbmod, "MIGRATIONS_DIR", mig)
+    db = Database(tmp_path / "m.db")
+    with pytest.raises(sqlite3.Error):
+        db.migrate()
+    assert not db.conn.in_transaction
+    assert db.version() == 1
+    assert TABLES <= _tables(db)
+    assert "half" not in _tables(db)
+    # La connexion reste utilisable.
+    db.conn.execute("INSERT INTO memories(text, created_at) VALUES ('ok', 'now')")
+    db.conn.commit()
+    assert db.version() == 1

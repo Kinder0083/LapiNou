@@ -18,7 +18,10 @@ def test_defaults(tmp_path):
     assert s.voice.vad_silence_ms == 700
     assert s.voice.followup_s == 5
     assert s.logs.retention_days == 7
-    assert {"lock", "alarm_control_panel", "cover"} <= set(s.safety.sensitive_domains)
+    assert set(s.safety.sensitive_domains) == {"lock", "alarm_control_panel"}
+    assert "cover" not in s.safety.sensitive_domains
+    assert s.safety.sensitive_cover_classes == ["garage", "gate"]
+    assert s.safety.climate_range == [16.0, 24.0]
     assert s.rabbits == {}
 
 
