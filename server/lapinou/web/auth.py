@@ -162,6 +162,12 @@ class Auth:
         bloquées (on refuse plutôt que d'oublier un blocage)."""
         with self._lock:
             now = self._clock()
+            # Une adresse bloquée est refusée d'abord, sans être comptée : seuls les essais
+            # vraiment vérifiés remplissent le plafond global (sinon une seule adresse bloquée
+            # qui insiste bloquerait l'admin partout).
+            c = self._clients.get(client)
+            if c is not None and c.locked_until > now:
+                raise Locked(int(c.locked_until - now) + 1)
             while self._recent and self._recent[0] <= now - GLOBAL_WINDOW_S:
                 self._recent.popleft()
             if len(self._recent) >= GLOBAL_MAX_ATTEMPTS:
@@ -171,8 +177,6 @@ class Auth:
                 raise Locked(LOCKOUT_S)
             self._recent.append(now)
             c = self._clients.setdefault(client, _Client())
-            if c.locked_until > now:
-                raise Locked(int(c.locked_until - now) + 1)
             c.attempts = [t for t in c.attempts if t > now - FAILURE_WINDOW_S] + [now]
             c.last = now
             if len(c.attempts) >= MAX_FAILURES:  # l'essai en cours passe, les suivants attendent

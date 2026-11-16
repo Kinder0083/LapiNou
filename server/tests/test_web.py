@@ -863,3 +863,34 @@ def test_usb_key_refused_without_a_valid_ota_public_key(env):
     ctx.ota = Placeholder()
     r = client.post("/api/usbkey", headers=H, json={"ssid": "Maison", "password": "motdepasse"})
     assert r.status_code == 409 and "PLACEHOLDER" in r.json()["detail"]
+
+
+# --- Rapport de correction 3 --------------------------------------------------------------
+
+
+def test_blocked_address_cannot_lock_out_everyone(tmp_path):
+    """Une adresse bloquée qui insiste n'est pas comptée : le plafond global ne se remplit
+    pas, et l'admin peut se connecter depuis une autre adresse."""
+    from lapinou.web import auth as auth_mod
+
+    clock = Clock()
+    auth = _auth_with_password(tmp_path, clock)
+    for _ in range(5):
+        auth.login("faux", "attaquant")
+    for _ in range(100):
+        with pytest.raises(auth_mod.Locked):
+            auth.login("faux", "attaquant")
+    assert len(auth._recent) == 5
+    assert auth.login(PASSWORD, "admin") is not None
+
+
+@pytest.mark.parametrize("host", ["localhost:0", "localhost:65536", "localhost:99999",
+                                  "[::1]:0", "[::1]:70000", "localhost:+80", "localhost: 80"])
+def test_host_ports_out_of_range_are_refused(env, host):
+    client, _, _ = env
+    assert client.get("/api/session", headers={"Host": host}).status_code == 400
+
+
+def test_host_port_65535_is_fine(env):
+    client, _, _ = env
+    assert client.get("/api/session", headers={"Host": "localhost:65535"}).status_code == 200

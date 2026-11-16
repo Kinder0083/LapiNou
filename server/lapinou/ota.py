@@ -15,7 +15,8 @@ Chaque fichier listé est ensuite vérifié (taille, SHA-256), l'archive de la c
 (R41). Le champ `version` du manifeste doit être le nom de la version (étiquette GitHub).
 
 Disposition : `<dir>/releases/<version>/` (manifest.json, manifest.json.sig, fichiers) et
-`<dir>/current`. Une version remplacée reste servie au moins 10 minutes (GRACE_S).
+`<dir>/current`. Une version remplacée reste servie 10 minutes (GRACE_S) à compter de
+l'instant noté dans son fichier `.retired`, contrôlé à chaque requête.
 
 Adresses pour les lapins (port 8080, docs/lapinou/ota.md) :
 - `GET /ota/manifest.json` et `GET /ota/manifest.json.sig` : la version en service ;
@@ -44,7 +45,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx2
-from cryptography.exceptions import InvalidSignature
+from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from fastapi import APIRouter, HTTPException, Request
@@ -58,6 +59,7 @@ API = "https://api.github.com"
 MANIFEST = "manifest.json"
 SIGNATURE = "manifest.json.sig"
 PACKAGED_PUBKEY = Path(__file__).with_name("ota-pubkey.pub")
+RETIRED = ".retired"  # dans le dossier d'une version remplacée : l'instant du remplacement
 MAX_FILE = 300 * 1024 * 1024
 GRACE_S = 600  # une version remplacée reste servie 10 minutes
 FIRST_CHECK_S = 60  # première vérification périodique une minute après le démarrage
@@ -122,8 +124,8 @@ def load_pubkey(path: Path) -> Ed25519PublicKey:
                        "que la vraie clé n'est pas installée")
     try:
         key = load_pem_public_key(data)
-    except ValueError:
-        raise OtaError(f"clé publique OTA illisible ({path})") from None
+    except (ValueError, UnsupportedAlgorithm):
+        raise OtaError(f"clé publique OTA illisible ou d'un type non pris en charge ({path})") from None
     if not isinstance(key, Ed25519PublicKey):
         raise OtaError("la clé publique OTA doit être une clé Ed25519")
     return key
@@ -172,19 +174,37 @@ class OtaRelay:
 
     # --- État --------------------------------------------------------------------------
 
-    def _release(self, version: str) -> Path | None:
-        """Le dossier d'une version encore servie (courante ou en sursis), ou None."""
+    def _complete(self, version: str) -> Path | None:
+        """Le dossier d'une version présente sur le disque (manifeste et signature), ou None."""
         if not _NAME.fullmatch(version):
             return None
         d = self.dir / "releases" / version
         return d if (d / MANIFEST).is_file() and (d / SIGNATURE).is_file() else None
+
+    def _retired_at(self, d: Path) -> float | None:
+        """L'instant où la version de `d` a été remplacée (fichier .retired), ou None."""
+        try:
+            return float((d / RETIRED).read_text(encoding="ascii").strip())
+        except (OSError, ValueError):
+            return None
+
+    def _release(self, version: str) -> Path | None:
+        """Le dossier d'une version **servie maintenant** : la courante, ou une version
+        remplacée depuis moins de GRACE_S (vérifié à chaque requête, sans attendre le ménage)."""
+        d = self._complete(version)
+        if d is None:
+            return None
+        if version == self._current():
+            return d
+        retired = self._retired_at(d)
+        return d if retired is not None and self._clock() - retired <= GRACE_S else None
 
     def _current(self) -> str | None:
         try:
             version = (self.dir / "current").read_text(encoding="utf-8").strip()
         except OSError:
             return None
-        return version if self._release(version) is not None else None
+        return version if self._complete(version) is not None else None
 
     def _key_name(self, version: str) -> str:
         """L'archive de la clé USB listée par le manifeste signé de cette version, ou ""."""
@@ -226,16 +246,27 @@ class OtaRelay:
         return None if version is None else self.version_file(version, name)
 
     def key_zip(self) -> Path | None:
-        """L'archive de la clé USB de la version en service, sa signature revérifiée avec la clé
-        publique actuelle ; None sinon (OtaError si la clé publique est absente ou provisoire)."""
+        """L'archive de la clé USB de la version en service, ou None. Le manifeste est lu une
+        fois, sa signature revérifiée avec la clé publique actuelle, le nom de l'archive pris
+        dans ces mêmes octets, puis la taille et le SHA-256 de l'archive sur le disque
+        recontrôlés. OtaError si la clé publique manque ou est provisoire, si la signature est
+        fausse ou si l'archive a changé."""
         version = self._current()
-        name = self._key_name(version or "")
-        if not version or not name:
+        if version is None:
             return None
         d = self.dir / "releases" / version
-        verify_signature(load_pubkey(self.pubkey_path), (d / MANIFEST).read_bytes(),
-                         (d / SIGNATURE).read_bytes())
-        return d / name
+        manifest = (d / MANIFEST).read_bytes()
+        verify_signature(load_pubkey(self.pubkey_path), manifest, (d / SIGNATURE).read_bytes())
+        _, files = parse_manifest(manifest)
+        name = next((n for n in sorted(files) if _KEY_ZIP.fullmatch(n)), None)
+        if name is None:
+            return None
+        path = d / name
+        want = files[name]
+        if (not path.is_file() or path.stat().st_size != want["size"]
+                or _sha256(path) != want["sha256"]):
+            raise OtaError(f"{name} a changé sur le disque : clé USB refusée")
+        return path
 
     # --- GitHub ------------------------------------------------------------------------
 
@@ -357,21 +388,25 @@ class OtaRelay:
         tmp.write_text(version + "\n", encoding="utf-8")
         os.replace(tmp, self.dir / "current")
         if previous is not None:  # remplacée maintenant : servie encore GRACE_S
-            now = self._clock()
-            os.utime(releases / previous, (now, now))
+            (releases / previous / RETIRED).write_text(f"{self._clock()}\n", encoding="ascii")
         self._prune()
         self._status.version = version
         self._status.key_zip = self._key_name(version)
         log.info("relais OTA : version %s servie aux lapins", version)
 
     def _prune(self) -> None:
-        """Efface les versions remplacées depuis plus de GRACE_S (jamais la version servie)."""
+        """Efface du disque les versions remplacées depuis plus de GRACE_S, et celles sans date
+        de remplacement (restes) ; jamais la version servie. Le service, lui, ne dépend pas de
+        ce ménage : `_release` revérifie le délai à chaque requête."""
         releases = self.dir / "releases"
         if not releases.is_dir():
             return
         current, now = self._current(), self._clock()
         for old in releases.iterdir():
-            if old.name != current and now - old.stat().st_mtime > GRACE_S:
+            if old.name == current:
+                continue
+            retired = self._retired_at(old)
+            if retired is None or now - retired > GRACE_S:
                 shutil.rmtree(old, ignore_errors=True)
 
     # --- Vérification périodique --------------------------------------------------------

@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import ipaddress
-import re
 import shutil
 import socket
 import tempfile
@@ -577,7 +576,9 @@ def own_addresses() -> frozenset[str]:
     return _own[1]
 
 
-_PORT = re.compile(r"(?::[0-9]{1,5})?")
+def _port_ok(port: str) -> bool:
+    """Un port d'en-tête Host : des chiffres, de 1 à 65535."""
+    return port.isascii() and port.isdigit() and len(port) <= 5 and 1 <= int(port) <= 65535
 
 
 def _host_name(header: str) -> str:
@@ -586,11 +587,12 @@ def _host_name(header: str) -> str:
     header = header.strip().lower()
     if header.startswith("["):
         end = header.find("]")
-        if end < 0 or not _PORT.fullmatch(header[end + 1:]):
+        rest = header[end + 1:] if end >= 0 else None
+        if rest is None or (rest and not (rest.startswith(":") and _port_ok(rest[1:]))):
             return ""
         return header[1:end]
     name, colon, port = header.partition(":")
-    if colon and not re.fullmatch(r"[0-9]{1,5}", port):
+    if colon and not _port_ok(port):
         return ""  # « nom:abc », ou une IPv6 sans crochets
     return name.rstrip(".")
 

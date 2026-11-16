@@ -398,3 +398,77 @@ def test_from_settings():
     assert str(relay.pubkey_path) == "/etc/lapinou/ota.pub"
     assert OtaRelay.from_settings(Settings()).pubkey_path == PACKAGED_PUBKEY
     assert PACKAGED_PUBKEY.name == "ota-pubkey.pub"  # R42 amendée : extension .pub
+
+
+# --- Rapport de correction 3 --------------------------------------------------------------
+
+
+async def _switched(tmp_path, now):
+    gh = FakeGitHub()
+    relay = _relay(gh, tmp_path, clock=lambda: now[0])
+    await relay.refresh()
+    gh.set_release("v1.3.0", {"zImage": b"k2", "rootfs.img.gz": b"r2", "usr.tar.gz": b"u2"})
+    await relay.refresh()
+    return relay
+
+
+async def test_grace_period_ends_at_serve_time_without_refresh(tmp_path):
+    """Le délai est vérifié à chaque requête : pas besoin d'une nouvelle vérification GitHub
+    (qui peut ne jamais venir) pour que l'ancienne version cesse d'être servie."""
+    now = [1_000_000.0]
+    relay = await _switched(tmp_path, now)
+    client = _app(relay)
+    now[0] += 600
+    assert client.get("/ota/v1.2.3/zImage").content == b"K" * 1000
+    now[0] += 1
+    assert client.get("/ota/v1.2.3/zImage").status_code == 404
+    assert client.get("/ota/v1.2.3/manifest.json").status_code == 404
+    assert client.get("/ota/v1.3.0/zImage").content == b"k2"
+    assert (tmp_path / "ota" / "releases" / "v1.2.3").is_dir()  # le ménage viendra plus tard
+
+
+async def test_retire_time_is_recorded_and_survives_restart(tmp_path):
+    now = [1_000_000.0]
+    await _switched(tmp_path, now)
+    marker = tmp_path / "ota" / "releases" / "v1.2.3" / ".retired"
+    assert float(marker.read_text()) == 1_000_000.0
+    again = _relay(FakeGitHub(), tmp_path, clock=lambda: now[0])
+    now[0] += 300
+    assert _app(again).get("/ota/v1.2.3/zImage").status_code == 200
+    now[0] += 301
+    assert _app(again).get("/ota/v1.2.3/zImage").status_code == 404
+    # Le marqueur n'est pas un fichier servi.
+    assert _app(again).get("/ota/v1.3.0/.retired").status_code == 404
+
+
+async def test_leftover_release_without_retire_time_is_not_served(tmp_path):
+    now = [1_000_000.0]
+    relay = await _switched(tmp_path, now)
+    (tmp_path / "ota" / "releases" / "v1.2.3" / ".retired").unlink()
+    assert _app(relay).get("/ota/v1.2.3/zImage").status_code == 404
+    await relay.refresh()
+    assert not (tmp_path / "ota" / "releases" / "v1.2.3").exists()
+
+
+async def test_usb_key_archive_rechecked_on_disk(tmp_path):
+    gh = FakeGitHub()
+    relay = _relay(gh, tmp_path)
+    await relay.refresh()
+    key = relay.key_zip()
+    key.write_bytes(b"PK\x03\x04modifiee")
+    with pytest.raises(OtaError, match="a changé"):
+        relay.key_zip()
+
+
+async def test_unsupported_public_key_type_is_a_clear_error(tmp_path, monkeypatch):
+    from cryptography.exceptions import UnsupportedAlgorithm
+
+    from lapinou import ota
+
+    def unsupported(data):
+        raise UnsupportedAlgorithm("courbe inconnue")
+
+    monkeypatch.setattr(ota, "load_pem_public_key", unsupported)
+    relay = _relay(FakeGitHub(), tmp_path)
+    with pytest.raises(OtaError, match="clé publique OTA illisible"):
+        await relay.refresh()
