@@ -13,6 +13,9 @@ import copy
 import datetime as dt
 import json
 import logging
+import os
+import re
+import shutil
 import sys
 import uuid
 from pathlib import Path
@@ -64,12 +67,14 @@ class FakeRabbit:
         self.ears_moves: list[tuple[int, int]] = []
         self.dances: list[list[Step]] = []
         self.on_playback = None
+        self.started = 0
         self._held: list[str] = []
 
     async def play(self, url: str, playback_id: str) -> None:
         if not self.connected:
             raise ConnectionError("lapin déconnecté")
         self.played.append((url, playback_id))
+        self.started += 1
         if self.hold:
             self._held.append(playback_id)
         else:
@@ -421,7 +426,7 @@ async def test_click_while_speaking_stops_playback_and_listens(world):
     session = world.start(brain, FakeTranscriber(FakeTranscriber.BLOCK, FakeTranscriber.BLOCK))
     world.detector.hear(hit(command="raconte une histoire"))
     await until(lambda: session.state == "speaking")
-    session.on_button("click")
+    session.on_button("simple")
     await until(lambda: session.state == "listening")
     assert world.rabbit.stops == 1
     await asyncio.sleep(0.1)
@@ -450,7 +455,7 @@ async def test_wake_word_while_speaking_interrupts_with_its_command(world):
 async def test_long_press_starts_listening(world):
     brain = ScriptedBrain([TextDelta("Coucou !"), done()])
     session = world.start(brain, FakeTranscriber("bonjour", None))
-    session.on_button("lclick_start")
+    session.on_button("long_start")
     await until(lambda: world.spoken() == ["Coucou !"])
     await world.idle()
     assert world.state.states()[1] == "listening"
@@ -834,7 +839,7 @@ async def test_orchestrator_creates_a_session_per_stream_and_routes_events(tmp_p
     assert [voice.texts[pid] for _, pid in rabbit_b.played] == ["Coucou."]
     assert registry.rabbits["lapin-a"].played == []
     await until(lambda: orch.sessions["lapin-b"].is_idle)
-    registry.on_button(rabbit_b, "lclick_start")
+    registry.on_button(rabbit_b, "long_start")
     await until(lambda: orch.sessions["lapin-b"].state == "listening")
     await orch.close()
 
@@ -886,3 +891,171 @@ def test_production_services_wire_voice_tools_and_tts_compat(tmp_path):
         assert port > 0
     assert closed == [True]
     assert services.tts_server is None
+
+
+# --- Rapport de correction 1 --------------------------------------------------------------
+
+
+async def test_offline_then_idle_follow_the_rabbit_while_idle(world):
+    world.start(ScriptedBrain(), FakeTranscriber())
+    world.rabbit.connected = False
+    await until(lambda: world.state.published[-1] == (RID, "offline"))
+    world.rabbit.connected = True
+    await until(lambda: world.state.published[-1] == (RID, "idle"))
+    world.stream.connected = False  # le flux micro seul suffit aussi
+    await until(lambda: world.state.published[-1] == (RID, "offline"))
+    world.stream.connected = True
+    await until(lambda: world.state.published[-1] == (RID, "idle"))
+
+
+async def test_interrupt_on_an_unreachable_rabbit_does_not_listen(world):
+    world.rabbit.hold = True
+    brain = ScriptedBrain([TextDelta("Une longue histoire. La suite."), done()])
+    session = world.start(brain, FakeTranscriber(FakeTranscriber.BLOCK))
+    world.detector.hear(hit(command="raconte"))
+    await until(lambda: session.state == "speaking")
+    world.rabbit.connected = False
+    session.on_button("simple")  # avant que la surveillance n'ait vu la coupure
+    await world.idle()
+    await asyncio.sleep(0.1)
+    assert world.transcriber.calls == []
+    assert "listening" not in world.state.states()
+    assert world.state.published[-1] == (RID, "offline")
+    assert session.is_idle
+
+
+async def test_pending_action_expires_when_the_conversation_ends(world):
+    ha = await world.start_ha(allowed_entities=["lock.porte_entree"])
+    brain = ScriptedBrain([call_service("lock", "unlock", "lock.porte_entree"), done()],
+                          [done()], [TextDelta("Oui quoi ?"), done()])
+    world.start(brain, FakeTranscriber(None, None))
+    world.detector.hear(hit(command="ouvre la porte"))
+    await until(lambda: len(world.spoken()) == 1)
+    await world.idle()  # fenêtre de suite passée sans réponse
+    assert ha.pending(RID) is None
+    world.detector.hear(hit(at=900000, command="oui"))  # « Lapinou, oui » bien plus tard
+    await until(lambda: world.spoken()[-1:] == ["Oui quoi ?"])
+    assert service_calls(world.mcp_log) == []
+    assert brain.calls[-1][-1]["content"][0]["text"] == "oui"  # tour normal du cerveau
+
+
+async def test_announcement_returns_once_playing_and_is_not_repeated(world):
+    world.rabbit.hold = True  # lecture plus longue que le délai de l'appelant (minuteur)
+    session = world.start(ScriptedBrain(), FakeTranscriber(None))
+    await asyncio.wait_for(session.say("Le minuteur est fini."), 1)
+    assert world.spoken() == ["Le minuteur est fini."]
+    world.rabbit.hold = False
+    await world.rabbit.stop_playback()
+    await world.idle()
+    assert world.rabbit.started == 1
+
+
+async def test_announcement_abandoned_by_its_caller_is_not_spoken(world):
+    world.voice.gate = asyncio.Event()  # synthèse lente
+    session = world.start(ScriptedBrain(), FakeTranscriber(None))
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(session.say("Annonce."), 0.1)
+    world.voice.gate.set()
+    await world.idle()
+    await asyncio.sleep(0.05)
+    assert world.rabbit.played == []  # le minuteur la redira : pas de double annonce
+
+
+def test_services_started_partly_are_closed_on_failure(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from lapinou import app as app_mod
+
+    settings = Settings()
+    settings.server.platform_port = settings.server.mic_port = settings.server.tts_port = 0
+    closed = []
+
+    class Voice(FakeVoice):
+        def attach(self, app):
+            pass
+
+        def close(self):
+            closed.append(True)
+
+    services = app_mod.build_services(settings, db_path=tmp_path / "db.sqlite", voice=Voice(),
+                                      recogniser=None, brain=ScriptedBrain())
+
+    async def boom():
+        raise RuntimeError("minuteurs en panne")
+
+    services.timers.start = boom
+    with pytest.raises(RuntimeError), TestClient(app_mod.create_app(settings, services=services)):
+        pass
+    assert closed == [True]
+    assert not services.registry._server.is_serving()
+
+
+@pytest.mark.skipif(shutil.which("protoc") is None and "LAPINOU_PROTOC" not in os.environ,
+                    reason="protoc introuvable")
+async def test_echo_marks_from_a_real_controller_find_their_reference():
+    """De bout en bout avec la vraie plateforme : le contrôleur marque la lecture avec l'id du
+    message `multimedia play` (comme multimedia-daemon) ; l'annuleur doit y trouver le PCM."""
+    from test_platform import FakeController
+
+    from lapinou.rabbit.platform import build_codec
+    from lapinou.rabbit.registry import RabbitRegistry
+    from lapinou.voice.aec import EchoCanceller
+
+    codec = build_codec()
+    registry = RabbitRegistry(codec=codec)
+    await registry.start("127.0.0.1", 0)
+    gateway = FakeGateway()
+    stream = RabbitStream(RID)
+    stream.connected = True
+    gateway.streams[RID] = stream
+    looked_up: list[tuple[str, bool]] = []
+
+    def make_aec(reference, marks):
+        def spy(playback_id):
+            pcm = reference(playback_id)
+            looked_up.append((playback_id, pcm is not None))
+            return pcm
+
+        return EchoCanceller(spy, marks)
+
+    voice = FakeVoice()
+    orch = Orchestrator(SessionDeps(brain=ScriptedBrain(), tools=ToolBox([]), voice=voice,
+                                    transcriber=FakeTranscriber(None), make_aec=make_aec))
+    controller = FakeController(codec, RID)
+    seq = [0, 0]  # numéro de trame, premier échantillon
+
+    def feed(mark=None):
+        stream._feed(Frame(RID, seq[0], mulaw=b"\xff" * CHUNK, first_sample=seq[1], mark=mark))
+        seq[0] += 1
+        seq[1] += CHUNK
+
+    async def controller_side():
+        play = await controller.until(r"^multimedia \{\s*play")
+        pid = re.search(r'^id: "([^"]*)"', play, re.M).group(1)
+        feed(mark=(pid, seq[1], True))
+        for _ in range(5):
+            feed()
+            await asyncio.sleep(0.01)
+        feed(mark=(pid, seq[1], False))
+        await controller.send('id: "m1" multimediaCallback { action: PLAY }')
+        await controller.send('id: "m2" multimediaCallback { action: STOP }')
+        return pid
+
+    side = None
+    try:
+        await controller.connect(registry.port)
+        await controller.until(r"^interactiveMode \{")
+        await asyncio.wait_for(registry.get(RID).wait_ready(), 10)
+        orch.attach(registry, gateway)
+        side = asyncio.create_task(controller_side())
+        await asyncio.wait_for(orch.say(RID, "Bonjour."), 5)
+        pid = await asyncio.wait_for(side, 5)
+        await until(lambda: looked_up)
+        assert pid in voice.texts  # l'id du message `play` est le Speech.id
+        assert looked_up == [(pid, True)]
+    finally:
+        if side is not None:
+            side.cancel()
+        await orch.close()
+        await controller.close()
+        await registry.close()

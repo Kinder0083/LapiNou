@@ -131,6 +131,9 @@ async def test_play_carries_interactive_id(platform):
     play = await c.until(r"^multimedia \{")
     assert 'url: "http://x/a.mp3"' in play
     assert re.search(r'^interactiveId: ".+"', play, re.M)
+    # Le contrôleur passe l'id du message à multimedia-daemon, qui marque le flux micro avec :
+    # c'est le playback_id de l'annuleur d'écho.
+    assert re.search(r'^id: "pb-1"', play, re.M)
 
 
 async def test_led_pulse_and_fade(platform):
@@ -330,7 +333,7 @@ async def test_bad_interactive_id_on_play_keeps_playback_events(platform):
         if len(platform.events) >= 2:
             break
         await asyncio.sleep(0.05)
-    assert rid != pid
+    assert rid == pid == "A"  # le renvoi garde l'id : les marques d'écho restent reconnues
     assert platform.events == [
         ("playback", "lapin-1", "A", "playing"),
         ("playback", "lapin-1", "A", "stopped"),
