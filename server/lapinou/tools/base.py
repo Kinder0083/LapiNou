@@ -61,10 +61,12 @@ def strict_schema(properties: dict[str, Any]) -> dict[str, Any]:
 
 
 def nullable(schema: dict[str, Any]) -> dict[str, Any]:
-    out = dict(schema)
-    out["type"] = [schema["type"], "null"]
-    if "enum" in schema:
-        out["enum"] = [*schema["enum"], None]
+    """La valeur ou null. Écrit avec anyOf : l'API d'Anthropic refuse un `enum` sous un type
+    liste (« Enum value 'daily' does not match declared type ['string', 'null'] »)."""
+    inner = {k: v for k, v in schema.items() if k != "description"}
+    out: dict[str, Any] = {"anyOf": [inner, {"type": "null"}]}
+    if "description" in schema:
+        out["description"] = schema["description"]
     return out
 
 

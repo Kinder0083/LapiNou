@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -55,6 +56,7 @@ MP3_TTL_S = 600  # les MP3 servis sont conservés 10 minutes
 MAX_MP3 = 200  # garde-fou mémoire si les phrases s'enchaînent plus vite que le TTL
 
 Engine = Literal["kokoro", "piper"]
+log = logging.getLogger(__name__)
 ENGINES = ("kokoro", "piper")
 PIPER_MODELS = Path.home() / ".cache" / "lapinou" / "piper"
 PIPER_VENV = Path.home() / ".local" / "share" / "lapinou" / "piper-venv"
@@ -295,6 +297,10 @@ def _piper_synth(voice: str, models: Path | None, python: Path | None) -> Callab
     return synth
 
 
+
+_PIPER_NAME = re.compile(r"[a-z]{2}_[A-Z]{2}-[\w]+-(x_low|low|medium|high)")
+
+
 class Voice:
     """Un moteur et une voix. `synth` (tests) remplace le moteur : texte -> WAV 16 bits mono.
     `base_url` : début de l'URL que le lapin utilise pour joindre ce serveur (port 8080)."""
@@ -344,8 +350,16 @@ class Voice:
     def _load(self) -> Callable[[str], bytes]:
         if self._synth is None:
             if self.engine == "kokoro":
-                self._synth = _kokoro_synth(self.voice, self.models)
-            else:
+                try:
+                    self._synth = _kokoro_synth(self.voice, self.models)
+                    return self._synth
+                except RuntimeError as e:
+                    # Kokoro n'est pas installé par l'installateur (R31 : Piper) : le lapin ne
+                    # doit pas rester muet pour un réglage, Piper prend le relais.
+                    voice = self.voice if _PIPER_NAME.fullmatch(self.voice) else DEFAULT_PIPER_VOICE
+                    log.warning("voix Kokoro indisponible (%s) : Piper %s à la place", e, voice)
+                    self.engine, self.voice = "piper", voice
+            if self.engine == "piper":
                 self._synth = _piper_synth(self.voice, self.models, self.piper_python)
         return self._synth
 

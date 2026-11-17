@@ -860,3 +860,27 @@ async def test_22_local_playback_marks_suspend_the_wake_word_end_to_end():
         writer.close()
         await orch.close()
         await gateway.stop()
+
+
+def test_missing_kokoro_falls_back_to_piper(monkeypatch, caplog):
+    """Vu en vrai : moteur « kokoro » réglé mais jamais installé (l'installateur pose Piper) ;
+    le lapin restait muet. Piper prend le relais, avec sa voix par défaut."""
+    from lapinou.voice import tts
+
+    def no_kokoro(voice, models):
+        raise RuntimeError("no kokoro-v1.0.onnx")
+
+    used = []
+
+    def fake_piper(voice, models, python):
+        used.append(voice)
+        return lambda text: b"WAV"
+
+    monkeypatch.setattr(tts, "_kokoro_synth", no_kokoro)
+    monkeypatch.setattr(tts, "_piper_synth", fake_piper)
+    v = tts.Voice("kokoro", "ff_siwis")
+    with caplog.at_level("WARNING"):
+        assert v._load()("bonjour") == b"WAV"
+    assert used == [tts.DEFAULT_PIPER_VOICE] and v.engine == "piper"
+    assert "Kokoro indisponible" in caplog.text
+    assert tts._PIPER_NAME.fullmatch("fr_FR-siwis-medium")

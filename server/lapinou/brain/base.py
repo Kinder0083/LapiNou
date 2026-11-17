@@ -247,6 +247,10 @@ _TYPES: dict[str, tuple[type, ...]] = {
 
 
 def _check(schema: dict[str, Any], value: Any, where: str) -> str | None:
+    if "anyOf" in schema:
+        problems = [_check(branch, value, where) for branch in schema["anyOf"]]
+        if all(problems):
+            return problems[0]
     expected = schema.get("type")
     if expected is not None:
         names = expected if isinstance(expected, list) else [expected]

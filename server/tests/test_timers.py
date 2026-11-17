@@ -261,3 +261,30 @@ async def test_timer_bounds(tmp_path, seconds):
         "set_timer", {"seconds": seconds, "label": None}, CTX
     )
     assert result.is_error
+
+
+def _walk(node):
+    if isinstance(node, dict):
+        yield node
+        for v in node.values():
+            yield from _walk(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _walk(v)
+
+
+def test_tool_schemas_never_put_an_enum_under_a_type_list(tmp_path):
+    """L'API d'Anthropic refuse `enum` sous `"type": [..., "null"]` (vu en vrai : le cerveau
+    entier en panne, 400 à chaque demande). Les champs nullables passent par anyOf."""
+    from lapinou.brain.base import validate_args
+    from lapinou.tools.base import nullable
+
+    box = make(open_db(tmp_path / "s.db"), None, clock=lambda: dt.datetime(2026, 11, 17, 12, 0))
+    for tool in box.tools():
+        for node in _walk(tool.input_schema):
+            assert not (isinstance(node.get("type"), list) and "enum" in node), tool.name
+    schema = {"type": "object", "properties": {"r": nullable({"type": "string", "enum": ["a", "b"]})}}
+    assert validate_args(schema, {"r": "a"}) is None
+    assert validate_args(schema, {"r": None}) is None
+    assert validate_args(schema, {"r": "c"}) is not None
+    assert validate_args(schema, {"r": 3}) is not None
