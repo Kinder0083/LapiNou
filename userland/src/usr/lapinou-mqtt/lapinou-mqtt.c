@@ -25,7 +25,9 @@
  * ignored: a command is done once, when it is sent.
  *
  * The daemons: every call is asynchronous (dbus_g_proxy_begin_call), ids "lapinou-mqtt:<n>".
- * cmd/led, cmd/ears and cmd/say call led-daemon, ears-daemon and voice-daemon (or, in the mode
+ * cmd/led, cmd/ears and cmd/say call led-daemon, ears-daemon and voice-daemon (a cmd/say spoken by
+ * voice-daemon is marked to lapinou-mic as a local playback, "local:<id>", from tts_speak to its
+ * tts_event, so the server never takes it for the wake word; or, in the mode
  * without a server, [cloud] enabled=1 and [server] enabled not 1, LapinouCloud.say when
  * com.mindscape.karotz.LapinouCloud is on the bus, NameOwnerChanged); they are refused, as the
  * web API's web_hardware refuses them, while an application owns the rabbit (the controller's
@@ -151,7 +153,9 @@ static gboolean lapinou_mqtt_object_set_volume(LapinouMqttObject *self, gint vol
 static struct {
     LapinouMqttObject *object;
     DBusGConnection *bus;
-    DBusGProxy *bus_proxy, *led, *ears, *button, *rfid, *voice, *controller, *cloud;
+    DBusGProxy *bus_proxy, *led, *ears, *button, *rfid, *voice, *controller, *cloud, *mic;
+    char *say_mark;        /* "local:<id>" of the cmd/say voice-daemon is speaking, or NULL */
+    guint say_mark_timer;  /* ends that mark if voice-daemon never says it is done */
     GMainLoop *loop;
 
     /* settings */
@@ -950,6 +954,54 @@ static void cmd_ears(GHashTable *o)
     app.rabbit.ear_right = right;
 }
 
+/*
+ * A cmd/say spoken by voice-daemon is a sound the LapiNou server didn't make: lapinou-mic is told
+ * when it starts and ends (mark_playback("local:<id>", TRUE/FALSE), as multimedia-daemon marks its
+ * plays), and the server doesn't listen for its wake word in between, so the rabbit never wakes
+ * itself up. The end is voice-daemon's tts_event for that id, or SAY_MARK_MAX_S at the latest.
+ */
+#define SAY_MARK_MAX_S 120
+
+static void say_mark_end(void)
+{
+    if (app.say_mark_timer) {
+        g_source_remove(app.say_mark_timer);
+        app.say_mark_timer = 0;
+    }
+    if (app.say_mark == NULL)
+        return;
+    dbus_g_proxy_call_no_reply(app.mic, "mark_playback", G_TYPE_STRING, app.say_mark, G_TYPE_BOOLEAN, FALSE,
+                               G_TYPE_INVALID);
+    g_free(app.say_mark);
+    app.say_mark = NULL;
+}
+
+static gboolean say_mark_timeout(gpointer data)
+{
+    (void)data;
+    app.say_mark_timer = 0;
+    say_mark_end();
+    return FALSE;
+}
+
+static void say_mark_start(const char *id)
+{
+    say_mark_end();
+    app.say_mark = g_strdup_printf("local:%s", id);
+    dbus_g_proxy_call_no_reply(app.mic, "mark_playback", G_TYPE_STRING, app.say_mark, G_TYPE_BOOLEAN, TRUE,
+                               G_TYPE_INVALID);
+    app.say_mark_timer = g_timeout_add_seconds(SAY_MARK_MAX_S, say_mark_timeout, NULL);
+}
+
+static void on_tts_event(DBusGProxy *p, const char *id, int code, gpointer d)
+{
+    (void)p;
+    (void)code;
+    (void)d;
+    if (app.say_mark != NULL && id != NULL && strcmp(app.say_mark + strlen("local:"), id) == 0)
+        say_mark_end();
+}
+
 static void cmd_say(const char *text)
 {
     char *id;
@@ -964,6 +1016,7 @@ static void cmd_say(const char *text)
         return;
     }
     id = next_id();
+    say_mark_start(id);
     CALL(app.voice, "Voice.tts_speak", "tts_speak", G_TYPE_STRING, id, G_TYPE_STRING, text, G_TYPE_STRING,
          app.language, G_TYPE_INT, 1);
     g_free(id);
@@ -1258,6 +1311,8 @@ static void daemons_connect(void)
                                       G_TYPE_STRING, G_TYPE_INT, G_TYPE_INT, G_TYPE_INT, G_TYPE_INT, G_TYPE_INVALID);
     dbus_g_object_register_marshaller(karotz_smarshal_VOID__STRING_STRING_STRING, G_TYPE_NONE, G_TYPE_STRING,
                                       G_TYPE_STRING, G_TYPE_STRING, G_TYPE_INVALID);
+    dbus_g_object_register_marshaller(karotz_smarshal_VOID__STRING_INT, G_TYPE_NONE, G_TYPE_STRING, G_TYPE_INT,
+                                      G_TYPE_INVALID);
     app.led = karotz_proxy("Led");
     app.ears = karotz_proxy("Ears");
     app.button = karotz_proxy("Button");
@@ -1265,6 +1320,10 @@ static void daemons_connect(void)
     app.voice = karotz_proxy("Voice");
     app.controller = karotz_proxy("Controller");
     app.cloud = dbus_g_proxy_new_for_name(app.bus, CLOUD_SERVICE, "/com/mindscape/karotz/LapinouCloud", CLOUD_SERVICE);
+    app.mic = dbus_g_proxy_new_for_name(app.bus, "com.mindscape.karotz.LapinouMic", "/com/mindscape/karotz/LapinouMic",
+                                        "com.mindscape.karotz.LapinouMic");
+    dbus_g_proxy_add_signal(app.voice, "tts_event", G_TYPE_STRING, G_TYPE_INT, G_TYPE_INVALID);
+    dbus_g_proxy_connect_signal(app.voice, "tts_event", G_CALLBACK(on_tts_event), NULL, NULL);
 
     dbus_g_proxy_add_signal(app.button, "click", G_TYPE_INVALID);
     dbus_g_proxy_connect_signal(app.button, "click", G_CALLBACK(on_click), NULL, NULL);

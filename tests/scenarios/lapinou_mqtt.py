@@ -25,9 +25,11 @@ namespace: started by sandbox_setup before the daemon, the broker later again th
   2. cmd/led: a colour (Led.light), a pulse (Led.pulse), off, then {"on":true} (the last colour).
   3. cmd/ears: a preset (Ears.move), positions out of range (refused), a reset (Ears.reset).
   4. Button signals -> event/button; Rfid tag_in and tag_out -> event/rfid and the last tag.
-  5. cmd/say: voice-daemon without LapinouCloud; LapinouCloud.say once it is on the bus; voice
-     again once it has gone. A retained cmd/say: done once, when sent (and not again at step 12's
-     new subscription).
+  5. cmd/say: voice-daemon without LapinouCloud, marked to lapinou-mic as a local playback
+     (LapinouMic.mark_playback("local:<id>", true) first, false at voice-daemon's tts_event for that
+     id, or when the next cmd/say starts); LapinouCloud.say once it is on the bus; voice again once
+     it has gone. A retained cmd/say: done once, when sent (and not again at step 12's new
+     subscription).
   6. cmd/sound through the web API's sound: a sound's name, a URL with characters to escape, a
      URL the web API refuses (its "::" rule), a name it doesn't know.
   7. cmd/volume: with a volume control, the mixer (and [audio] volume kept); without one, MPD's
@@ -374,6 +376,8 @@ def drive(d, bus):
         # 5. Speech
         cmd("say", "Bonjour, je suis Lapinou !")
         step("5. cmd/say without LapinouCloud", calls_has("Voice.tts_speak"))
+        services.emit("Voice", "tts_event", "lapinou-mqtt:7", 4)
+        step("voice-daemon done (tts_event): the local playback's end mark", calls_has("mark_playback"))
         record.append(f"LapinouCloud ready: {services.start(cloud=True)}")
         time.sleep(1)
         cmd("say", "Il fait beau aujourd'hui.")

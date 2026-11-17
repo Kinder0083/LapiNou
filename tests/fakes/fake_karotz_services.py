@@ -6,13 +6,15 @@
 
 Owns com.mindscape.karotz.{Led,Ears,Button,Rfid,Voice,Controller,Multimedia} (each at
 /com/mindscape/karotz/<Name>, interface com.mindscape.karotz.KarotzInterface, with the methods of
-userland/dbus/*.xml that lapinou-mqtt and lapinou-cloud call), or, with --cloud,
+userland/dbus/*.xml that lapinou-mqtt and lapinou-cloud call) and com.mindscape.karotz.LapinouMic
+(mark_playback(s, b) on its own interface), or, with --cloud,
 com.mindscape.karotz.LapinouCloud alone (say(s) on interface com.mindscape.karotz.LapinouCloud).
 Every call is logged to LOG as one line "Name.method(args)" and answered TRUE
 (Controller.get_status: 1, 0, 0). (The sound, the camera and sleep go through the web API's
 programs, whose dbus-send is the web API test's stub.) The scenario makes the fakes emit their
 signals through com.lapinou.TestControl.emit(s name, s member, s json_args) on any of the objects
-(Button.click, Rfid.tag_in, Controller.karotz_status_changed, Multimedia.multi_playfinished).
+(Button.click, Rfid.tag_in, Controller.karotz_status_changed, Multimedia.multi_playfinished,
+Voice.tts_event).
 Writes "ready" to LOG's directory (ready or ready-cloud) once every name is owned.
 """
 
@@ -27,6 +29,7 @@ from gi.repository import GLib
 
 IFACE = "com.mindscape.karotz.KarotzInterface"
 CLOUD_IFACE = "com.mindscape.karotz.LapinouCloud"
+MIC_IFACE = "com.mindscape.karotz.LapinouMic"
 CONTROL = "com.lapinou.TestControl"
 log_file = None
 objects = {}
@@ -116,6 +119,16 @@ class Voice(Fake):
         self.called("tts_speak", id_, text, lang, behaviour)
         return True
 
+    @dbus.service.signal(IFACE, signature="si")
+    def tts_event(self, id_, code):
+        pass
+
+
+class LapinouMic(Fake):
+    @dbus.service.method(MIC_IFACE, in_signature="sb", out_signature="")
+    def mark_playback(self, playback_id, start):
+        self.called("mark_playback", playback_id, start)
+
 
 class Controller(Fake):
     @dbus.service.method(IFACE, in_signature="", out_signature="iii")
@@ -167,7 +180,7 @@ def main():
         objects["LapinouCloud"] = Cloud(bus)
         names.append(dbus.service.BusName("com.mindscape.karotz.LapinouCloud", bus))
     else:
-        for cls in (Led, Ears, Button, Rfid, Voice, Controller, Multimedia):
+        for cls in (Led, Ears, Button, Rfid, Voice, Controller, Multimedia, LapinouMic):
             objects[cls.__name__] = cls(bus, cls.__name__)
             names.append(dbus.service.BusName(f"com.mindscape.karotz.{cls.__name__}", bus))
     open(os.path.join(os.path.dirname(log), "ready-cloud" if cloud else "ready"), "w").close()

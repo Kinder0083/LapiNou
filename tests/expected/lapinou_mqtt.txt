@@ -58,13 +58,19 @@ get_state: string "connected"
 == Rfid tag_out
   publish lapinou/<id>/event/rfid qos=0 retain=False: {"tag":"D0021A3502B3C4D5","action":"out"}
 == 5. cmd/say without LapinouCloud
+  call LapinouMic.mark_playback('local:lapinou-mqtt:7', 1)
   call Voice.tts_speak('lapinou-mqtt:7', 'Bonjour, je suis Lapinou !', 'fr', 1)
+== voice-daemon done (tts_event): the local playback's end mark
+  call LapinouMic.mark_playback('local:lapinou-mqtt:7', 0)
 LapinouCloud ready: True
 == cmd/say with LapinouCloud on the bus
   call LapinouCloud.say("Il fait beau aujourd'hui.")
 == cmd/say once LapinouCloud has gone
+  call LapinouMic.mark_playback('local:lapinou-mqtt:8', 1)
   call Voice.tts_speak('lapinou-mqtt:8', 'Au revoir.', 'fr', 1)
 == a retained cmd/say: done once, when sent
+  call LapinouMic.mark_playback('local:lapinou-mqtt:8', 0)
+  call LapinouMic.mark_playback('local:lapinou-mqtt:9', 1)
   call Voice.tts_speak('lapinou-mqtt:9', 'Un message retenu.', 'fr', 1)
 == 6. cmd/sound by name
   web API: Multimedia.stop(int32:1)
@@ -219,6 +225,7 @@ com.mindscape.karotz.KarotzInterface.lclick_start()
 com.mindscape.karotz.KarotzInterface.lclick_stop()
 com.mindscape.karotz.KarotzInterface.tag_in(string "D0021A3502B3C4D5", string "", int32 0, int32 0, int32 0, int32 0)
 com.mindscape.karotz.KarotzInterface.tag_out(string "D0021A3502B3C4D5")
+com.mindscape.karotz.KarotzInterface.tts_event(string "lapinou-mqtt:7", int32 4)
 com.mindscape.karotz.LapinouMqtt.mqtt_state(string "disconnected")
 com.mindscape.karotz.LapinouMqtt.mqtt_state(string "connecting")
 com.mindscape.karotz.LapinouMqtt.mqtt_state(string "connected")

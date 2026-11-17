@@ -11,7 +11,7 @@ Chaque trame est : 4 octets de longueur (big-endian), puis un message `LapinouAu
 - `seq` : numéro de trame, +1 à chaque trame. Un saut signale des trames perdues (tampon circulaire du lapin plein) ; le serveur le compte dans `RabbitStream.gaps`.
 - `mulaw` : audio G.711 mu-law, 16 kHz, mono (un octet par échantillon).
 - `first_sample` : index, depuis le début du flux du lapin, du premier échantillon de `mulaw`. S'il manque, le serveur le déduit de la trame précédente.
-- `mark` : repère de lecture (`playback_id`, `at_sample`, `start`) : début ou fin d'un son joué par le lapin, situé dans l'axe des échantillons du micro (sert à l'annulation d'écho).
+- `mark` : repère de lecture (`playback_id`, `at_sample`, `start`) : début ou fin d'un son joué par le lapin, situé dans l'axe des échantillons du micro (sert à l'annulation d'écho). Un `playback_id` qui commence par `local:` est une lecture que le serveur n'a pas demandée et dont il n'a pas la référence (un `cmd/say` de Home Assistant que `voice-daemon` dit, marqué par `lapinou-mqtt` du `tts_speak` à son `tts_event`) : le serveur ne cherche pas le mot d'activation pendant cette lecture ni 0,5 s après (le lapin ne se réveille pas lui-même) ; une telle lecture sans fin reçue ne compte plus après 2 minutes.
 
 ## Hello
 

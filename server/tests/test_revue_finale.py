@@ -791,3 +791,55 @@ async def test_18_retired_marker_must_be_finite_and_in_the_past(tmp_path, marker
     relay._prune()
     assert not retired.parent.exists()  # jamais gardée pour toujours
     assert not list(retired.parent.parent.glob("*/.retired.new"))
+
+
+# --- 22. cmd/say en mode serveur : le lapin ne se réveille pas lui-même ----------------------
+
+
+async def test_22_local_playback_marks_suspend_the_wake_word_end_to_end():
+    """Comme sur le lapin : lapinou-mqtt fait marquer « local:<id> » à lapinou-mic autour d'un
+    cmd/say ; les marques arrivent dans le flux 9300 ; pendant la lecture (et 0,5 s après), rien
+    ne va au détecteur du mot d'activation, puis il repart d'une parole oubliée (reset)."""
+    from test_conversation import FakeDetector, FakeRegistry
+
+    from lapinou.rabbit.audio_gateway import AudioGateway
+
+    gateway = AudioGateway("127.0.0.1", 0)
+    await gateway.start()
+    detector = FakeDetector()
+    orch = Orchestrator(SessionDeps(brain=ScriptedBrain(), tools=ToolBox([]), voice=FakeVoice(),
+                                    transcriber=FakeTranscriber(None),
+                                    make_detector=lambda: detector))
+    orch.attach(FakeRegistry(), gateway)
+    _, writer = await asyncio.open_connection("127.0.0.1", gateway.port)
+    seq, sample = [0], [0]
+
+    async def send(samples=1600, mark=None, hello_msg=None):
+        writer.write(frame("lapin-a", seq[0], b"\xff" * samples if samples else None,
+                           sample[0] if samples else None, mark=mark, hello_msg=hello_msg))
+        await writer.drain()
+        seq[0] += 1
+        sample[0] += samples
+
+    try:
+        await send(hello_msg=hello("lapin-a"))
+        await until(lambda: detector.fed == 1600)
+        await send(0, mark=("local:lapinou-mqtt:7", sample[0], True))
+        for _ in range(10):  # 1 s de cmd/say
+            await send()
+        await send(0, mark=("local:lapinou-mqtt:7", sample[0], False))
+        await send(4000)  # la traîne de 0,5 s (8000 échantillons) : toujours rien
+        await send(4000)
+        await asyncio.sleep(0.2)
+        assert detector.fed == 1600
+        resets = detector.resets
+        await send(1600)  # après la traîne : le détecteur repart, remis à zéro
+        await until(lambda: detector.fed == 3200)
+        assert detector.resets == resets + 1
+        await send(0, mark=("p-du-serveur", sample[0], True))  # une lecture du serveur : écoutée
+        await send(1600)
+        await until(lambda: detector.fed == 4800)
+    finally:
+        writer.close()
+        await orch.close()
+        await gateway.stop()

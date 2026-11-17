@@ -81,6 +81,13 @@ WAKE_QUEUE_MAX = 300  # blocs en attente du détecteur (~40 s) ; au-delà, le pl
 _SENTENCE_DONE = re.compile(r"[.!?…]+[»”\"')\]]*\s*$")
 CLICKS = ("simple", "click")  # appui bref (ButtonCallback.SIMPLE)
 LONG_PRESSES = ("long_start", "lclick_start")  # début d'un appui long (LONG_START)
+# Lecture locale (cmd/say que voice-daemon dit, marqué « local:<id> » par lapinou-mqtt) : le lapin
+# parle sans que le serveur ait la référence de l'écho ; le mot d'activation n'est pas cherché
+# pendant cette lecture, ni LOCAL_TAIL après sa fin (écho de la pièce). Une lecture locale dont la
+# fin n'arrive pas ne compte plus après LOCAL_MAX (axe du micro, 16 kHz).
+LOCAL_PREFIX = "local:"
+LOCAL_TAIL = 8000
+LOCAL_MAX = 120 * 16000
 _RESET = object()  # dans la file du détecteur : oublier la parole en cours
 _END = object()  # un tour qui clôt la conversation
 
@@ -314,6 +321,7 @@ class RabbitSession:
         self._bg: set[asyncio.Task] = set()
         self._closing = False
         self._aec_failed = False
+        self._local_muted = False  # détecteur suspendu par une lecture locale
 
     @property
     def is_idle(self) -> bool:
@@ -414,11 +422,30 @@ class RabbitSession:
             elif self._detector is not None and (
                 self.state in (State.IDLE, State.SPEAKING) or self._grow is not None
             ):
+                if self._local_playback(chunk.first_sample, len(pcm)):
+                    self._local_muted = True  # le lapin parle tout seul : pas de réveil
+                    continue
+                if self._local_muted:
+                    self._local_muted = False
+                    self._wake_reset()  # la parole entendue pendant la lecture est oubliée
                 if self._wake_q.qsize() >= WAKE_QUEUE_MAX:
                     self._wake_q.get_nowait()
                 self._wake_q.put_nowait(pcm)
         log.info("lapin %s : flux micro fermé", self.id)
         await self._abandon(offline=True)
+
+    def _local_playback(self, first: int, count: int) -> bool:
+        """Le bloc [first, first + count) tombe-t-il pendant une lecture locale (ou juste
+        après) ? Les marques sont sur l'axe du micro, comme first_sample."""
+        for playback_id, (start, end) in list(self.stream.playback_marks.items()):
+            if not playback_id.startswith(LOCAL_PREFIX) or start > first + count:
+                continue
+            if end is None:
+                if first - start <= LOCAL_MAX:
+                    return True
+            elif first < end + LOCAL_TAIL:
+                return True
+        return False
 
     async def _wake_loop(self) -> None:
         while True:
