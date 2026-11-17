@@ -255,7 +255,7 @@
       intro: "mqtt.intro", restart: "mqtt", tests: ["mqtt"],
       groups: [[null, [
         ["switch", "mqtt.enabled", "mqtt.enabled"],
-        ["text", "mqtt.host", "mqtt.host"],
+        ["text", "mqtt.host", "mqtt.host", "settings.address_clears"],
         ["number", "mqtt.port", "mqtt.port"],
         ["text", "mqtt.user", "mqtt.user"],
         ["secret", "mqtt_password", "mqtt.password"],
@@ -274,12 +274,13 @@
       intro: "cloud.intro", restart: "mqtt", tests: ["stt", "llm", "tts"],
       groups: [
         [null, [["switch", "cloud.enabled", "cloud.enabled"]]],
-        ["cloud.stt", [["text", "cloud.stt_url", "cloud.url"], ["text", "cloud.stt_model", "cloud.model"],
+        ["cloud.stt", [["text", "cloud.stt_url", "cloud.url", "settings.address_clears"], ["text", "cloud.stt_model", "cloud.model"],
           ["secret", "cloud_stt_key", "cloud.key"]]],
-        ["cloud.llm", [["select:anthropic|openai", "cloud.llm_kind", "cloud.kind"], ["text", "cloud.llm_url", "cloud.url"],
+        ["cloud.llm", [["select:anthropic|openai", "cloud.llm_kind", "cloud.kind"],
+          ["text", "cloud.llm_url", "cloud.url", "settings.address_clears"],
           ["text", "cloud.llm_model", "cloud.model"], ["select:low|medium|high|none", "cloud.llm_effort", "cloud.effort"],
           ["secret", "cloud_llm_key", "cloud.key"]]],
-        ["cloud.tts", [["text", "cloud.tts_url", "cloud.url"], ["text", "cloud.tts_model", "cloud.model"],
+        ["cloud.tts", [["text", "cloud.tts_url", "cloud.url", "settings.address_clears"], ["text", "cloud.tts_model", "cloud.model"],
           ["text", "cloud.tts_voice", "cloud.voice"], ["secret", "cloud_tts_key", "cloud.key"]]],
       ],
     },
@@ -367,29 +368,41 @@
   }
 
   async function saveForm(form, def, settings) {
-    const secrets = [];
+    // The Wi-Fi password goes on its own (wpa.conf); the other secrets with the settings, so a
+    // changed address keeps the key given with it (R46).
+    let wifi = "";
+    const fields = {};
     for (const input of form.querySelectorAll("[data-secret]")) {
       if (!input.value) continue;
-      if (input.dataset.secret === "wifi_password" && /["\\]/.test(input.value)) throw new Error(t("reseau.wifi_bad"));
-      secrets.push([input.dataset.secret, input.value]);
+      if (input.dataset.secret === "wifi_password") {
+        if (/["\\]/.test(input.value)) throw new Error(t("reseau.wifi_bad"));
+        wifi = input.value;
+      } else {
+        fields["secret__" + input.dataset.secret] = input.value;
+      }
     }
-    const fields = {};
     for (const input of form.querySelectorAll("[data-key]")) {
       const key = input.dataset.key;
       const value = input.type === "checkbox" ? (input.checked ? "1" : "0") : input.value.trim();
       const before = settings[key] || (input.type === "checkbox" ? "0" : "");
       if (value !== before) fields[key.replace(".", "__")] = value;
     }
-    if (!secrets.length && !Object.keys(fields).length) return t("settings.nothing");
-    for (const [name, value] of secrets) await call("lapinou/secret_set", { name: name, value: value });
-    if (Object.keys(fields).length) await call("lapinou/conf_set", fields);
+    if (!wifi && !Object.keys(fields).length) return t("settings.nothing");
+    if (wifi) await call("lapinou/secret_set", { name: "wifi_password", value: wifi });
+    let cleared = [];
+    if (Object.keys(fields).length) cleared = (await call("lapinou/conf_set", fields)).cleared || [];
     form.querySelectorAll("[data-secret]").forEach((i) => { i.value = ""; });
     await loadSettings();
+    for (const input of form.querySelectorAll("[data-secret]")) {
+      const s = state.settings[input.dataset.secret];
+      input.placeholder = s && s.set ? t("settings.secret_set") : t("settings.secret_unset");
+    }
+    const note = cleared.length ? " " + t("settings.cleared", { n: cleared.map((c) => t("secret." + c)).join(", ") }) : "";
     if (def.restart) {
       await call("lapinou/restart", { what: def.restart });
-      return t("settings.saved_restart");
+      return t("settings.saved_restart") + note;
     }
-    return t("settings.saved");
+    return t("settings.saved") + note;
   }
 
   function renderEtat(panel) {
@@ -409,6 +422,27 @@
       el("dl", { class: "facts" }, ...rows.filter((r) => r[1]).map((r) => el("div", null, el("dt", null, t(r[0])), el("dd", null, r[1])))));
   }
 
+  // waitForPress(result): the LED blinks; resolves once the rabbit's head is pressed, else throws
+  // after the wait.
+  async function waitForPress(result) {
+    const start = await call("lapinou/press", { action: "start" });
+    const wait = Number(start.wait) || 60;
+    const box = $("rabbit");
+    box.classList.add("waiting");
+    try {
+      for (let left = wait; left > 0; left--) {
+        say(result, t("securite.press", { s: left }), true);
+        await new Promise((r) => setTimeout(r, 1000));
+        const st = await call("lapinou/press", { action: "status" });
+        if (st.pressed) return;
+        if (!st.waiting && left < wait - 2) break;
+      }
+      throw new Error(t("securite.press_late"));
+    } finally {
+      box.classList.remove("waiting");
+    }
+  }
+
   function renderSecurite(panel) {
     const s = state.status || {};
     const result = el("p", { class: "result", "aria-live": "polite" });
@@ -426,6 +460,8 @@
       ev.preventDefault();
       run(save, result, async () => {
         if (a.value !== b.value) throw new Error(t("securite.mismatch"));
+        // The first password: a press on the rabbit's head within 60 s (R46).
+        if (s.password !== "1") await waitForPress(result);
         await call("lapinou/secret_set", { name: "web_password", value: a.value });
         a.value = b.value = "";
         banner("");

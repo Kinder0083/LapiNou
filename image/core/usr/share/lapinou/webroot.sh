@@ -7,10 +7,17 @@
 # are only expanded inside double quotes and stored with conf.sh, which keeps any text as given.
 #
 #   get                       every setting the page shows, and for each secret only whether it is set
-#   set                       settings, one per line on stdin: SECTION<tab>KEY<tab>VALUE; all are
-#                             checked before any is written
+#   set                       settings, one per line on stdin: SECTION<tab>KEY<tab>VALUE (or
+#                             secret<tab>NAME<tab>VALUE for a key given with them); all are checked
+#                             before any is written. A changed destination (a cloud.*_url,
+#                             cloud.llm_kind, mqtt.host) clears its secret unless the same request
+#                             gives a new one (R46); http:// is refused for a service with a key
+#                             unless its host is on the local network
 #   secret NAME               a secret (the value on stdin; empty removes it); wifi_password goes in
-#                             wpa.conf, web_password is the page's own password (httpd's login)
+#                             wpa.conf, web_password is the page's own password (httpd's login): the
+#                             first one only after a press on the rabbit's head (R46)
+#   press start|status        the first password's proof of presence: the LED blinks and a press on
+#                             the head within 60 s is waited for, or whether it came
 #   ota check|install|status  lapinou-ota check (its answer kept in /usr/ota/check.json, which
 #                             lapinou-mqtt publishes), lapinou-ota install started on its own, or
 #                             where an install is and its log
@@ -29,9 +36,13 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin
 export PATH
 LC_ALL=C
 export LC_ALL
-umask 022
+# Nothing this script makes is readable by others, even for a moment: each file gets its final
+# mode (chmod) once written. What it starts for the rabbit (lapinou-ota, S40) gets 022 back.
+umask 077
 # No file name is ever made from a value.
 set -f
+# The most read from the standard input.
+STDIN_MAX=8192
 
 CONF=/usr/etc/conf
 SECRETS=/usr/etc/conf/lapinou.secrets
@@ -50,6 +61,12 @@ INETD=/karotz/scripts/inetd.sh
 S40=/usr/etc/init.d/S40lapinlibre
 CACERT=/usr/etc/ssl/certs/ca-certificates.crt
 SECRET_NAMES="mqtt_password cloud_stt_key cloud_llm_key cloud_tts_key ota_token"
+# The first password's proof of presence: the press's time, and the lock its watch holds.
+PRESS_OK=/var/run/lapinou-press.ok
+PRESS_LOCK=/var/run/lapinou-press.lock
+PRESS_WAIT=60
+PRESS_KEEP=120
+WEB_LED=/var/run/lapinlibre-web/led
 NL='
 '
 TAB=$(printf '\t')
@@ -187,9 +204,11 @@ wpa_get() {
     done < "$WPA"
 }
 
-# replace FILE MODE: the standard input replaces FILE in one step.
+# replace FILE MODE: the standard input replaces FILE in one step. The new file is made 0600 (umask
+# 077, set again here) and gets MODE only once written.
 replace() {
-    cat > "$1.$$.new" && chmod "$2" "$1.$$.new" && mv -f "$1.$$.new" "$1" || { rm -f "$1.$$.new"; return 1; }
+    (umask 077 && cat > "$1.$$.new") && chmod "$2" "$1.$$.new" && mv -f "$1.$$.new" "$1" ||
+        { rm -f "$1.$$.new"; return 1; }
 }
 
 # wpa_write SSID PSK: wpa.conf as the USB key's applysettings.sh writes it.
@@ -202,13 +221,71 @@ net_write() {
     printf 'IP="%s"\nNETMASK="%s"\nGATEWAY="%s"\nDNS="%s"\n' "$IP" "$NETMASK" "$GATEWAY" "$DNS" | replace "$NETWORK" 644
 }
 
-# with_lock COMMAND...: COMMAND holding conf.sh's lock.
+# with_lock COMMAND...: COMMAND holding conf.sh's lock, as conf.sh's writes take it (without flock,
+# as conf.sh does, without the lock).
 with_lock() {
     mkdir -p "$CONF" || return 1
-    (
-        flock -x 8 || exit 1
+    if command -v flock > /dev/null 2>&1; then
+        (
+            flock -x 8 || exit 1
+            "$@"
+        ) 8>> "$CONF/lapinou.lock"
+    else
         "$@"
-    ) 8>> "$CONF/lapinou.lock"
+    fi
+}
+
+# lan_host HOST: true for a host on the local network: localhost, a .local name, or an IPv4
+# address in 127/8, 10/8, 172.16/12, 192.168/16 or 169.254/16.
+lan_host() {
+    case $1 in localhost | *.local) return 0 ;; esac
+    is_ipv4 "$1" || return 1
+    _ifs=$IFS
+    IFS=.
+    # shellcheck disable=SC2086
+    set -- $1
+    IFS=$_ifs
+    case $1.$2 in
+    127.* | 10.* | 192.168 | 169.254) return 0 ;;
+    172.1[6-9] | 172.2[0-9] | 172.3[01]) return 0 ;;
+    esac
+    return 1
+}
+
+# url_host URL: the URL's host (no user, port or path), in UH.
+url_host() {
+    UH=${1#*://}
+    UH=${UH%%/*}
+    UH=${UH%%\?*}
+    UH=${UH##*@}
+    case $UH in
+    \[*\]*) UH=${UH#\[}; UH=${UH%%\]*} ;;
+    *) UH=${UH%:*} ;;
+    esac
+}
+
+# key_url_ok URL: false for an http:// URL to a host outside the local network (a key would go out
+# in clear); https://, and a URL on the local network, are fine.
+key_url_ok() {
+    case $1 in http://*) ;; *) return 0 ;; esac
+    url_host "$1"
+    lan_host "$UH"
+}
+
+# service_secret SECTION.KEY: the secret a destination's setting sends, in SS (empty: none).
+service_secret() {
+    case $1 in
+    cloud.stt_url) SS=cloud_stt_key ;;
+    cloud.llm_url | cloud.llm_kind) SS=cloud_llm_key ;;
+    cloud.tts_url) SS=cloud_tts_key ;;
+    mqtt.host) SS=mqtt_password ;;
+    *) SS="" ;;
+    esac
+}
+
+# read_stdin: at most STDIN_MAX bytes of the standard input, in IN.
+read_stdin() {
+    IN=$(head -c "$STDIN_MAX")
 }
 
 # --- get ---
@@ -305,8 +382,36 @@ write_network() {
     [ -z "$net" ] || net_write
 }
 
+# given SECTION KEY: the value this request gives (LINES), in GV; false when it gives none.
+given() {
+    GV=""
+    _gifs=$IFS
+    IFS=$NL
+    for _gl in $LINES; do
+        IFS=$_gifs
+        case $_gl in "$1$TAB$2$TAB"*)
+            GV=${_gl#"$1$TAB$2$TAB"}
+            return 0
+            ;;
+        esac
+    done
+    IFS=$_gifs
+    return 1
+}
+
+# has_secret NAME: whether NAME has a value once this request is done (given in it, or kept).
+has_secret() {
+    if given secret "$1"; then
+        [ -n "$GV" ]
+        return
+    fi
+    case " $CLEARED " in *" $1 "*) return 1 ;; esac
+    secret_set_flag "$1"
+}
+
 cmd_set() {
-    LINES=$(cat)
+    read_stdin
+    LINES=$IN
     [ -n "$LINES" ] || fail "Aucun réglage reçu."
     server_host=""
     _ifs=$IFS
@@ -320,6 +425,12 @@ cmd_set() {
         v=${rest#*"$TAB"}
         case $v in *"$TAB"*) fail "Le réglage $s.$k ne peut pas contenir de tabulation." ;; esac
         _lapinou_name_ok "$s" && _lapinou_name_ok "$k" || fail "Réglage inconnu."
+        if [ "$s" = secret ]; then
+            case " $SECRET_NAMES " in *" $k "*) ;; *) fail "Secret inconnu." ;; esac
+            case $v in *[[:cntrl:]]*) fail "Le secret ne peut pas contenir de caractère de contrôle." ;; esac
+            [ ${#v} -le 1024 ] || fail "Le secret est trop long (1024 caractères au plus)."
+            continue
+        fi
         check "$s" "$k" "$v" || fail "Le réglage $s.$k $WHY."
         [ "$s.$k" = server.host ] && server_host=$v
         if [ "$s.$k" = network.wifi_ssid ]; then
@@ -328,6 +439,27 @@ cmd_set() {
         fi
     done
     IFS=$_ifs
+    # R46: a destination that changes loses its secret, unless the request gives a new one.
+    CLEARED=""
+    for dest in cloud.stt_url cloud.llm_url cloud.llm_kind cloud.tts_url mqtt.host; do
+        given "${dest%%.*}" "${dest#*.}" || continue
+        [ "$GV" = "$(lapinou_get "${dest%%.*}" "${dest#*.}")" ] && continue
+        service_secret "$dest"
+        given secret "$SS" && continue
+        secret_set_flag "$SS" || continue
+        case " $CLEARED " in *" $SS "*) ;; *) CLEARED="$CLEARED${CLEARED:+ }$SS" ;; esac
+    done
+    # A key never goes out in clear: http:// only to the local network for a service with a key.
+    for svc in stt:cloud_stt_key:"la reconnaissance vocale" llm:cloud_llm_key:"le modèle de langage" \
+        tts:cloud_tts_key:"la synthèse vocale"; do
+        name=${svc%%:*}
+        rest=${svc#*:}
+        if given cloud "${name}_url"; then url=$GV; else url=$(lapinou_get cloud "${name}_url"); fi
+        [ -n "$url" ] || continue
+        has_secret "${rest%%:*}" || continue
+        key_url_ok "$url" ||
+            fail "L'adresse de ${rest#*:} doit commencer par https:// : en http://, sa clé passerait en clair hors du réseau local."
+    done
     IFS=$NL
     for line in $LINES; do
         IFS=$_ifs
@@ -335,23 +467,32 @@ cmd_set() {
         rest=${line#*"$TAB"}
         k=${rest%%"$TAB"*}
         v=${rest#*"$TAB"}
-        [ "$s" = network ] && continue
-        lapinou_set "$s" "$k" "$v" || fail "Le réglage $s.$k n'a pas pu être enregistré."
+        case $s in
+        network) continue ;;
+        secret) lapinou_secret_set "$k" "$v" || fail "Le secret $k n'a pas pu être enregistré." ;;
+        *) lapinou_set "$s" "$k" "$v" || fail "Le réglage $s.$k n'a pas pu être enregistré." ;;
+        esac
     done
     IFS=$_ifs
+    cleared_json=""
+    for s in $CLEARED; do
+        lapinou_secret_set "$s" "" || fail "Le secret $s n'a pas pu être effacé."
+        cleared_json="$cleared_json${cleared_json:+,}\"$s\""
+    done
     with_lock write_network || fail "Les réglages du réseau n'ont pas pu être enregistrés."
     # conf.sh's writes take the lock themselves.
     if [ -n "$server_host" ]; then
         server_files "$server_host" || fail "Les réglages du serveur n'ont pas pu être enregistrés."
     fi
-    ok
+    ok "\"cleared\":[$cleared_json]"
 }
 
 # --- secrets ---
 
 cmd_secret() {
     name=$1
-    value=$(cat)
+    read_stdin
+    value=$IN
     case $name in
     web_password)
         [ ${#value} -ge 8 ] && [ ${#value} -le 64 ] ||
@@ -359,6 +500,11 @@ cmd_secret() {
         case $value in *[!!-~]* | *\"* | *\\* | *:*)
             fail "Le mot de passe ne peut avoir que des lettres, chiffres et signes, sans espace, guillemet (\"), barre oblique inverse (\\) ni deux-points (:)." ;;
         esac
+        # R46: the first password only after a press on the rabbit's head, which is used up.
+        if [ ! -s "$CONF/web_password.hash" ]; then
+            press_fresh || fail "Appuyez d'abord une fois sur la tête du lapin (bouton « Créer le mot de passe »)."
+            rm -f "$PRESS_OK"
+        fi
         printf '%s\n' "$value" | replace "$CONF/web_password" 600 || fail "Le mot de passe n'a pas pu être enregistré."
         "$INETD" conf > /dev/null 2>&1
         [ -s "$CONF/web_password.hash" ] && [ ! -e "$CONF/web_password" ] ||
@@ -383,8 +529,89 @@ cmd_secret() {
     case " $SECRET_NAMES " in *" $name "*) ;; *) fail "Secret inconnu." ;; esac
     case $value in *[[:cntrl:]]*) fail "Le secret ne peut pas contenir de caractère de contrôle." ;; esac
     [ ${#value} -le 1024 ] || fail "Le secret est trop long (1024 caractères au plus)."
+    case $name in cloud_*_key)
+        svc=${name#cloud_}
+        url=$(lapinou_get cloud "${svc%_key}_url")
+        [ -z "$value" ] || [ -z "$url" ] || key_url_ok "$url" ||
+            fail "L'adresse de ce service est en http:// hors du réseau local : passez-la en https:// avant d'enregistrer sa clé."
+        ;;
+    esac
     lapinou_secret_set "$name" "$value" || fail "Le secret n'a pas pu être enregistré."
     ok
+}
+
+# --- the first password's proof of presence (R46) ---
+
+# press_fresh: true when the head was pressed, through press start, less than PRESS_KEEP s ago.
+press_fresh() {
+    [ -f "$PRESS_OK" ] || return 1
+    _pt=""
+    read -r _pt < "$PRESS_OK"
+    case $_pt in '' | *[!0-9]*) return 1 ;; esac
+    _age=$(($(date +%s) - _pt))
+    [ "$_age" -ge 0 ] && [ "$_age" -le "$PRESS_KEEP" ]
+}
+
+# press_waiting: true while a watch holds the press lock.
+press_waiting() {
+    [ -e "$PRESS_LOCK" ] || return 1
+    ! (flock -n 7) 7>> "$PRESS_LOCK" 2> /dev/null
+}
+
+# led_call METHOD ARG...: led-daemon, as the web API calls it.
+led_call() {
+    _m=$1
+    shift
+    timeout 7 dbus-send --system --print-reply --reply-timeout=5000 --dest=com.mindscape.karotz.Led \
+        /com/mindscape/karotz/Led "com.mindscape.karotz.KarotzInterface.$_m" string:webroot:press "$@" > /dev/null 2>&1
+}
+
+# press_watch: the LED blinks while a click from the head's button (button-daemon's signal, which
+# the button watcher also follows) is waited for, PRESS_WAIT s at most; a click writes PRESS_OK.
+# Then the LED goes back to the web API's colour.
+press_watch() {
+    exec 7>> "$PRESS_LOCK"
+    flock -n 7 || exit 0
+    led_call pulse string:FF8A2A string:000000 int32:400 int32:-1
+    _out=$PRESS_LOCK.out
+    rm -f "$_out"
+    timeout "$PRESS_WAIT" dbus-monitor --system \
+        "type='signal',interface='com.mindscape.karotz.KarotzInterface',member='click'" > "$_out" 2> /dev/null &
+    _mon=$!
+    _i=0
+    while [ $_i -lt $((PRESS_WAIT * 5)) ] && kill -0 "$_mon" 2> /dev/null; do
+        if grep -q "member=click" "$_out" 2> /dev/null; then
+            (umask 077 && date +%s > "$PRESS_OK.new") && mv -f "$PRESS_OK.new" "$PRESS_OK"
+            break
+        fi
+        usleep 200000
+        _i=$((_i + 1))
+    done
+    kill "$_mon" 2> /dev/null
+    rm -f "$_out"
+    _c=""
+    [ -f "$WEB_LED" ] && read -r _c _rest < "$WEB_LED"
+    case $_c in [0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F]) ;; *) _c=00FF00 ;; esac
+    led_call light "string:$_c"
+}
+
+cmd_press() {
+    case $1 in
+    start)
+        [ -s "$CONF/web_password.hash" ] && fail "La page a déjà un mot de passe."
+        rm -f "$PRESS_OK"
+        if ! press_waiting; then
+            (press_watch) < /dev/null > /dev/null 2>&1 &
+        fi
+        ok "\"wait\":$PRESS_WAIT"
+        ;;
+    status)
+        if press_fresh; then p=true; else p=false; fi
+        if press_waiting; then w=true; else w=false; fi
+        ok "\"pressed\":$p,\"waiting\":$w"
+        ;;
+    *) fail "Commande inconnue." ;;
+    esac
 }
 
 # --- updates ---
@@ -399,8 +626,8 @@ cmd_ota() {
     case $1 in
     check)
         ota_running && fail "Une mise à jour est en cours."
-        mkdir -p "$OTA_DIR" 2> /dev/null
-        out=$(timeout 180 "$OTA" check 2> "$OTA_DIR/check.err")
+        [ -d "$OTA_DIR" ] || mkdir -m 755 "$OTA_DIR" 2> /dev/null
+        out=$(umask 022 && timeout 180 "$OTA" check 2> "$OTA_DIR/check.err")
         st=$?
         installed=$(printf '%s' "$out" | sed -n 's/.*"installed":"\([^"]*\)".*/\1/p')
         available=$(printf '%s' "$out" | sed -n 's/.*"available":"\([^"]*\)".*/\1/p')
@@ -419,7 +646,7 @@ cmd_ota() {
         ;;
     install)
         ota_running && fail "Une mise à jour est déjà en cours."
-        setsid "$OTA" install < /dev/null > /dev/null 2>&1 &
+        (umask 022 && exec setsid "$OTA" install < /dev/null > /dev/null 2>&1) &
         ok "\"started\":true"
         ;;
     status)
@@ -444,7 +671,7 @@ cmd_restart() {
     case $1 in
     mqtt) killall lapinou-mqtt > /dev/null 2>&1 ;;
     cloud) killall lapinou-cloud > /dev/null 2>&1 ;;
-    all) setsid "$S40" restart < /dev/null > /dev/null 2>&1 & ;;
+    all) (umask 022 && exec setsid "$S40" restart < /dev/null > /dev/null 2>&1) & ;;
     *) fail "Commande inconnue." ;;
     esac
     ok
@@ -522,6 +749,8 @@ cmd_test() {
             ;;
         esac
         is_url "$url" || fail "$name n'a pas d'adresse valable."
+        [ -z "$key" ] || key_url_ok "$url" ||
+            fail "$name a une adresse en http:// hors du réseau local : sa clé n'y est pas envoyée."
         api_base "$url"
         if [ "$kind" = anthropic ]; then
             # Anthropic's version header goes as an argument (no secret in it); the key on stdin.
@@ -547,5 +776,6 @@ secret) cmd_secret "${2:-}" ;;
 ota) cmd_ota "${2:-}" ;;
 restart) cmd_restart "${2:-}" ;;
 test) cmd_test "${2:-}" ;;
+press) cmd_press "${2:-}" ;;
 *) fail "Commande inconnue." ;;
 esac

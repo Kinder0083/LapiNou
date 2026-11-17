@@ -7,6 +7,7 @@
 web_begin change
 . /usr/share/lapinou/web-lapinou.sh
 lapinou_post
+lapinou_guard
 param_int value 0 100 ""
 [ -n "$PV" ] || web_fail "Le paramètre value manque."
 out=$(timeout 7 dbus-send --system --print-reply --reply-timeout=5000 --dest=com.mindscape.karotz.LapinouMqtt \

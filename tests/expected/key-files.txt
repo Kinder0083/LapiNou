@@ -1536,6 +1536,7 @@ usr:www/cgi-bin/lapinou/secret_set f 0755 0:0
 usr:www/cgi-bin/lapinou/status f 0755 0:0
 usr:www/cgi-bin/lapinou/test f 0755 0:0
 usr:www/cgi-bin/lapinou/volume f 0755 0:0
+usr:www/cgi-bin/lapinou/press f 0755 0:0
 usr:www/cgi-bin/leds f 0755 0:0
 usr:www/cgi-bin/moods_list f 0755 0:0
 usr:www/cgi-bin/radios_list f 0755 0:0

@@ -21,6 +21,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -31,7 +32,11 @@ from test_web_api import Sandbox, WebApiCase, sandbox_copy, stub  # noqa: E402
 CORE = ROOT / "image/core"
 WWW = CORE / "usr/www"
 LAPINOU_SHARE = CORE / "usr/share/lapinou"
-CGIS = ["status", "conf_get", "conf_set", "secret_set", "test", "ota", "restart", "volume"]
+CGIS = ["status", "conf_get", "conf_set", "secret_set", "test", "ota", "restart", "volume", "press"]
+SET_OK = {"return": "0", "cleared": []}
+# A click of the head's button as dbus-monitor prints it (button-daemon's signal).
+CLICK = ("signal time=1 sender=:1.4 -> destination=(null destination) serial=9 path=/com/mindscape/karotz/Button; "
+         "interface=com.mindscape.karotz.KarotzInterface; member=click\n")
 LIBRARIES = [LAPINOU_SHARE / "web-lapinou.sh", LAPINOU_SHARE / "webroot.sh", LAPINOU_SHARE / "conf.sh"]
 WRAPPER_SRC = ROOT / "userland/src/usr/lapinou-webroot/lapinou-webroot.c"
 PAGE = ["index.html", "lapinou/app.js", "lapinou/style.css", "lapinou/tokens.css", "lapinou/lapin.svg", "lapinou/fr.json"]
@@ -133,6 +138,19 @@ class LapinouCase(WebApiCase):
     def no_password(self):
         (self.sb / "usr/etc/conf/web_password.hash").unlink(missing_ok=True)
 
+    def press_status(self):
+        return self.post_json("press", action="status")
+
+    def press_the_head(self):
+        """press start, then a click of the head's button (the fake bus's signal), then waits for it."""
+        self.assertEqual(self.post_json("press", action="start")["return"], "0")
+        self.box.write("signal.out", CLICK)
+        for _ in range(150):
+            if self.press_status()["pressed"]:
+                return
+            time.sleep(0.2)
+        self.fail("the press wasn't seen")
+
 
 class SettingsTest(LapinouCase):
     """conf_set, conf_get and secret_set."""
@@ -142,7 +160,7 @@ class SettingsTest(LapinouCase):
         for value in (NASTY, f"$(touch {marker})", f"`touch {marker}`", f"x;touch {marker}", "it's é \\ = [mqtt]"):
             with self.subTest(value=value):
                 reply = self.post_json("conf_set", mqtt__user=value)
-                self.assertEqual(reply, {"return": "0"})
+                self.assertEqual(reply, SET_OK)
                 self.assertEqual(self.box.conf_value("mqtt", "user"), value)
                 self.assertEqual(self.get_json("conf_get")["settings"]["mqtt.user"], value)
         self.assertFalse(marker.exists())
@@ -236,7 +254,8 @@ class SettingsTest(LapinouCase):
                 self.assertEqual(status, 401, body)
                 self.assertEqual(json.loads(body)["return"], "1")
         self.assertIn("mqtt_password=first", self.box.secrets())
-        # The page offers to create the password: it is taken.
+        # The page offers to create the password: it is taken after a press on the head (R46).
+        self.press_the_head()
         reply = self.post_json("secret_set", name="web_password", value="newpass123")
         self.assertEqual(reply, {"return": "0"})
         self.assertIn("inetd.sh conf", self.box.actions_log())
@@ -264,7 +283,7 @@ class SettingsTest(LapinouCase):
         self.assertEqual(self.post_json("secret_set", name="wifi_password", value="new $pass;1"), {"return": "0"})
         self.assertEqual(self.post_json("conf_set", network__wifi_ssid="Box 5G", network__ip="192.168.1.20",
                                         network__netmask="255.255.255.0", network__gateway="192.168.1.1",
-                                        network__dns="192.168.1.1", network__hostname="kitchen"), {"return": "0"})
+                                        network__dns="192.168.1.1", network__hostname="kitchen"), SET_OK)
         self.assertEqual(wpa.read_text(), 'network={\nssid="Box 5G"\npsk="new $pass;1"\nkey_mgmt=WPA-PSK\nscan_ssid=1\n'
                                           'proto=WPA RSN\n}\n')
         self.assertEqual(stat.S_IMODE(wpa.stat().st_mode), 0o600)
@@ -274,11 +293,11 @@ class SettingsTest(LapinouCase):
         settings = self.get_json("conf_get")["settings"]
         self.assertEqual((settings["network.wifi_ssid"], settings["network.ip"], settings["network.hostname"]),
                          ("Box 5G", "192.168.1.20", "kitchen"))
-        self.assertEqual(self.post_json("conf_set", network__ip=""), {"return": "0"})
+        self.assertEqual(self.post_json("conf_set", network__ip=""), SET_OK)
         self.assertIn('IP=""', (self.sb / "usr/etc/conf/network.conf").read_text())
 
     def test_server_host_sets_the_rabbits_servers(self):
-        self.assertEqual(self.post_json("conf_set", server__host="192.168.1.30", server__enabled="1"), {"return": "0"})
+        self.assertEqual(self.post_json("conf_set", server__host="192.168.1.30", server__enabled="1"), SET_OK)
         karotz = (self.sb / "usr/etc/conf/karotz.conf").read_text()
         for line in ("ip_server=192.168.1.30", "port_server=9123", "url_app=http://192.168.1.30:8080",
                      "domain_app=192.168.1.30", "lang=en-GB"):
@@ -386,6 +405,138 @@ class ActionsTest(LapinouCase):
             self.assertEqual(reply[key], value, key)
 
 
+class CorrectionTest(LapinouCase):
+    """The review's points (rapport de correction 1): R46 and the helper's files."""
+
+    def secret_is_set(self, name):
+        return self.get_json("conf_get")["settings"][name]["set"]
+
+    def test_values_with_equals_and_brackets(self):
+        for value in ("a=b", "[mqtt]", "x=[secrets]=y", "host=evil\n[mqtt]"):
+            with self.subTest(value=value):
+                if "\n" in value:
+                    self.assertError(self.post_json("conf_set", mqtt__user=value), "contrôle")
+                    continue
+                self.assertEqual(self.post_json("conf_set", mqtt__user=value), SET_OK)
+                self.assertEqual(self.box.conf_value("mqtt", "user"), value)
+        # Still one [mqtt] section with one user line.
+        conf = self.box.conf()
+        self.assertEqual(conf.count("\n[mqtt]\n") + conf.startswith("[mqtt]\n"), 1, conf)
+        self.assertEqual(len([l for l in conf.splitlines() if l.startswith("user=")]), 1, conf)
+
+    def test_a_changed_address_clears_its_key(self):
+        self.post_json("conf_set", mqtt__host="192.168.1.50")
+        self.post_json("secret_set", name="cloud_llm_key", value="sk-ant-kept")
+        self.post_json("secret_set", name="mqtt_password", value="mqtt-kept")
+        # The same value again: nothing changes.
+        self.assertEqual(self.post_json("conf_set", mqtt__host="192.168.1.50"), SET_OK)
+        self.assertTrue(self.secret_is_set("mqtt_password"))
+        # A new address: the key goes, and the page is told.
+        reply = self.post_json("conf_set", cloud__llm_url="https://evil.example")
+        self.assertEqual(reply, {"return": "0", "cleared": ["cloud_llm_key"]})
+        self.assertFalse(self.secret_is_set("cloud_llm_key"))
+        self.assertNotIn("sk-ant-kept", self.box.secrets())
+        # Tester then sends no key to the new address.
+        self.post_json("test", what="llm")
+        self.assertNotIn("sk-ant-kept", self.box.actions_log())
+        self.assertNotIn("x-api-key: sk", self.box.actions_log())
+        # The broker's address too; the kind of model as well.
+        self.assertEqual(self.post_json("conf_set", mqtt__host="evil.example")["cleared"], ["mqtt_password"])
+        self.post_json("secret_set", name="cloud_llm_key", value="sk-ant-2")
+        self.assertEqual(self.post_json("conf_set", cloud__llm_kind="openai")["cleared"], ["cloud_llm_key"])
+        # A new key given with the new address is kept.
+        reply = self.post_json("conf_set", cloud__stt_url="https://stt.example/v1", secret__cloud_stt_key="sk-new")
+        self.assertEqual(reply, SET_OK)
+        self.assertTrue(self.secret_is_set("cloud_stt_key"))
+        self.assertIn("cloud_stt_key=sk-new\n", self.box.secrets())
+
+    def test_http_only_on_the_local_network_with_a_key(self):
+        # Without a key, any address.
+        self.assertEqual(self.post_json("conf_set", cloud__tts_url="http://tts.example/v1")["return"], "0")
+        # A key with an http:// address outside the local network: refused, either way round.
+        self.assertError(self.post_json("secret_set", name="cloud_tts_key", value="sk-tts"), "https")
+        self.assertError(self.post_json("conf_set", cloud__tts_url="http://evil.example:8080/v1",
+                                        secret__cloud_tts_key="sk-tts"), "https://")
+        self.assertNotIn("sk-tts", self.box.secrets())
+        # On the local network, http:// is fine.
+        for url in ("http://192.168.1.40:8000/v1", "http://10.0.0.5/v1", "http://172.20.1.1/v1", "http://speech.local/v1",
+                    "https://api.example.com/v1"):
+            with self.subTest(url=url):
+                self.assertEqual(self.post_json("conf_set", cloud__tts_url=url, secret__cloud_tts_key="sk-tts")["return"], "0")
+        for url in ("http://172.32.0.1/v1", "http://192.169.0.1/v1", "http://8.8.8.8/v1", "http://user@evil.example/v1",
+                    "http://192.168.1.1.evil.example/v1"):
+            with self.subTest(url=url):
+                self.assertError(self.post_json("conf_set", cloud__tts_url=url, secret__cloud_tts_key="sk-tts"), "https://")
+        # A key already stored with such an address (written by hand): Tester doesn't send it.
+        self.box.write("usr/etc/conf/lapinou.conf", "[cloud]\ntts_url=http://evil.example/v1\n")
+        self.box.actions.unlink(missing_ok=True)
+        self.assertError(self.post_json("test", what="tts"), "http://")
+        self.assertNotIn("curl", self.box.actions_log())
+
+    def test_volume_follows_the_password_rule(self):
+        self.no_password()
+        self.post_json("secret_set", name="mqtt_password", value="first")
+        status, _, body = self.box.run("lapinou/volume", method="POST", body=form(value="40"), user=None)
+        self.assertEqual(status, 401, body)
+        self.assertNotIn("set_volume", self.box.actions_log())
+
+    def test_first_password_needs_a_press_on_the_head(self):
+        self.no_password()
+        # Without the press: refused.
+        self.assertError(self.post_json("secret_set", name="web_password", value="newpass123"), "tête du lapin")
+        self.assertFalse((self.sb / "usr/etc/conf/web_password.hash").exists())
+        # A press too old doesn't count.
+        self.box.write("var/run/lapinou-press.ok", "1000\n")
+        self.assertError(self.post_json("secret_set", name="web_password", value="newpass123"), "tête du lapin")
+        # The LED blinks while the press is waited for; then the press is seen.
+        self.press_the_head()
+        led = [c for c in self.box.dbus_calls() if c[0] == "Led"]
+        self.assertEqual(led[0][1], "pulse")
+        self.assertEqual(self.post_json("secret_set", name="web_password", value="newpass123"), {"return": "0"})
+        self.assertTrue((self.sb / "usr/etc/conf/web_password.hash").exists())
+        # Used up; and with a password, there is no press to make.
+        self.assertFalse((self.sb / "var/run/lapinou-press.ok").exists())
+        self.assertError(self.post_json("press", action="start"), "déjà un mot de passe")
+        # The LED goes back to the web API's colour once the watch ends.
+        for _ in range(100):
+            if [c for c in self.box.dbus_calls() if c[:2] == ("Led", "light")]:
+                break
+            time.sleep(0.2)
+        self.assertEqual([c for c in self.box.dbus_calls() if c[:2] == ("Led", "light")][-1][2][-1], "string:00FF00")
+
+    def test_a_password_change_needs_no_press(self):
+        self.assertEqual(self.post_json("secret_set", name="web_password", value="changed123"), {"return": "0"})
+        self.assertNotIn("dbus-monitor", self.box.actions_log())
+
+    def test_helper_files_are_never_readable_by_others(self):
+        # chmod records the mode a file was made with, before changing it: every file the helper
+        # writes is made without group or other permissions.
+        (self.box.bin / "chmod").rename(self.box.bin / "chmod-real")
+        stub(self.box.bin / "chmod", f'for a; do last=$a; done\nls -ln "$last" >> {self.sb}/made.log\n'
+                                     f'exec {self.box.bin}/chmod-real "$@"')
+        self.post_json("secret_set", name="mqtt_password", value="hunter2")
+        self.post_json("conf_set", mqtt__host="192.168.1.50", secret__mqtt_password="hunter3", network__hostname="kitchen",
+                       network__ip="192.168.1.20")
+        self.post_json("secret_set", name="wifi_password", value="newwifi123")
+        self.post_json("secret_set", name="web_password", value="changed123")
+        self.post_json("ota", action="check")
+        made = (self.sb / "made.log").read_text().splitlines()
+        self.assertTrue(made)
+        for line in made:
+            self.assertRegex(line, r"^-rw-------", line)
+        for name, mode in (("lapinou.secrets", 0o600), ("wpa.conf", 0o600), ("lapinou.conf", 0o644), ("network.conf", 0o644)):
+            self.assertEqual(stat.S_IMODE((self.sb / "usr/etc/conf" / name).stat().st_mode), mode, name)
+        self.assertEqual(stat.S_IMODE((self.sb / "usr/ota/check.json").stat().st_mode), 0o644)
+
+    def test_stdin_is_capped(self):
+        text = (LAPINOU_SHARE / "webroot.sh").read_text(encoding="utf-8")
+        self.assertNotIn("$(cat)", text)
+        self.assertIn('head -c "$STDIN_MAX"', text)
+        r = subprocess.run([str(self.box.bin / "sh"), str(self.sb / "usr/share/lapinou/webroot.sh"), "secret", "ota_token"],
+                           input=b"x" * 20000, env={"PATH": str(self.box.bin)}, capture_output=True, timeout=120)
+        self.assertError(json.loads(r.stdout), "trop long")
+
+
 class FilesTest(unittest.TestCase):
     """The programs' and the page's files: listed, safe, small and self-contained."""
 
@@ -421,7 +572,7 @@ class FilesTest(unittest.TestCase):
         for path in paths:
             for line in path.read_text(encoding="utf-8").splitlines():
                 if "lapinou_reply" in line and not line.lstrip().startswith("#"):
-                    self.assertRegex(line, r'lapinou_reply (get|set|secret "\$name"|test "\$PV"|ota "\$action"|restart "\$PV")( |$)', line)
+                    self.assertRegex(line, r'lapinou_reply (get|set|secret "\$name"|test "\$PV"|ota "\$action"|restart "\$PV"|press "\$PV")( |$)', line)
         if shutil.which("shellcheck"):
             r = subprocess.run(["shellcheck", "-s", "sh", "-e", "SC1091,SC2034,SC2154", *map(str, paths),
                                 str(LAPINOU_SHARE / "web-lapinou.sh"), str(LAPINOU_SHARE / "webroot.sh")],
@@ -470,7 +621,8 @@ class FilesTest(unittest.TestCase):
             self.assertIn(f'data-tab="{tab}"', page)
         self.assertIn('href="avance.html"', page)
         for path in ("lapinou/status", "lapinou/conf_get", "lapinou/conf_set", "lapinou/secret_set", "lapinou/test",
-                     "lapinou/ota", "lapinou/restart", "lapinou/volume", "lapinlibre/status", "leds", "ears", "tts"):
+                     "lapinou/ota", "lapinou/restart", "lapinou/volume", "lapinou/press", "lapinlibre/status", "leds", "ears",
+                     "tts"):
             self.assertRegex(script, rf'"{re.escape(path)}"', path)
 
     def test_old_page_moved_unchanged(self):

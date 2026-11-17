@@ -1396,6 +1396,7 @@ usr:www/cgi-bin/lapinou/test f 0755 0:0 core
 usr:www/cgi-bin/lapinou/ota f 0755 0:0 core
 usr:www/cgi-bin/lapinou/restart f 0755 0:0 core
 usr:www/cgi-bin/lapinou/volume f 0755 0:0 core
+usr:www/cgi-bin/lapinou/press f 0755 0:0 core  # the first web password: a press on the head (R46)
 usr:share/lapinlibre d 0755 0:0
 usr:share/lapinlibre/web.sh f 0644 0:0 core  # the web API's request checks, parameters and replies; outside the web root, so never run by httpd
 usr:share/lapinlibre/web-extra.sh f 0644 0:0 core  # the web API's less common helpers (encoded parameters, JSON escaping, URL checks), read by web.sh when needed
