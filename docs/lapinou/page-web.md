@@ -73,7 +73,12 @@ laisse que root posséder un nom `com.mindscape.karotz.*`). `press start` donne 
 (`/dev/urandom`) au seul navigateur qui l'a demandé ; `press status` et la création du mot de passe
 l'exigent. L'appui vaut 60 s et n'est consommé qu'une fois (déplacé sous verrou, puis vérifié). Une
 attente ou un appui non utilisé d'un autre navigateur n'est jamais effacé : `press start` répond
-« attente en cours » jusqu'à son expiration. Changer un mot de passe
+« attente en cours » jusqu'à son expiration, en disant de ne pas appuyer. Le nez clignote dans une
+couleur tirée au hasard (rouge, bleu, vert, jaune, violet ou blanc) que seule la page qui attend
+affiche : un code court, pour n'appuyer que pour sa propre attente. Quand `secret_set` n'a pas vu de
+mot de passe, il le dit à l'aide (`secret web_password first`) : sous le verrou de l'appui, elle
+refuse s'il en existe un entre-temps, puis exige le jeton ; sans « first » (la connexion de httpd a
+été vérifiée), elle refuse tant qu'il n'y a pas de mot de passe. Changer un mot de passe
 existant passe par la connexion de httpd, sans appui. Le nouveau mot de passe est écrit dans
 `/usr/etc/conf/web_password`, puis `inetd.sh conf` le hache et refait la configuration de httpd
 (lue à chaque requête). Règles : 8 à 64 caractères ASCII, sans espace, `"`, `\` ni `:`.
