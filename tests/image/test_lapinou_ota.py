@@ -38,7 +38,10 @@ from test_core_boot import arm_busybox  # noqa: E402
 
 OTA = ROOT / "userland/src/usr/lapinou-ota/lapinou-ota.sh"
 SIGN = ROOT / "tools/sign-ota.py"
-PLACEHOLDER = ROOT / "image/core/usr/share/lapinou/ota-pubkey.pub"
+# The placeholder as shipped before Task 26, written to the test folder: the repository's file
+# becomes the real key (docs/lapinou/release.md), the tests never depend on it.
+PLACEHOLDER_TEXT = ("# SPDX-License-Identifier: MIT\n"
+                    "# PLACEHOLDER: this is NOT a public key. The owner replaces this file.\n")
 INSTALL_LIB = ROOT / "image/usbkey/install-lib.sh"
 RESUME = ROOT / "image/core/rootfs/karotz/scripts/ota-resume.sh"
 LINUXRC = ROOT / "image/core/rootfs/linuxrc"
@@ -570,11 +573,10 @@ class OtaTest(unittest.TestCase):
         self.assert_nothing_written(r)
 
     def test_placeholder_key_refuses(self):
-        text = PLACEHOLDER.read_text()
-        self.assertIn("PLACEHOLDER", text)
-        self.assertNotIn("BEGIN PUBLIC KEY", text)
+        placeholder = self.tmp / "placeholder-ota-pubkey.pub"
+        placeholder.write_text(PLACEHOLDER_TEXT)
         srv = self.ota_server()
-        r = self.server_rabbit("placeholder", srv, pubkey=PLACEHOLDER)
+        r = self.server_rabbit("placeholder", srv, pubkey=placeholder)
         for mode in ("install", "check"):
             p = r.run(mode)
             self.assertNotEqual(p.returncode, 0)

@@ -9,7 +9,7 @@
 # - publish: scripts/lapinou-release.sh assembles the OTA files, the key, the server archive and
 #   the signed manifest (manifest.json + manifest.json.sig, docs/lapinou/ota.md) and checks them
 #   with tools/sign-ota.py --verify; then the release named after the tag gets them as assets.
-# Running the workflow by hand builds the same files from the chosen branch and keeps them as a
+# Running the workflow by hand (even on a tag) builds the same files from the chosen branch and keeps them as a
 # workflow artifact for 7 days; it signs and publishes nothing. The firmware tests are not run
 # here: they run on the build host before the tag is pushed (docs/build.md, "Make a release").
 name: release
@@ -19,8 +19,9 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# Read only, except the publish job, which makes the release.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -31,11 +32,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       # The key goes to a 0600 file for openssl, never to the log or a command line, and is
       # shredded at the end of the step.
       - name: Signing key (tag)
-        if: github.ref_type == 'tag'
+        if: github.event_name == 'push' && github.ref_type == 'tag'
         env:
           OTA_SIGNING_KEY: ${{ secrets.OTA_SIGNING_KEY }}
         run: |
@@ -65,6 +68,7 @@ jobs:
       # The whole history and the tags, for the version (git describe).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
           fetch-tags: true
 
@@ -127,7 +131,14 @@ jobs:
           key=$LAPINLIBRE_WORK/out/usbkey
           built=$(sed -n 's/^BUILD_VERSION=//p' "$key/install.conf")
           [ "$built" = "$VERSION" ] || { echo "the key is $built, not $VERSION" >&2; exit 1; }
-          echo "build $(cat "$key/build_id"), $(grep '^RELEASE_VERSION=' "$key/install.conf")"
+          # The version the images install as (sys_version, R44): the tag for a tag push, else 0.0.0-<commit>.
+          release=$(sed -n 's/^RELEASE_VERSION=//p' "$key/install.conf" | tail -n 1)
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$release" != "$VERSION" ]; then
+              echo "the images were built as RELEASE_VERSION=$release, not $VERSION" >&2
+              exit 1
+          fi
+          case $release in v[0-9]*.[0-9]*.[0-9]* | 0.0.0-*) ;; *) echo "bad RELEASE_VERSION=$release" >&2; exit 1 ;; esac
+          echo "build $(cat "$key/build_id"), RELEASE_VERSION=$release"
           mkdir -p dist
           zip="lapinou-key-$VERSION.zip"
           (cd "$key" && zip -q -r -X -9 "$GITHUB_WORKSPACE/dist/$zip" .)
@@ -144,13 +155,17 @@ jobs:
           retention-days: 7
 
   publish:
-    if: github.ref_type == 'tag'
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     needs: [preflight, server, key]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: write
     steps:
       # The tagged commit: the server archive is made from it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:

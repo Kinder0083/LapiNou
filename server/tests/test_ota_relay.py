@@ -89,6 +89,18 @@ class FakeGitHub:
         return httpx2.AsyncClient(transport=httpx2.MockTransport(self.handler))
 
 
+# Le fichier provisoire tel qu'il est livré avant la Tâche 26 : copié dans tmp_path, pour que les
+# tests ne dépendent jamais du fichier du dépôt (qui devient la vraie clé, docs/lapinou/release.md).
+PLACEHOLDER_PUB = (b"# SPDX-License-Identifier: MIT\n"
+                   b"# PLACEHOLDER: this is NOT a public key. The owner replaces this file.\n")
+
+
+def _placeholder(tmp_path):
+    path = tmp_path / "placeholder-ota-pubkey.pub"
+    path.write_bytes(PLACEHOLDER_PUB)
+    return path
+
+
 def _relay(gh, tmp_path, token="", clock=None, pubkey=None):
     kwargs = {"clock": clock} if clock else {}
     if pubkey is None:
@@ -248,16 +260,15 @@ async def test_bad_or_missing_signature_is_refused(tmp_path, case):
 
 
 async def test_placeholder_or_missing_public_key_refuses_everything(tmp_path):
-    assert b"PLACEHOLDER" in PACKAGED_PUBKEY.read_bytes()
     gh = FakeGitHub()
-    for pubkey in (PACKAGED_PUBKEY, tmp_path / "absente.pub"):
+    for pubkey in (_placeholder(tmp_path), tmp_path / "absente.pub"):
         relay = _relay(gh, tmp_path, pubkey=pubkey)
         gh.requests.clear()
         with pytest.raises(OtaError, match="clé publique OTA"):
             await relay.refresh()
         assert [str(r.url) for r in gh.requests] == [f"{API}/repos/{REPO}/releases/latest"]
         assert relay.status().version == ""
-    # Par défaut, le relais prend la clé livrée (provisoire) : il refuse.
+    # Par défaut, le relais prend la clé livrée avec le serveur.
     assert OtaRelay(REPO, "", tmp_path / "x").pubkey_path == PACKAGED_PUBKEY
 
 
@@ -271,7 +282,7 @@ async def test_usb_key_needs_a_valid_public_key_now(tmp_path):
     (tmp_path / "ota-pubkey.pub").write_bytes(_pem(OTHER))
     with pytest.raises(OtaError, match="signature"):
         relay.key_zip()
-    relay.pubkey_path = PACKAGED_PUBKEY
+    relay.pubkey_path = _placeholder(tmp_path)
     with pytest.raises(OtaError, match="PLACEHOLDER"):
         relay.key_zip()
 

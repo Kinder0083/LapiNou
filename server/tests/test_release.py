@@ -6,8 +6,8 @@ manifeste produit est vérifié par tools/sign-ota.py --verify et par le code du
 (lapinou.ota), comme le feront les lapins et le serveur.
 """
 
-import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -55,9 +55,16 @@ def _firmware(tmp: Path, release_version: str = VERSION) -> Path:
     return fw
 
 
-def _run(*args: str | Path) -> subprocess.CompletedProcess:
-    return subprocess.run(["bash", str(SCRIPT), *map(str, args)], capture_output=True, text=True,
-                          cwd=REPO)
+def _run(*args: str | Path, script: Path = SCRIPT, env: dict | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(["bash", str(script), *map(str, args)], capture_output=True, text=True,
+                          cwd=REPO, env=env)
+
+
+# Le fichier provisoire tel qu'il est livré avant la Tâche 26, copié dans tmp_path : les tests ne
+# dépendent jamais des fichiers .pub du dépôt, qui deviennent la vraie clé (docs/lapinou/release.md).
+PLACEHOLDER_PUB = (b"# SPDX-License-Identifier: MIT\n"
+                   b"# PLACEHOLDER: this is NOT a public key. The owner replaces this file.\n")
+PUB_FILES = ("image/core/usr/share/lapinou/ota-pubkey.pub", "server/lapinou/ota-pubkey.pub")
 
 
 @pytest.fixture
@@ -135,14 +142,88 @@ def test_key_that_does_not_match_the_committed_public_keys_is_refused(setup):
     assert not dist.exists() or not any(dist.iterdir())
 
 
-def test_placeholder_public_keys_of_the_repository_are_refused(setup):
+def test_placeholder_public_key_is_refused(setup):
     tmp, key, pub, fw, dist = setup
-    # Sans --pubkey : les deux fichiers du dépôt, provisoires tant que le propriétaire n'a pas
-    # mis la vraie clé (docs/lapinou/release.md).
-    r = _run("check-key", "--signing-key", key)
+    placeholder = tmp / "placeholder-ota-pubkey.pub"
+    placeholder.write_bytes(PLACEHOLDER_PUB)
+    r = _run("check-key", "--signing-key", key, "--pubkey", pub, "--pubkey", placeholder)
     assert r.returncode != 0
-    assert "PLACEHOLDER" in r.stderr
-    assert "image/core/usr/share/lapinou/ota-pubkey.pub" in r.stderr
+    assert "PLACEHOLDER" in r.stderr and str(placeholder) in r.stderr
+    r = _run("assemble", "--version", VERSION, "--firmware", fw, "--signing-key", key,
+             "--pubkey", placeholder, "--out", dist)
+    assert r.returncode != 0 and "PLACEHOLDER" in r.stderr
+    assert not dist.exists() or not any(dist.iterdir())
+
+
+def _repo_copy(dest: Path) -> Path:
+    """Une copie du dépôt (fichiers suivis et nouveaux, pas les ignorés) en dépôt git jetable :
+    celui du propriétaire après l'étape 6 de docs/lapinou/release.md."""
+    listed = subprocess.run(["git", "-C", str(REPO), "ls-files", "-z", "--cached", "--others",
+                             "--exclude-standard", "--", "scripts", "tools", "server", "userland/proto",
+                             "installer", "docs/lapinou", "LICENSES", "image/core/usr/share/lapinou",
+                             ".github/workflows"], capture_output=True, check=True).stdout
+    for name in filter(None, listed.decode().split("\0")):
+        src = REPO / name
+        if src.is_file():
+            (dest / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest / name)
+    git = ["git", "-C", str(dest), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+           "-c", "commit.gpgsign=false"]
+    subprocess.run(git[:3] + ["init", "-q"], check=True)
+    subprocess.run(git + ["add", "-A"], check=True)
+    subprocess.run(git + ["commit", "-q", "-m", "copie"], check=True)
+    return dest
+
+
+@pytest.mark.skipif(os.environ.get("LAPINOU_OWNER_STEP6") == "1", reason="déjà dans la copie")
+def test_owner_real_public_key_keeps_the_release_and_the_tests_working(tmp_path):
+    """Étape 6 du propriétaire simulée : la vraie clé publique (ici jetable) remplace les deux
+    fichiers provisoires d'une copie du dépôt ; la livraison et les tests OTA du serveur passent
+    toujours (aucun test ne doit exiger PLACEHOLDER dans le dépôt)."""
+    key, pub = _keys(tmp_path, "owner")
+    copy = _repo_copy(tmp_path / "repo")
+    for rel in PUB_FILES:
+        shutil.copy2(pub, copy / rel)
+    script = copy / "scripts" / "lapinou-release.sh"
+
+    r = _run("check-key", "--signing-key", key, script=script)  # sans --pubkey : les fichiers du dépôt
+    assert r.returncode == 0, r.stderr
+    dist = tmp_path / "dist"
+    r = _run("assemble", "--version", VERSION, "--firmware", _firmware(tmp_path), "--signing-key", key,
+             "--out", dist, script=script)
+    assert r.returncode == 0, r.stderr
+    verify_signature(load_pubkey(copy / "server/lapinou/ota-pubkey.pub"),
+                     (dist / "manifest.json").read_bytes(), (dist / "manifest.json.sig").read_bytes())
+
+    # Les tests de la copie, avec le paquet lapinou de la copie (sa clé livrée est la vraie).
+    env = {**os.environ, "PYTHONPATH": str(copy / "server"), "LAPINOU_OWNER_STEP6": "1"}
+    which = subprocess.run([sys.executable, "-c", "import lapinou.ota as o; print(o.PACKAGED_PUBKEY)"],
+                           capture_output=True, text=True, env=env, cwd=copy / "server")
+    assert which.stdout.strip() == str(copy / "server/lapinou/ota-pubkey.pub"), which.stderr
+    t = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                        "tests/test_ota_relay.py", "tests/test_release.py"],
+                       capture_output=True, text=True, env=env, cwd=copy / "server")
+    assert t.returncode == 0, t.stdout[-3000:] + t.stderr[-2000:]
+
+
+@pytest.mark.parametrize("fails", ["sign", "verify"])
+def test_failure_after_dist_is_made_empties_it(setup, fails):
+    """sign-ota.py qui échoue (python3 simulé) une fois DIST rempli : DIST est vidé."""
+    tmp, key, pub, fw, dist = setup
+    stubs = tmp / "stubs"
+    stubs.mkdir()
+    stub = stubs / "python3"
+    if fails == "sign":
+        stub.write_text("#!/bin/sh\necho 'sign-ota: simulated failure' >&2\nexit 1\n")
+    else:  # la signature passe, la vérification échoue (manifeste déjà écrit)
+        stub.write_text('#!/bin/sh\ncase " $* " in *" --verify "*) exit 1 ;; esac\n'
+                        f'exec "{sys.executable}" "$@"\n')
+    stub.chmod(0o755)
+    env = {**os.environ, "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}"}
+    r = _run("assemble", "--version", VERSION, "--firmware", fw, "--signing-key", key,
+             "--pubkey", pub, "--out", dist, env=env)
+    assert r.returncode != 0
+    assert dist.is_dir() and not any(dist.iterdir())
 
 
 def test_check_key_accepts_the_matching_pair(setup):
@@ -199,9 +280,34 @@ def test_release_workflow_signs_only_after_the_checks_and_never_shows_the_key():
             assert line.strip() == "OTA_SIGNING_KEY: ${{ secrets.OTA_SIGNING_KEY }}", line
     assert text.count("shred -u") >= 2  # preflight et publish
     assert ".pem" not in text
+    tag_push = "github.event_name == 'push' && github.ref_type == 'tag'"
+    assert jobs["publish"]["if"] == tag_push  # « Run workflow » sur une étiquette : rien de publié
+    signing = [s for s in jobs["preflight"]["steps"] if "OTA_SIGNING_KEY" in s.get("env", {})]
+    assert [s["if"] for s in signing] == [tag_push]
+    zip_step = next(s for s in jobs["key"]["steps"] if s.get("name") == "Zip the key")
+    assert "RELEASE_VERSION" in zip_step["run"]
     publish = "\n".join(s.get("run", "") for s in jobs["publish"]["steps"])
     assert "gh release create" in publish and "lapinou-release.sh assemble" in publish
     assert publish.index("lapinou-release.sh assemble") < publish.index("gh release create")
+
+
+def test_release_workflow_token_writes_only_in_publish():
+    wf = _workflow("release.yml")
+    assert wf["permissions"] == {"contents": "read"}
+    for name, job in wf["jobs"].items():
+        if name == "publish":
+            assert job["permissions"] == {"contents": "write"}
+        else:
+            assert "write" not in str(job.get("permissions", "")), name
+
+
+@pytest.mark.parametrize("name", ["release.yml", "server.yml"])
+def test_checkouts_keep_no_credentials(name):
+    steps = [s for job in _workflow(name)["jobs"].values() for s in job.get("steps", [])]
+    checkouts = [s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@")]
+    assert checkouts
+    for s in checkouts:
+        assert s.get("with", {}).get("persist-credentials") is False, s
 
 
 def test_server_workflow_runs_on_every_push_and_from_the_release():

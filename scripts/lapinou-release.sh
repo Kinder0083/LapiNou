@@ -95,7 +95,13 @@ mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
 done_ok=0
 # shellcheck disable=SC2317  # run by the trap
-cleanup() { [ "$done_ok" = 1 ] || find "$OUT" -mindepth 1 -delete; }
+cleanup() {  # DIST was empty: only the files made here are in it
+    [ "$done_ok" = 1 ] && return
+    local f
+    for f in "${IMAGES[@]}" "$KEY_ZIP" install.conf "$SERVER" manifest.json manifest.json.sig; do
+        rm -f -- "${OUT:?}/$f"
+    done
+}
 trap cleanup EXIT
 
 for f in "${IMAGES[@]}" "$KEY_ZIP" install.conf; do
