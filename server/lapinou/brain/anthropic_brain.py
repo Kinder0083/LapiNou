@@ -66,6 +66,42 @@ def without_fallback_blocks(messages: list[dict[str, Any]]) -> list[dict[str, An
     return out
 
 
+THINKING_TYPES = ("thinking", "redacted_thinking")
+
+
+def _is_tool_results(message: dict[str, Any]) -> bool:
+    content = message.get("content")
+    return isinstance(content, list) and bool(content) and all(
+        isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+
+
+def turn_start(messages: list[dict[str, Any]]) -> int:
+    """Index du dernier message de l'utilisateur qui ouvre un tour (pas un retour d'outils)."""
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user" and not _is_tool_results(messages[i]):
+            return i
+    return 0
+
+
+def without_old_thinking(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copie de l'historique sans les blocs de réflexion des tours précédents.
+
+    Un bloc de réflexion est lié au prompt système exact de sa requête ; or ce prompt change
+    d'un tour à l'autre (l'heure). Les réflexions des tours finis ne servent plus : on les
+    retire. Celles du tour en cours (boucle d'outils) restent, l'API les exige."""
+    start = turn_start(messages)
+    out = []
+    for i, message in enumerate(messages):
+        content = message.get("content")
+        if i < start and message.get("role") == "assistant" and isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") in THINKING_TYPES for b in content
+        ):
+            kept = [b for b in content if not (isinstance(b, dict) and b.get("type") in THINKING_TYPES)]
+            message = {**message, "content": kept or [{"type": "text", "text": "…"}]}
+        out.append(message)
+    return out
+
+
 def _history_invalid(error: anthropic.BadRequestError) -> bool:
     """Vrai si la 400 vise l'historique (invalid_request sur messages, réflexion, tool_use)."""
     text = f"{error} {getattr(error, 'body', '')}".lower()
@@ -135,16 +171,24 @@ class AnthropicBrain:
     def _request(self, conv: Conversation, tools: list[ToolSpec]) -> dict[str, Any]:
         # Pas de `thinking` (adaptatif par défaut, non désactivable sur Opus 5.5), ni
         # température : la profondeur se règle par `output_config.effort`.
+        messages = without_old_thinking(conv.messages)
+        if not self.server_fallback:
+            messages = without_fallback_blocks(messages)
+        # Le contexte (heure, souvenirs) est figé pour tout le tour : une boucle d'outils
+        # renvoie ses blocs de réflexion, qui exigent le même prompt système.
+        # Clé : le message même qui ouvre le tour (un index resservirait après remise à zéro).
+        opener = conv.messages[turn_start(conv.messages)] if conv.messages else None
+        if conv.turn_context is None or conv.turn_context[0] is not opener:
+            conv.turn_context = (opener, context_text(conv, self._clock()))
         req: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,
             "system": [
                 {"type": "text", "text": self.persona, "cache_control": {"type": "ephemeral"}},
-                {"type": "text", "text": context_text(conv, self._clock())},
+                {"type": "text", "text": conv.turn_context[1]},
             ],
             # Sans la bêta de repli, un bloc `fallback` de l'historique serait refusé.
-            "messages": conv.messages if self.server_fallback
-            else without_fallback_blocks(conv.messages),
+            "messages": messages,
             "output_config": {"effort": self.effort},
         }
         if self.server_fallback:

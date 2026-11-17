@@ -120,7 +120,11 @@ class Updater:
     async def _restart_later(self) -> None:
         await asyncio.sleep(self.restart_delay_s)
         r = await asyncio.to_thread(self._cmd, self.restart_command)
-        if r.returncode != 0:
+        if r.returncode < 0:
+            # systemctl tué par un signal : c'est le redémarrage lui-même qui arrête ce
+            # service (et ses processus) avant que systemctl ait rendu la main.
+            log.info("redémarrage en cours")
+        elif r.returncode != 0:
             log.error("redémarrage impossible (%s) : %s", " ".join(self.restart_command),
                       (r.stderr or r.stdout).strip()[:300])
 

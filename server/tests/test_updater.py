@@ -93,3 +93,23 @@ def test_from_settings_defaults_to_this_clone():
     up = Updater.from_settings(Settings(update=UpdateConfig(repo_dir="/opt/lapinou",
                                                             restart_command=["x"])))
     assert up.repo_dir == Path("/opt/lapinou") and up.restart_command == ["x"]
+
+
+async def test_restart_killed_by_its_own_restart_is_not_an_error(caplog, tmp_path):
+    """Sur le vrai serveur, systemctl est tué (SIGTERM) par l'arrêt du service qu'il
+    redémarre : code -15, sortie vide. Ce n'est pas un échec."""
+    import logging
+    import subprocess
+
+    from lapinou.updater import Updater
+
+    def run(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, -15, stdout="", stderr="")
+
+    up = Updater(tmp_path, ["systemctl", "--no-block", "restart", "lapinou"], run=run,
+                 restart_delay_s=0)
+    with caplog.at_level(logging.INFO, logger="lapinou.updater"):
+        await up.restart()
+        await up.wait_restart()
+    assert "redémarrage impossible" not in caplog.text
+    assert "redémarrage en cours" in caplog.text

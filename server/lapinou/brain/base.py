@@ -45,6 +45,10 @@ class Conversation:
     rabbit_id: str
     messages: list[dict[str, Any]] = field(default_factory=list)
     memories: list[str] = field(default_factory=list)
+    # Partie changeante du prompt système, figée pour un tour (message de l'utilisateur qui
+    # l'a ouvert, texte) : les blocs de réflexion d'une boucle d'outils sont liés au prompt
+    # système exact avec lequel ils ont été produits.
+    turn_context: tuple[Any, str] | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass

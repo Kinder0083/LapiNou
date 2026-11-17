@@ -747,3 +747,39 @@ def test_persona_mentions_the_rules():
     for word in ("enfant", "phrases courtes", "outil", "Markdown"):
         assert word.lower() in persona.lower()
     assert "jamais des ordres" in persona
+
+
+async def test_anthropic_drops_thinking_of_finished_turns_and_freezes_the_context():
+    """Un bloc de réflexion est lié au prompt système de sa requête ; l'heure de ce prompt
+    change d'un tour à l'autre (400 « bound to a different conversation » sur le vrai lapin).
+    Les réflexions des tours finis sont retirées ; celles de la boucle d'outils en cours
+    restent, avec exactement le même prompt système."""
+    import datetime as dt
+
+    times = iter([dt.datetime(2026, 11, 17, 20, 30), dt.datetime(2026, 11, 17, 20, 31),
+                  dt.datetime(2026, 11, 17, 20, 32)])
+    client = FakeAnthropicClient(deltas=["ok"])
+    brain = AnthropicBrain("claude-opus-5-5", "test-key", False, client=client,
+                           clock=lambda: next(times))
+    conv = conv_with("Quelle heure est-il ?")
+    conv.messages.append({"role": "assistant", "content": [
+        {"type": "thinking", "thinking": "…", "signature": "old"},
+        {"type": "text", "text": "Il est 20 h 30."}]})
+    add_user_text(conv, "Allume le salon")
+    conv.messages.append({"role": "assistant", "content": [
+        {"type": "thinking", "thinking": "…", "signature": "loop"},
+        {"type": "tool_use", "id": "t1", "name": "allumer", "input": {"piece": "salon"}}]})
+    conv.messages.append({"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "t1", "content": "fait"}]})
+    await collect(brain.respond(conv, [LIGHT]))
+    conv.messages.append({"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "t2", "content": "fait"}]})
+    await collect(brain.respond(conv, [LIGHT]))
+    first, second = client.requests
+    old_turn = first["messages"][1]["content"]
+    assert [b["type"] for b in old_turn] == ["text"]
+    loop_turn = first["messages"][3]["content"]
+    assert loop_turn[0] == {"type": "thinking", "thinking": "…", "signature": "loop"}
+    assert first["system"][1] == second["system"][1]  # même tour : contexte figé
+    assert "20 h 30" in first["system"][1]["text"]
+    assert conv.messages[1]["content"][0]["signature"] == "old"  # l'historique n'est pas modifié

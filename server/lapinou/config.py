@@ -181,6 +181,9 @@ class VoiceConfig(_Section):
     wake_model: str = ""
     vad_silence_ms: int = Field(default=700, ge=100, le=5000)
     followup_s: int = Field(default=5, ge=0, le=60)
+    # Dépannage : écrit dans le journal les 4 premiers mots de chaque parole examinée pour
+    # « Lapinou » (désactivé par défaut : vie privée).
+    log_wake_text: bool = False
 
 
 class SafetyConfig(BaseModel):

@@ -52,6 +52,9 @@ NAMES = ["lapinou"]
         ("Lapi nou. Quelle heure est-il ?", "Quelle heure est-il"),
         ("La pi nou, éteins", "éteins"),
         ("LAPI-NOU, allume", "allume"),
+        ("La Pinot, quelle heure est-il?", "quelle heure est-il"),  # vraie transcription
+        ("Lapin nous, quelle heure est-il ?", "quelle heure est-il"),  # « nous » : s muet
+        ("Bonjour Lapinou, ça va ?", "ça va"),
     ],
 )
 def test_matches_the_name_at_the_start(text, command):
@@ -444,3 +447,32 @@ def test_twelve_minutes_of_negatives_have_no_detection(recogniser):
         detector.reset()
     assert hits == []
     assert detector.transcribed_s > 0  # la parole a bien été transcrite
+
+
+def test_level_is_measured_on_the_float_scale(caplog):
+    """Les segments sont en float32 -1..1 : un son à mi-échelle fait environ -6 dBFS
+    (avant : toujours -90, l'échelle int16 était supposée)."""
+    import logging
+
+    from lapinou.voice.wake_asr import AsrWakeDetector
+
+    class OneSegment:
+        def feed(self, pcm):
+            return [(0, np.full(16000, 0.5, np.float32))]
+
+        def reset(self):
+            pass
+
+    class Says:
+        def transcribe(self, samples):
+            return "Lapinou"
+
+    det = AsrWakeDetector(Says(), segmenter=OneSegment())
+    with caplog.at_level(logging.INFO, logger="lapinou.voice.wake_asr"):
+        det.feed(np.zeros(160, np.int16))
+    assert "niveau -6 dBFS" in caplog.text
+    assert "début de la transcription" not in caplog.text  # désactivé par défaut
+    det = AsrWakeDetector(Says(), segmenter=OneSegment(), log_text=True)
+    with caplog.at_level(logging.INFO, logger="lapinou.voice.wake_asr"):
+        det.feed(np.zeros(160, np.int16))
+    assert "début de la transcription : « Lapinou »" in caplog.text

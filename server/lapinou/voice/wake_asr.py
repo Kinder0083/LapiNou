@@ -44,7 +44,8 @@ log = logging.getLogger(__name__)
 
 # Mots courts qui peuvent précéder le nom (« hé Lapinou »).
 # « et », « dit » : Parakeet entend « Et la Pinot » pour « Hé Lapinou », « dit » pour « dis ».
-LEAD_WORDS = frozenset({"he", "hey", "eh", "et", "ah", "oh", "ho", "dis", "dit", "ok", "okay", "salut", "coucou"})
+LEAD_WORDS = frozenset({"he", "hey", "eh", "et", "ah", "oh", "ho", "dis", "dit", "ok", "okay", "salut",
+                        "coucou", "bonjour", "bonsoir", "allo"})
 MAX_NAME_WORDS = 3  # « la pi nou » : le nom peut être coupé en 3 mots
 CONTINUE_GAP_S = 0.2  # écart max entre deux morceaux d'une même parole coupée
 CUT_FULL = 0.9  # un morceau de VAD aussi long (part de max_segment_s) a été coupé
@@ -93,6 +94,22 @@ def _distance(a: str, b: str) -> int:
     return row[len(b)]
 
 
+_SILENT_END = "stx"  # lettres finales muettes : « pinot », « nous », « lapinoux »
+
+
+def _sound(word: str) -> str:
+    """Forme « prononcée » d'un mot déjà replié : sans lettre finale muette (mots de plus de
+    deux lettres) ni lettre doublée. « la pinot » → « lapino », « lapin nous » → « lapinou »."""
+    if len(word) > 2 and word[-1] in _SILENT_END:
+        word = word[:-1]
+    return _undouble(word)
+
+
+def _undouble(word: str) -> str:
+    """Sans lettre doublée : « lapinnou » → « lapinou »."""
+    return "".join(c for i, c in enumerate(word) if i == 0 or c != word[i - 1])
+
+
 def _tolerance(name: str) -> int:
     return len(name) // 5  # 1 faute pour « lapinou » (7 lettres), aucune sous 5 lettres
 
@@ -123,8 +140,9 @@ def match_wake_word(text: str, names: Sequence[str]) -> tuple[str, str] | None:
                 or (folded[first] == "lapin" and folded[first + 1] == "ou")  # « lapin où… »
             ):
                 continue  # une ponctuation sépare les mots, ou c'est la question « lapin ou… »
-            heard = "".join(w[2] for w in group)
-            faults = _distance(heard, wanted)
+            heard = _undouble("".join(_sound(w[2]) for w in group))
+            faults = min(_distance("".join(w[2] for w in group), wanted),
+                         _distance(heard, _sound(wanted)))
             if faults <= _tolerance(wanted) and (best is None or (faults, count) < best[:2]):
                 best = (faults, count, name, words[first + count - 1][1])
     if best is None:
@@ -151,8 +169,10 @@ class AsrWakeDetector:
         silence_s: float = 0.7,
         segmenter: Segmenter | None = None,
         prefilter=None,
+        log_text: bool = False,
     ) -> None:
         self.transcriber = transcriber
+        self.log_text = log_text
         self.names = list(names)
         self.max_segment_s = max_segment_s
         self._close_after = int((max_segment_s + silence_s + CONTINUE_GAP_S) * SAMPLE_RATE)
@@ -254,11 +274,16 @@ class AsrWakeDetector:
         found = match_wake_word(text, self.names)
         # Diagnostic sans contenu (vie privée) : ni le texte, ni un mot, seulement la durée,
         # le niveau sonore, le nombre de mots et la décision.
+        # Les segments sont en float32 -1..1 (pleine échelle = 1).
         rms = float(np.sqrt(np.mean(np.square(samples.astype(np.float64))))) if len(samples) else 0.0
-        level = 20 * np.log10(max(rms, 1.0) / 32768.0)
+        level = 20 * np.log10(max(rms, 1e-5))
         log.info("parole entendue : %.1f s, niveau %.0f dBFS, %d mot(s), « %s » %s",
                  len(samples) / SAMPLE_RATE, level, len(text.split()), self.names[0],
                  "reconnu" if found is not None else "non reconnu")
+        if self.log_text:
+            # Réglage de dépannage (voice.log_wake_text), désactivé par défaut : seulement
+            # les premiers mots, pour voir comment le nom a été transcrit.
+            log.info("début de la transcription : « %s »", " ".join(text.split()[:4]))
         if found is None:
             return None
         return WakeHit(at_sample=start, text=text, command=found[1])
@@ -288,4 +313,5 @@ def build_detector(voice, recogniser: Recognising) -> AsrWakeDetector:
                             "détection par transcription seule", type(e).__name__, e)
         else:
             log.warning("wake_method = « both » sans voice.wake_model : transcription seule")
-    return AsrWakeDetector(recogniser, silence_s=voice.vad_silence_ms / 1000, prefilter=prefilter)
+    return AsrWakeDetector(recogniser, silence_s=voice.vad_silence_ms / 1000, prefilter=prefilter,
+                           log_text=bool(getattr(voice, "log_wake_text", False)))
