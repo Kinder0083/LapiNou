@@ -1300,6 +1300,31 @@ class CoexistenceTest(HardwareCase):
             self.ok("reboot")
             self.clear()
 
+    def test_lapinou_server_is_not_an_application_that_blocks(self):
+        """In LapiNou's server mode, the server holds the interactive mode for good (seen on the real
+        rabbit: every LED and ear request was refused). The page still drives the rabbit then; any
+        other interactive application still blocks it."""
+        conf = "usr/etc/conf/lapinou.conf"
+        cases = (("[server]\nenabled=1\nhost=192.168.1.160\n", True),
+                 ("[audio]\nvolume=25\n[server]\r\nenabled=1\r\nhost=srv\r\n", True),
+                 ("[server]\nenabled=0\nhost=192.168.1.160\n", False),
+                 ("[server]\nenabled=1\nhost=\n", False),
+                 ("[cloud]\nenabled=1\nhost=x\n", False))
+        for text, allowed in cases:
+            self.box.write(conf, text)
+            for state in ("21", "22"):
+                self.box.write("controller.state", state + "\n")
+                for path, query in (("leds", "color=ff0000"), ("ears", "left=1&right=1")):
+                    with self.subTest(conf=text, state=state, path=path):
+                        if allowed:
+                            self.ok(path, query)
+                        else:
+                            self.refused(path, query, "application")
+                self.clear()
+        (self.sb / conf).unlink()
+        self.box.write("controller.state", "21\n")
+        self.refused("leds", "color=ff0000", "application")  # no lapinou.conf: as before
+
     def test_works_without_controller(self):
         (self.sb / "controller.state").unlink()
         for path, query in self.ACTIONS:

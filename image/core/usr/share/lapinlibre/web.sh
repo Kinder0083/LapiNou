@@ -786,15 +786,31 @@ web_unlock() {
     exec 9>&-
 }
 
+# lapinou_server_mode: true when LapiNou's server mode is on ([server] enabled=1 and a host in
+# lapinou.conf, as lapinou-mic decides it, R49). The server then holds the controller's interactive
+# mode for good, to talk through the rabbit: it is the house's own assistant, not an application
+# that must not be disturbed, so the page and Home Assistant still drive the LED, the ears, the
+# sounds and the camera. Only "1" and a non-empty host matter, so lapinou.conf's escapes
+# (/usr/share/lapinou/conf.sh) need no decoding here.
+lapinou_server_mode() {
+    [ -r /usr/etc/conf/lapinou.conf ] || return 1
+    awk '
+        /^\[/ { section = $0; sub(/[ \t\r]+$/, "", section); next }
+        section == "[server]" && /^enabled=/ { enabled = substr($0, 9); sub(/\r$/, "", enabled) }
+        section == "[server]" && /^host=/ { host = substr($0, 6); sub(/\r$/, "", host) }
+        END { exit !(enabled == "1" && host != "") }
+    ' /usr/etc/conf/lapinou.conf
+}
+
 # web_hardware [asleep]: the rules of an endpoint that drives the rabbit, then the lock and a
 # fresh WEB_ID. Refused while an application owns the rabbit (the controller interactive, or
-# leaving it), and while the rabbit sleeps unless "asleep" says the endpoint works then too.
-# Leaves read_api_state's values.
+# leaving it), unless that application is LapiNou's server (lapinou_server_mode), and while the
+# rabbit sleeps unless "asleep" says the endpoint works then too. Leaves read_api_state's values.
 web_hardware() {
     [ "$WEB_CHECK" = 1 ] && reply_json '{"return":"0"}'
     read_controller
     case $CONTROLLER_STATE in
-    21 | 22) web_fail "the rabbit is busy: an application is running on it" ;;
+    21 | 22) lapinou_server_mode || web_fail "the rabbit is busy: an application is running on it" ;;
     esac
     read_api_state
     if [ "${1:-}" != asleep ] && [ "$SLEEP" = 1 ]; then
