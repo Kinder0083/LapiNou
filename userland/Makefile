@@ -37,7 +37,7 @@ all: tools libs daemons
 .SECONDEXPANSION:
 
 # --- standalone tools (no D-Bus) -----------------------------------------
-TOOLS := rootfs/power rootfs/ears rootfs/led usr/immortaldog \
+TOOLS := rootfs/power rootfs/ears rootfs/led usr/immortaldog usr/lapinou-webroot \
          usr/scripts/k2k/playback usr/scripts/k2k/rec
 tools: $(addprefix $(OUT)/,$(TOOLS))
 $(addprefix $(OUT)/,$(TOOLS)): $(OUT)/%: $$(wildcard $(S)/src/%/*.c)

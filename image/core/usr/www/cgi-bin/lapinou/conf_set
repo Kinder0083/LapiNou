@@ -1,0 +1,34 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# lapinou/conf_set (POST only): stores settings, given as SECTION__KEY=VALUE (mqtt__host=…, one or
+# more); every one is checked before any is written. An empty value brings the default back.
+. /usr/share/lapinlibre/web.sh
+web_begin change
+. /usr/share/lapinou/web-lapinou.sh
+lapinou_post
+lapinou_guard
+lines=""
+n=0
+_ifs=$IFS
+IFS=$NL
+set -f
+for pair in $WEB_PARAMS; do
+    IFS=$_ifs
+    name=${pair%%=*}
+    case $name in
+    '!'*) web_fail "Un réglage contient un caractère de contrôle." ;;
+    [a-z]*__[a-z]*) ;;
+    *) continue ;;
+    esac
+    param "$name" || web_fail "Un réglage contient un caractère de contrôle."
+    case $PV in *[[:cntrl:]]*) web_fail "Un réglage contient un caractère de contrôle." ;; esac
+    lines="$lines${name%%__*}$TAB${name#*__}$TAB$PV$NL"
+    n=$((n + 1))
+done
+set +f
+IFS=$_ifs
+[ "$n" -gt 0 ] || web_fail "Aucun réglage reçu."
+# A here-document, not a pipe: the reply (and its log line) stays in this shell.
+lapinou_reply set << EOF
+$lines
+EOF

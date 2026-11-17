@@ -78,7 +78,7 @@ tone() { # tone FILE
 run_hooks() { # run_hooks GESTURE CLICKS
     for hook in "$HOOKS"/*; do
         case ${hook##*/} in *~) continue ;; esac
-        [ -f "$hook" ] && [ -x "$hook" ] || continue
+        if [ ! -f "$hook" ] || [ ! -x "$hook" ]; then continue; fi
         BUTTON_GESTURE=$1 BUTTON_CLICKS=$2 timeout $HOOK_TIME "$hook" "$1" "$2" < /dev/null 2>&1 ||
             echo "hook $hook ($1 $2) ended with status $?"
     done
@@ -117,6 +117,8 @@ gesture() { # gesture NAME CLICKS
 }
 
 MON=
+# Run by the trap below.
+# shellcheck disable=SC2317
 stop() {
     trap '' TERM INT HUP
     [ -n "$MON" ] && kill "$MON" 2> /dev/null

@@ -46,11 +46,18 @@
  *
  * D-Bus: com.mindscape.karotz.LapinouMqtt (/com/mindscape/karotz/LapinouMqtt, interface
  * com.mindscape.karotz.LapinouMqtt): get_state() -> "disabled", "connecting", "connected" or
- * "disconnected"; signal mqtt_state(s) when it changes.
+ * "disconnected"; set_volume(i) -> b, the web page's volume, as cmd/volume; signal mqtt_state(s)
+ * when it changes.
+ *
+ * The update entity (informational: Home Assistant can't install): installed_version is
+ * sys_version (the build's stamp when there is none), latest_version the last update check's
+ * (/usr/ota/available, written by the web page's webroot.sh, once a day by cron), read again
+ * every tick and published when either changes.
  *
  * For the tests: LAPINOU_UUID_FILE, LAPINOU_WEB_RUN (/var/run/lapinlibre-web), LAPINOU_WEB_DATA
  * (/usr/etc/conf/web), LAPINOU_WEB_CGI (the web API's programs, run directly instead of as web),
- * LAPINOU_WIRELESS (/proc/net/wireless) and LAPINOU_CONF_SH move what they name
+ * LAPINOU_WIRELESS (/proc/net/wireless), LAPINOU_SYS_VERSION, LAPINOU_OTA_AVAILABLE and
+ * LAPINOU_CONF_SH move what they name
  * (LAPINOU_CONF_DIR moves lapinou.conf, lapinou_conf.h).
  */
 #include <errno.h>
@@ -90,6 +97,8 @@
 #define CLOUD_SERVICE  "com.mindscape.karotz.LapinouCloud"
 #define UUID_FILE      "/usr/karotz/uuid.conf"
 #define BUILD_FILE     "/karotz/etc/lapinlibre-build"
+#define SYS_VERSION    "/usr/etc/conf/sys_version"  /* the release tag installed (R44) */
+#define OTA_AVAILABLE  "/usr/ota/available"   /* the last update check's version (webroot.sh ota check) */
 #define WEB_RUN        "/var/run/lapinlibre-web"
 #define WEB_DATA       "/usr/etc/conf/web"
 #define WEB_CGI        "/usr/www/cgi-bin"
@@ -134,6 +143,7 @@ GType lapinou_mqtt_object_get_type(void);
 G_DEFINE_TYPE(LapinouMqttObject, lapinou_mqtt_object, G_TYPE_OBJECT)
 
 static gboolean lapinou_mqtt_object_get_state(LapinouMqttObject *self, char **state, GError **error);
+static gboolean lapinou_mqtt_object_set_volume(LapinouMqttObject *self, gint volume, gboolean *ok, GError **error);
 #include "lapinou-mqtt-glue.h"
 
 /* --- the daemon's state -------------------------------------------------------------------- */
@@ -148,7 +158,7 @@ static struct {
     char *host, *user, *password, *prefix, *discovery, *uri, *language;
     int port;
     gboolean serverless;
-    const char *uuid_file, *web_run, *web_data, *web_cgi, *wireless_file, *conf_sh;
+    const char *uuid_file, *web_run, *web_data, *web_cgi, *wireless_file, *conf_sh, *sys_version_file, *available_file;
 
     /* the broker */
     MQTTAsync client;
@@ -164,6 +174,7 @@ static struct {
     RabbitState rabbit;
     char last_on[7];      /* the LED colour {"on":true} turns on again */
     char *version, *assistant, *last_tag;
+    char *installed, *latest;  /* the update entity: sys_version, and the last check's version */
     int controller_state; /* -1 until known */
     gboolean web_asleep;
     gboolean cloud_present;
@@ -322,9 +333,29 @@ static void publish_all(void)
     g_ptr_array_free(messages, TRUE);
     publish_text("availability", "online", 1, 1);
     publish_state(TRUE);
-    update = update_json(app.version);
+    update = update_json(app.installed, app.latest);
     publish_text("update", update, 1, 1);
     g_free(update);
+}
+
+/* The update entity's versions read again: published when they changed. */
+static void read_versions(void)
+{
+    char *installed = first_line(app.sys_version_file), *latest = first_line(app.available_file), *update;
+    gboolean changed;
+
+    if (!installed)
+        installed = g_strdup(app.version);
+    changed = g_strcmp0(installed, app.installed) != 0 || g_strcmp0(latest, app.latest) != 0;
+    g_free(app.installed);
+    g_free(app.latest);
+    app.installed = installed;
+    app.latest = latest;
+    if (changed && app.state == MQTT_CONNECTED) {
+        update = update_json(app.installed, app.latest);
+        publish_text("update", update, 1, 1);
+        g_free(update);
+    }
 }
 
 /* --- the rabbit's state from files --------------------------------------------------------- */
@@ -386,6 +417,7 @@ static gboolean tick(gpointer data)
     read_wifi();
     read_web_sleep();
     publish_state(FALSE);
+    read_versions();
     return TRUE;
 }
 
@@ -1563,6 +1595,18 @@ static gboolean lapinou_mqtt_object_get_state(LapinouMqttObject *self, char **st
     return TRUE;
 }
 
+/* set_volume(i) -> b: the web page's volume, as cmd/volume sets it (applied, then kept and
+ * published); FALSE for a number outside 0 to 100. */
+static gboolean lapinou_mqtt_object_set_volume(LapinouMqttObject *self, gint volume, gboolean *ok, GError **error)
+{
+    (void)self;
+    (void)error;
+    *ok = volume >= 0 && volume <= 100;
+    if (*ok)
+        volume_set(volume, TRUE);
+    return TRUE;
+}
+
 static void lapinou_mqtt_object_class_init(LapinouMqttObjectClass *klass)
 {
     klass->state_signal = g_signal_new("mqtt_state", G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_FIRST, 0, NULL, NULL,
@@ -1592,8 +1636,11 @@ int main(void)
     app.web_cgi = env_or("LAPINOU_WEB_CGI", WEB_CGI);
     app.wireless_file = env_or("LAPINOU_WIRELESS", WIRELESS_FILE);
     app.conf_sh = env_or("LAPINOU_CONF_SH", CONF_SH);
+    app.sys_version_file = env_or("LAPINOU_SYS_VERSION", SYS_VERSION);
+    app.available_file = env_or("LAPINOU_OTA_AVAILABLE", OTA_AVAILABLE);
     app.controller_state = -1;
     app.version = first_line(BUILD_FILE);
+    read_versions();
     app.assistant = g_strdup("hors ligne");
     app.rabbit.ear_left = app.rabbit.ear_right = 0;
     settings_read();

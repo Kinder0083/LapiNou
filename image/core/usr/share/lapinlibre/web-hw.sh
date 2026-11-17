@@ -101,6 +101,8 @@ take_picture() {
 
 # snapshot_names: the stored snapshots' names, oldest first.
 snapshot_names() {
+    # The names are checked by the pattern, so ls | grep is safe here.
+    # shellcheck disable=SC2010
     ls "$WEB_SNAPSHOTS" 2> /dev/null | grep -E '^snapshot_[0-9]{4}(_[0-9]{2}){5}\.jpg$'
 }
 

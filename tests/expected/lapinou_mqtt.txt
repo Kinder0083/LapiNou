@@ -1,6 +1,7 @@
 == registered: True
 == introspection
 method com.mindscape.karotz.LapinouMqtt.get_state(out:s)
+method com.mindscape.karotz.LapinouMqtt.set_volume(in:i,out:b)
 signal com.mindscape.karotz.LapinouMqtt.mqtt_state(out:s)
 fake daemons ready: True
 == 1. connection
@@ -23,7 +24,7 @@ fake daemons ready: True
   publish homeassistant/update/<id>/firmware/config qos=1 retain=True: {"name":"Micrologiciel","unique_id":"lapinou_<id>_firmware","availability_topic":"lapinou/<id>/availability","device":{"identifiers":["lapinou_<id>"],"name":"Lapinou","manufacturer":"LapiNou","model":"Karotz","sw_version":"<stamp>"},"origin":{"name":"lapinou-mqtt","sw_version":"<stamp>"},"device_class":"firmware","title":"LapiNou","state_topic":"lapinou/<id>/update"}
   publish lapinou/<id>/availability qos=1 retain=True: online
   publish lapinou/<id>/state qos=1 retain=True: {"led":"00FF00","ears":{"left":0,"right":0,"preset":"debout"},"volume":60,"sleep":"off","assistant":"hors ligne","wifi_rssi":-57,"version":"<stamp>","last_tag":null}
-  publish lapinou/<id>/update qos=1 retain=True: {"installed_version":"<stamp>"}
+  publish lapinou/<id>/update qos=1 retain=True: {"installed_version":"v1.0.0"}
   discovery: 15 messages, each retained, valid JSON, with the device, unique_id and availability: True
 get_state: string "connected"
 == 2. cmd/led colour
@@ -92,6 +93,13 @@ lapinou.conf [audio]: ['volume=30']
   MPD: setvol 20
   MPD: close
 lapinou.conf [audio]: ['volume=30']
+== set_volume 25 (the web page)
+  publish lapinou/<id>/state qos=1 retain=True: {"led":"00FF00","ears":{"left":0,"right":0,"preset":"debout"},"volume":25,"sleep":"off","assistant":"hors ligne","wifi_rssi":-57,"version":"<stamp>","last_tag":"D0021A3502B3C4D5"}
+set_volume 25: boolean true
+lapinou.conf [audio]: ['volume=25']
+set_volume 101: boolean false
+== the update check found v1.1.0
+  publish lapinou/<id>/update qos=1 retain=True: {"installed_version":"v1.0.0","latest_version":"v1.1.0"}
 == 8. cmd/snapshot
   publish lapinou/<id>/snapshot qos=0 retain=False: 20 bytes, the camera's picture: True
   web API: Webcam.takeSnapshot(string:file, int32:1)
@@ -101,7 +109,7 @@ the web API's snapshots: 1
 == cmd/snapshot while an application owns the rabbit: refused
   web API log: lapinlibre-web snapshot 127.0.0.1 the rabbit is busy: an application is running on it
 == 9. cmd/sleep on
-  publish lapinou/<id>/state qos=1 retain=True: {"led":"000000","ears":{"left":4,"right":4,"preset":"endormies"},"volume":30,"sleep":"on","assistant":"hors ligne","wifi_rssi":-57,"version":"<stamp>","last_tag":"D0021A3502B3C4D5"}
+  publish lapinou/<id>/state qos=1 retain=True: {"led":"000000","ears":{"left":4,"right":4,"preset":"endormies"},"volume":25,"sleep":"on","assistant":"hors ligne","wifi_rssi":-57,"version":"<stamp>","last_tag":"D0021A3502B3C4D5"}
   web API: Multimedia.stop(int32:0)
   web API: Voice.tts_stop(int32:0)
   web API: Ears.reset(string:B)
@@ -109,15 +117,15 @@ the web API's snapshots: 1
   web API: Led.light(string:000000)
   web API log: lapinlibre-web sleep 127.0.0.1 ok
 == cmd/led while asleep: refused (the state again)
-  publish lapinou/<id>/state qos=1 retain=True: {"led":"000000","ears":{"left":4,"right":4,"preset":"endormies"},"volume":30,"sleep":"on","assistant":"hors ligne","wifi_rssi":-57,"version":"<stamp>","last_tag":"D0021A3502B3C4D5"}
+  publish lapinou/<id>/state qos=1 retain=True: {"led":"000000","ears":{"left":4,"right":4,"preset":"endormies"},"volume":25,"sleep":"on","assistant":"hors ligne","wifi_rssi":-57,"version":"<stamp>","last_tag":"D0021A3502B3C4D5"}
 == cmd/sleep off
-  publish lapinou/<id>/state qos=1 retain=True: {"led":"00FF00","ears":{"left":0,"right":0,"preset":"debout"},"volume":30,"sleep":"off","assistant":"hors ligne","wifi_rssi":-57,"version":"<stamp>","last_tag":"D0021A3502B3C4D5"}
+  publish lapinou/<id>/state qos=1 retain=True: {"led":"00FF00","ears":{"left":0,"right":0,"preset":"debout"},"volume":25,"sleep":"off","assistant":"hors ligne","wifi_rssi":-57,"version":"<stamp>","last_tag":"D0021A3502B3C4D5"}
   web API: Led.pulse(string:00FF00, string:000000, int32:700, int32:-1)
   web API: Ears.reset(string:B)
   web API: Multimedia.play(string:<SB>/usr/karotz/sounds/wakeup.mp3, int32:1)
   web API log: lapinlibre-web wakeup 127.0.0.1 ok
 == 10. the server's assistant state
-  publish lapinou/<id>/state qos=1 retain=True: {"led":"00FF00","ears":{"left":0,"right":0,"preset":"debout"},"volume":30,"sleep":"off","assistant":"écoute","wifi_rssi":-57,"version":"<stamp>","last_tag":"D0021A3502B3C4D5"}
+  publish lapinou/<id>/state qos=1 retain=True: {"led":"00FF00","ears":{"left":0,"right":0,"preset":"debout"},"volume":25,"sleep":"off","assistant":"écoute","wifi_rssi":-57,"version":"<stamp>","last_tag":"D0021A3502B3C4D5"}
 == Home Assistant online: everything again
   publish homeassistant/light/<id>/led/config qos=1 retain=True: {"name":"LED","unique_id":"lapinou_<id>_led","availability_topic":"lapinou/<id>/availability","device":{"identifiers":["lapinou_<id>"],"name":"Lapinou","manufacturer":"LapiNou","model":"Karotz","sw_version":"<stamp>"},"origin":{"name":"lapinou-mqtt","sw_version":"<stamp>"},"schema":"template","command_topic":"lapinou/<id>/cmd/led","command_on_template":"{%- if red is defined and green is defined and blue is defined -%}{\"color\":\"{{ '%02X%02X%02X' | format(red, green, blue) }}\"}{%- else -%}{\"on\":true}{%- endif -%}","command_off_template":"{\"color\":\"000000\"}","state_topic":"lapinou/<id>/state","state_template":"{{ 'off' if value_json.led == '000000' else 'on' }}","red_template":"{{ value_json.led[0:2] | int(base=16) }}","green_template":"{{ value_json.led[2:4] | int(base=16) }}","blue_template":"{{ value_json.led[4:6] | int(base=16) }}"}
   publish homeassistant/select/<id>/ears/config qos=1 retain=True: {"name":"Oreilles","unique_id":"lapinou_<id>_ears","availability_topic":"lapinou/<id>/availability","device":{"identifiers":["lapinou_<id>"],"name":"Lapinou","manufacturer":"LapiNou","model":"Karotz","sw_version":"<stamp>"},"origin":{"name":"lapinou-mqtt","sw_version":"<stamp>"},"icon":"mdi:rabbit","command_topic":"lapinou/<id>/cmd/ears","command_template":"{\"preset\":{{ value | to_json }}}","options":["debout","endormies","tombantes","perplexe","curieuse","personnalisée"],"state_topic":"lapinou/<id>/state","value_template":"{{ value_json.ears.preset }}"}
@@ -135,8 +143,8 @@ the web API's snapshots: 1
   publish homeassistant/sensor/<id>/wifi/config qos=1 retain=True: {"name":"Signal Wi-Fi","unique_id":"lapinou_<id>_wifi","availability_topic":"lapinou/<id>/availability","device":{"identifiers":["lapinou_<id>"],"name":"Lapinou","manufacturer":"LapiNou","model":"Karotz","sw_version":"<stamp>"},"origin":{"name":"lapinou-mqtt","sw_version":"<stamp>"},"entity_category":"diagnostic","device_class":"signal_strength","state_class":"measurement","unit_of_measurement":"dBm","state_topic":"lapinou/<id>/state","value_template":"{{ value_json.wifi_rssi }}"}
   publish homeassistant/update/<id>/firmware/config qos=1 retain=True: {"name":"Micrologiciel","unique_id":"lapinou_<id>_firmware","availability_topic":"lapinou/<id>/availability","device":{"identifiers":["lapinou_<id>"],"name":"Lapinou","manufacturer":"LapiNou","model":"Karotz","sw_version":"<stamp>"},"origin":{"name":"lapinou-mqtt","sw_version":"<stamp>"},"device_class":"firmware","title":"LapiNou","state_topic":"lapinou/<id>/update"}
   publish lapinou/<id>/availability qos=1 retain=True: online
-  publish lapinou/<id>/state qos=1 retain=True: {"led":"00FF00","ears":{"left":0,"right":0,"preset":"debout"},"volume":30,"sleep":"off","assistant":"écoute","wifi_rssi":-57,"version":"<stamp>","last_tag":"D0021A3502B3C4D5"}
-  publish lapinou/<id>/update qos=1 retain=True: {"installed_version":"<stamp>"}
+  publish lapinou/<id>/state qos=1 retain=True: {"led":"00FF00","ears":{"left":0,"right":0,"preset":"debout"},"volume":25,"sleep":"off","assistant":"écoute","wifi_rssi":-57,"version":"<stamp>","last_tag":"D0021A3502B3C4D5"}
+  publish lapinou/<id>/update qos=1 retain=True: {"installed_version":"v1.0.0","latest_version":"v1.1.0"}
   discovery: 15 messages, each retained, valid JSON, with the device, unique_id and availability: True
 == 11. payloads that aren't commands: ignored
 still running: True
@@ -161,8 +169,8 @@ still running: True
   publish homeassistant/sensor/<id>/wifi/config qos=1 retain=True: {"name":"Signal Wi-Fi","unique_id":"lapinou_<id>_wifi","availability_topic":"lapinou/<id>/availability","device":{"identifiers":["lapinou_<id>"],"name":"Lapinou","manufacturer":"LapiNou","model":"Karotz","sw_version":"<stamp>"},"origin":{"name":"lapinou-mqtt","sw_version":"<stamp>"},"entity_category":"diagnostic","device_class":"signal_strength","state_class":"measurement","unit_of_measurement":"dBm","state_topic":"lapinou/<id>/state","value_template":"{{ value_json.wifi_rssi }}"}
   publish homeassistant/update/<id>/firmware/config qos=1 retain=True: {"name":"Micrologiciel","unique_id":"lapinou_<id>_firmware","availability_topic":"lapinou/<id>/availability","device":{"identifiers":["lapinou_<id>"],"name":"Lapinou","manufacturer":"LapiNou","model":"Karotz","sw_version":"<stamp>"},"origin":{"name":"lapinou-mqtt","sw_version":"<stamp>"},"device_class":"firmware","title":"LapiNou","state_topic":"lapinou/<id>/update"}
   publish lapinou/<id>/availability qos=1 retain=True: online
-  publish lapinou/<id>/state qos=1 retain=True: {"led":"00FF00","ears":{"left":0,"right":0,"preset":"debout"},"volume":30,"sleep":"off","assistant":"écoute","wifi_rssi":-57,"version":"<stamp>","last_tag":"D0021A3502B3C4D5"}
-  publish lapinou/<id>/update qos=1 retain=True: {"installed_version":"<stamp>"}
+  publish lapinou/<id>/state qos=1 retain=True: {"led":"00FF00","ears":{"left":0,"right":0,"preset":"debout"},"volume":25,"sleep":"off","assistant":"écoute","wifi_rssi":-57,"version":"<stamp>","last_tag":"D0021A3502B3C4D5"}
+  publish lapinou/<id>/update qos=1 retain=True: {"installed_version":"v1.0.0","latest_version":"v1.1.0"}
   discovery: 15 messages, each retained, valid JSON, with the device, unique_id and availability: True
 broker started again: True
 == 13. the broker started again
@@ -184,8 +192,8 @@ broker started again: True
   publish homeassistant/sensor/<id>/wifi/config qos=1 retain=True: {"name":"Signal Wi-Fi","unique_id":"lapinou_<id>_wifi","availability_topic":"lapinou/<id>/availability","device":{"identifiers":["lapinou_<id>"],"name":"Lapinou","manufacturer":"LapiNou","model":"Karotz","sw_version":"<stamp>"},"origin":{"name":"lapinou-mqtt","sw_version":"<stamp>"},"entity_category":"diagnostic","device_class":"signal_strength","state_class":"measurement","unit_of_measurement":"dBm","state_topic":"lapinou/<id>/state","value_template":"{{ value_json.wifi_rssi }}"}
   publish homeassistant/update/<id>/firmware/config qos=1 retain=True: {"name":"Micrologiciel","unique_id":"lapinou_<id>_firmware","availability_topic":"lapinou/<id>/availability","device":{"identifiers":["lapinou_<id>"],"name":"Lapinou","manufacturer":"LapiNou","model":"Karotz","sw_version":"<stamp>"},"origin":{"name":"lapinou-mqtt","sw_version":"<stamp>"},"device_class":"firmware","title":"LapiNou","state_topic":"lapinou/<id>/update"}
   publish lapinou/<id>/availability qos=1 retain=True: online
-  publish lapinou/<id>/state qos=1 retain=True: {"led":"00FF00","ears":{"left":0,"right":0,"preset":"debout"},"volume":30,"sleep":"off","assistant":"écoute","wifi_rssi":-57,"version":"<stamp>","last_tag":"D0021A3502B3C4D5"}
-  publish lapinou/<id>/update qos=1 retain=True: {"installed_version":"<stamp>"}
+  publish lapinou/<id>/state qos=1 retain=True: {"led":"00FF00","ears":{"left":0,"right":0,"preset":"debout"},"volume":25,"sleep":"off","assistant":"écoute","wifi_rssi":-57,"version":"<stamp>","last_tag":"D0021A3502B3C4D5"}
+  publish lapinou/<id>/update qos=1 retain=True: {"installed_version":"v1.0.0","latest_version":"v1.1.0"}
   discovery: 15 messages, each retained, valid JSON, with the device, unique_id and availability: True
 get_state: string "connected"
 == the daemon's log: refusals, ignored commands, the volume
@@ -222,6 +230,4 @@ com.mindscape.karotz.LapinouMqtt.mqtt_state(string "disconnected")
 open /dev/mixer
 ioctl /dev/mixer 0x80044dfe
 ioctl /dev/mixer 0xc0044d00
-open /dev/mixer
-ioctl /dev/mixer 0x80044dfe
 == daemon still running: True

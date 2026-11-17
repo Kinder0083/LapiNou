@@ -1,0 +1,13 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# lapinou/test (POST only): the page's "Tester" buttons, with the stored settings.
+#   what  mqtt (the bridge's connection), server (the LapiNou server's /api/health), stt, llm or tts
+#         (the cloud service's answer to its key)
+. /usr/share/lapinlibre/web.sh
+web_begin change
+. /usr/share/lapinou/web-lapinou.sh
+lapinou_post
+lapinou_guard
+param_choice what "" mqtt server stt llm tts
+[ -n "$PV" ] || web_fail "Le paramètre what manque."
+lapinou_reply test "$PV" < /dev/null

@@ -54,7 +54,7 @@ propre (SIGTERM), le démon publie `offline` puis se déconnecte.
 | `<p>/<id>/event/button` | lapin → | `{"type":"click"}` (`click`, `dclick`, `tclick`, `lclick_start`, `lclick_stop`) |
 | `<p>/<id>/event/rfid` | lapin → | `{"tag":"D0021A3502B3C4D5","action":"in"}` (`in`, `out`) |
 | `<p>/<id>/snapshot` | lapin → | l'image JPEG de `cmd/snapshot` (non retenue) |
-| `<p>/<id>/update` | lapin → | `{"installed_version":"…"}` (retenu) ; réservé à la Tâche 11 (OTA), qui y ajoutera `latest_version` |
+| `<p>/<id>/update` | lapin → | `{"installed_version":"v1.0.0","latest_version":"v1.1.0"}` (retenu) : `installed_version` est `sys_version` (le tag installé, R44 ; à défaut la première ligne de `lapinlibre-build`), `latest_version` la version trouvée par la dernière recherche (`/usr/ota/available`, absente tant qu'aucune recherche n'a abouti) ; relus toutes les 30 s et republiés quand ils changent |
 | `<p>/<id>/assistant` | serveur → | état de l'assistant, publié par le serveur LapiNou (Tâche 21), recopié dans l'état (64 octets au plus) |
 | `<p>/<id>/cmd/<nom>` | → lapin | commandes (ci-dessous) ; un message **retenu** reçu sur `cmd/…` est ignoré (une commande se fait une fois, quand elle est envoyée, pas à chaque reconnexion) |
 
@@ -147,7 +147,7 @@ Découverte sous `<discovery_prefix>/<composant>/<id>/<objet>/config`, retenue. 
 | `switch/sleep` | Veille | `cmd/sleep`, état `sleep` |
 | `sensor/assistant` | Assistant | état `assistant` |
 | `sensor/wifi` | Signal Wi-Fi | état `wifi_rssi` (dBm, diagnostic) |
-| `update/firmware` | Micrologiciel | `update` (`installed_version` seulement, jusqu'à la Tâche 11) |
+| `update/firmware` | Micrologiciel | `update` (`installed_version`, `latest_version`) ; informatif : pas de `command_topic`, l'installation se fait depuis la page web du lapin |
 
 Ces configurations ont été vérifiées avec les schémas de découverte de Home Assistant 2026.11.1
 (aucune clé rejetée ni ignorée) et leurs modèles rendus par son moteur de modèles.
@@ -156,7 +156,9 @@ Ces configurations ont été vérifiées avec les schémas de découverte de Hom
 
 `com.mindscape.karotz.LapinouMqtt`, chemin `/com/mindscape/karotz/LapinouMqtt`, interface
 `com.mindscape.karotz.LapinouMqtt` (`userland/dbus/lapinou-mqtt.xml`) : `get_state()` →
-`disabled`, `connecting`, `connected` ou `disconnected` ; signal `mqtt_state(s)` à chaque changement.
+`disabled`, `connecting`, `connected` ou `disconnected` ; `set_volume(i)` → `b`, le volume de la page
+web (comme `cmd/volume` : appliqué, gardé, publié ; `false` hors de 0 à 100) ; signal `mqtt_state(s)`
+à chaque changement.
 
 ## Tests
 

@@ -1,0 +1,20 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# lapinou/volume (POST only): the rabbit's volume, through lapinou-mqtt (set_volume on the bus: the
+# codec's mixer, else MPD's), which keeps it in [audio] volume and tells Home Assistant.
+#   value  0 to 100 (required)
+. /usr/share/lapinlibre/web.sh
+web_begin change
+. /usr/share/lapinou/web-lapinou.sh
+lapinou_post
+param_int value 0 100 ""
+[ -n "$PV" ] || web_fail "Le paramètre value manque."
+out=$(timeout 7 dbus-send --system --print-reply --reply-timeout=5000 --dest=com.mindscape.karotz.LapinouMqtt \
+    /com/mindscape/karotz/LapinouMqtt com.mindscape.karotz.LapinouMqtt.set_volume "int32:$PV" 2>&1 9>&-)
+case $out in
+*"boolean true"*) ;;
+*ServiceUnknown* | *NameHasNoOwner*) web_fail "Le pont lapinou-mqtt, qui règle le volume, ne tourne pas." ;;
+*) web_fail "Le volume n'a pas pu être réglé." ;;
+esac
+web_ok
+reply_json '{"return":"0"}'

@@ -9,6 +9,11 @@ lapinou-ota install    # télécharge, vérifie, écrit, redémarre
 lapinou-ota install --allow-downgrade   # accepte une version plus ancienne que celle installée
 ```
 
+Qui l'appelle (Tâche 12) : l'onglet « Mises à jour » de la page web du lapin (`check`, `install`),
+et cron une fois par jour (`check` seulement, jamais `install`), par `share/lapinou/webroot.sh`, qui
+garde la réponse dans `/usr/ota/check.json` et `/usr/ota/available` pour la page et pour
+`lapinou-mqtt` (`latest_version`). Voir `docs/lapinou/page-web.md`.
+
 ## Versions (R44)
 
 Une version publiée s'appelle `vX.Y.Z` : c'est l'étiquette de la Release et le champ `version` du manifeste (`tools/sign-ota.py` exige `--version vX.Y.Z`, le lapin refuse un manifeste dont la version n'a pas cette forme). `/usr/etc/conf/sys_version` contient cette étiquette, quelle que soit l'installation (clé USB, migration depuis FROS, `lapinou-ota`) ; une construction qui n'est pas exactement une étiquette (`install.conf` : `RELEASE_VERSION=0.0.0-<commit>`) écrit `0.0.0-<commit>`, plus ancienne que toute version publiée. `BUILD_VERSION` (le `git describe`) et `lapinlibre_build_id` (l'empreinte des images) restent à part.

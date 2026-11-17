@@ -395,6 +395,7 @@ usr:karotz/bin/button-daemon f 0755 0:0 own
 usr:karotz/bin/controller f 0755 0:0 own
 usr:karotz/bin/ears-daemon f 0755 0:0 own
 usr:karotz/bin/immortaldog f 0755 0:0 own
+usr:karotz/bin/lapinou-webroot f 4750 0:80 own  # LapiNou: the web page's way to root (setuid, group web only): runs share/lapinou/webroot.sh
 usr:karotz/bin/k2k-daemon f 0755 0:0 own
 usr:karotz/bin/karotzVM f 0755 0:0 own
 usr:karotz/bin/lapinou-mic f 0755 0:0 own  # LapiNou: the microphone to the server and to mic.sock
@@ -1323,9 +1324,16 @@ usr:scripts/dbus_watcher f 0755 0:0 core  # the head button's tones and its /etc
 usr:scripts/tag_listener f 0755 0:0 core  # the web API's tag listener: tag learning and the tags' stored actions, under immortaldog
 usr:etc/button.d d 0755 0:0
 usr:www d 0755 0:0
-usr:www/index.html f 0644 0:0 core  # the web page httpd serves, with its script and style
+usr:www/index.html f 0644 0:0 core  # LapiNou's home page (status, quick controls, settings, updates), with lapinou/
+usr:www/avance.html f 0644 0:0 core  # LapinLibre's page, the "Avancé" tab, with its script and style
 usr:www/app.js f 0644 0:0 core
 usr:www/style.css f 0644 0:0 core
+usr:www/lapinou d 0755 0:0
+usr:www/lapinou/app.js f 0644 0:0 core
+usr:www/lapinou/style.css f 0644 0:0 core
+usr:www/lapinou/tokens.css f 0644 0:0 core  # LapiNou's design tokens, shared with the server's pages (docs/lapinou/design.md)
+usr:www/lapinou/lapin.svg f 0644 0:0 core  # the drawn rabbit, put inline by app.js
+usr:www/lapinou/fr.json f 0644 0:0 core  # the page's French texts
 usr:www/cgi-bin d 0755 0:0  # the web API: each program sources /usr/share/lapinlibre/web.sh
 usr:www/cgi-bin/status f 0755 0:0 core
 usr:www/cgi-bin/get_version f 0755 0:0 core
@@ -1379,6 +1387,15 @@ usr:www/cgi-bin/lapinlibre/logs f 0755 0:0 core
 usr:www/cgi-bin/lapinlibre/ssh f 0755 0:0 core
 usr:www/cgi-bin/lapinlibre/tag_action f 0755 0:0 core
 usr:www/cgi-bin/lapinlibre/snapshot_delete f 0755 0:0 core
+usr:www/cgi-bin/lapinou d 0755 0:0  # LapiNou's page: settings and secrets through lapinou-webroot (docs/lapinou/page-web.md)
+usr:www/cgi-bin/lapinou/status f 0755 0:0 core
+usr:www/cgi-bin/lapinou/conf_get f 0755 0:0 core
+usr:www/cgi-bin/lapinou/conf_set f 0755 0:0 core
+usr:www/cgi-bin/lapinou/secret_set f 0755 0:0 core
+usr:www/cgi-bin/lapinou/test f 0755 0:0 core
+usr:www/cgi-bin/lapinou/ota f 0755 0:0 core
+usr:www/cgi-bin/lapinou/restart f 0755 0:0 core
+usr:www/cgi-bin/lapinou/volume f 0755 0:0 core
 usr:share/lapinlibre d 0755 0:0
 usr:share/lapinlibre/web.sh f 0644 0:0 core  # the web API's request checks, parameters and replies; outside the web root, so never run by httpd
 usr:share/lapinlibre/web-extra.sh f 0644 0:0 core  # the web API's less common helpers (encoded parameters, JSON escaping, URL checks), read by web.sh when needed
@@ -1389,6 +1406,8 @@ usr:share/lapinlibre/web-tags.sh f 0644 0:0 core  # the web API's URL actions an
 usr:share/lapinou d 0755 0:0
 usr:share/lapinou/persona_fr_court.txt f 0644 0:0 core  # LapiNou: lapinou-cloud's system prompt for the language model
 usr:share/lapinou/conf.sh f 0644 0:0 core  # LapiNou's settings (lapinou.conf, lapinou.secrets) for shell programs: lapinou_get, lapinou_set, lapinou_secret_get, lapinou_secret_set
+usr:share/lapinou/web-lapinou.sh f 0644 0:0 core  # the LapiNou page's programs' shared part
+usr:share/lapinou/webroot.sh f 0644 0:0 core  # what the page does as root, run by lapinou-webroot only
 usr:share/lapinou/ota-pubkey.pub f 0644 0:0 core  # LapiNou: the public key lapinou-ota checks updates with (a placeholder until the owner's real key, R42)
 usr:sbin/mdnsd f 0755 0:0 target  # mDNS: <host name>.local, and SSH advertised
 usr:lib/libmdnsd.so.1 l libmdnsd.so.1.0.0

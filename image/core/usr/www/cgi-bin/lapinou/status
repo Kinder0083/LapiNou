@@ -1,0 +1,58 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# lapinou/status (read-only): what the LapiNou home page shows besides LapinLibre's status: the
+# version (sys_version) and build, the assistant's mode (server, cloud or none) and the server's
+# connection (the controller's state), the MQTT bridge's state, the volume, the last update check,
+# and whether the page has a password or needs one. Never a secret, so no password is needed for it.
+. /usr/share/lapinlibre/web.sh
+web_begin read
+. /usr/share/lapinou/web-lapinou.sh
+. /usr/share/lapinou/conf.sh
+
+read_build
+first_line /usr/etc/conf/sys_version
+sys_version=$FL
+read_controller
+server_enabled=$(lapinou_get server enabled)
+cloud_enabled=$(lapinou_get cloud enabled)
+if [ "$server_enabled" = 1 ]; then
+    mode=server
+elif [ "$cloud_enabled" = 1 ]; then
+    mode=cloud
+else
+    mode=none
+fi
+case $CONTROLLER_STATE in
+15 | 16 | 21 | 22 | 24 | 25) server_link=connected ;;
+14) server_link=connecting ;;
+*) server_link=disconnected ;;
+esac
+mqtt=$(timeout 4 dbus-send --system --print-reply --reply-timeout=3000 --dest=com.mindscape.karotz.LapinouMqtt \
+    /com/mindscape/karotz/LapinouMqtt com.mindscape.karotz.LapinouMqtt.get_state 2> /dev/null 9>&-)
+case $mqtt in
+*'string "connected"'*) mqtt=connected ;;
+*'string "connecting"'*) mqtt=connecting ;;
+*'string "disconnected"'*) mqtt=disconnected ;;
+*'string "disabled"'*) mqtt=disabled ;;
+*) mqtt=absent ;;
+esac
+last_check=null
+if first_line "$LAPINOU_OTA_CHECK"; then
+    case $FL in '{"installed":"'*'}') last_check=$FL ;; esac
+fi
+
+jo_begin
+jo_str return 0
+jo_str version "${sys_version:-$BUILD}"
+jo_str build "$BUILD"
+jo_str build_id "$BUILD_ID"
+jo_str mode "$mode"
+jo_str server_host "$(lapinou_get server host)"
+jo_str server_link "$server_link"
+jo_str controller "$CONTROLLER"
+jo_str mqtt "$mqtt"
+jo_str volume "$(lapinou_get audio volume)"
+jo_raw last_check "$last_check"
+if [ -s "$WEB_HASH" ]; then jo_str password 1; else jo_str password 0; fi
+if lapinou_needs_password; then jo_str password_needed 1; else jo_str password_needed 0; fi
+reply_json "{$JO}"

@@ -1,0 +1,10 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# lapinou/conf_get (read-only): LapiNou's settings as the page shows them, {"return":"0",
+# "settings":{"mqtt.host":"…",…,"mqtt_password":{"set":true}}}. A secret's value is never given:
+# only whether it is set.
+. /usr/share/lapinlibre/web.sh
+web_begin read
+. /usr/share/lapinou/web-lapinou.sh
+lapinou_guard
+lapinou_reply get < /dev/null

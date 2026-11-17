@@ -9,8 +9,9 @@
 . /usr/share/lapinlibre/web.sh
 web_begin change
 ACT_KEEP_TAG=""
-param tag
-[ $? = 0 ] && [ -n "$PV" ] && valid_tag "$PV" && ACT_KEEP_TAG=$TG
+if param tag && [ -n "$PV" ] && valid_tag "$PV"; then
+    ACT_KEEP_TAG=$TG
+fi
 url_action_params
 url_host "$ACT_URL"
 host=$UH
@@ -21,7 +22,7 @@ s=$?
 if [ $s != 0 ]; then
     # The log gets the host and curl's status only, never curl's words (they may quote the URL).
     web_log "the request to $host failed (curl status $s)"
-    WEB_KIND=read
+    WEB_KIND="read"
     web_fail "the request to $host failed: $UR_ERROR"
 fi
 web_log "ok, $host answered HTTP $UR_CODE"

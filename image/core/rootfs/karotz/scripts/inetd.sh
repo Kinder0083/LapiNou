@@ -14,6 +14,9 @@
 # can't be written, it refuses everything, or is missing, which stops httpd answering. httpd runs as
 # the user web (inetd.conf), so the configuration is root's and readable by the group web only
 # (0640); web-files.sh makes the web user's files first.
+#
+# inetd.sh conf: only the password's hash and httpd's configuration, then the end (the LapiNou
+# page's new web password, through lapinou-webroot); httpd reads its configuration per request.
 RUN=/var/run/inetd.conf
 WEB_FILES=/karotz/scripts/web-files.sh
 HTTPD_CONF=/var/run/httpd.conf
@@ -97,6 +100,7 @@ if ! web_conf; then
 elif [ -z "$hash" ] && [ -z "$locked" ]; then
     log "no web password is set (WEB_PASSWORD in lapinlibre.txt): the web page has no login"
 fi
+[ "${1:-}" = conf ] && exit 0
 
 grep -h '^[^#[:space:]]' /etc/inetd.conf > $RUN 2> /dev/null
 if [ "$(cat /usr/etc/conf/telnet 2> /dev/null)" = yes ]; then

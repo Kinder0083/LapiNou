@@ -56,7 +56,8 @@ typedef struct {
 /* The state topic's JSON. Free with g_free(). */
 char *state_json(const RabbitState *s);
 
-/* The update entity's state: {"installed_version": ...}. Free with g_free(). */
-char *update_json(const char *version);
+/* The update entity's state: {"installed_version": ..., "latest_version": ...}, latest_version only
+ * when known. Free with g_free(). */
+char *update_json(const char *installed, const char *latest);
 
 #endif

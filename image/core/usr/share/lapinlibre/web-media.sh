@@ -4,6 +4,8 @@
 
 # media_ids DIR...: the names (without .mp3 or .wav) of the playable files in the folders, each
 # once, sorted. Only names that pass valid_id count.
+# ShellCheck: awk programs are kept in single quotes.
+# shellcheck disable=SC2016
 media_ids() {
     for _d; do
         for _f in "$_d"/*.mp3 "$_d"/*.wav; do
@@ -42,7 +44,7 @@ mp3_names() {
 # out. Nothing when there is no such file.
 list_text() {
     [ -f "$1" ] || return 0
-    head -c $WEB_LIST_BYTES "$1" 2> /dev/null | tr -d '\000' | iconv -c -f UTF-8 -t UTF-8 2> /dev/null
+    head -c "$WEB_LIST_BYTES" "$1" 2> /dev/null | tr -d '\000' | iconv -c -f UTF-8 -t UTF-8 2> /dev/null
     return 0
 }
 

@@ -6,6 +6,10 @@
     <method name="get_state">
       <arg name="state" type="s" direction="out"/>
     </method>
+    <method name="set_volume">
+      <arg name="volume" type="i" direction="in"/>
+      <arg name="ok" type="b" direction="out"/>
+    </method>
     <signal name="mqtt_state"/>
   </interface>
 </node>

@@ -1,0 +1,18 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# lapinou/ota: the updates (lapinou-ota, as root).
+#   action  status (GET or POST: whether an install runs, its log, the last check), check (POST:
+#           lapinou-ota check) or install (POST: lapinou-ota install, started on its own; the
+#           rabbit restarts at the end)
+. /usr/share/lapinlibre/web.sh
+web_begin change
+. /usr/share/lapinou/web-lapinou.sh
+lapinou_guard
+param_choice action status status check install
+action=$PV
+if [ "$action" = status ]; then
+    WEB_KIND="read"
+else
+    lapinou_post
+fi
+lapinou_reply ota "$action" < /dev/null

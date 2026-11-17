@@ -287,8 +287,8 @@ GPtrArray *discovery_messages(const DiscoveryContext *c)
     str(&o, "value_template", "{{ value_json.wifi_rssi }}");
     done(&b, &o, "sensor", "wifi");
 
-    /* The firmware: installed_version only for now; the OTA (Task 11) adds latest_version and
-     * the install command on the same topic (docs/lapinou/mqtt.md). */
+    /* The firmware, informational: installed_version and latest_version on the same topic, no
+     * install command (the install is the web page's, docs/lapinou/mqtt.md). */
     o = entity(&b, "Micrologiciel", "firmware");
     str(&o, "device_class", "firmware");
     str(&o, "title", "LapiNou");
@@ -328,10 +328,12 @@ char *state_json(const RabbitState *s)
     return end(&o);
 }
 
-char *update_json(const char *version)
+char *update_json(const char *installed, const char *latest)
 {
     Obj o = { g_string_new(NULL), 0 };
 
-    str(&o, "installed_version", version);
+    str(&o, "installed_version", installed);
+    if (latest)
+        str(&o, "latest_version", latest);
     return end(&o);
 }
