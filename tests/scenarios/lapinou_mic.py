@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
 """lapinou-mic: the microphone streamed to the LapiNou server, and shared on a local socket.
 
-The daemon's settings are the scenario's own (LAPINOU_CONF_DIR): [server] host=127.0.0.1 and no
+The daemon's settings are the scenario's own (LAPINOU_CONF_DIR): [server] enabled=1 and
+host=127.0.0.1 (both are needed, R49: see lapinou_mic_no_server.py), and no
 [audio] mic_gain_db, so the default gain, +12 dB, applies. Its uuid.conf (LAPINOU_UUID_FILE) and its
 local socket (LAPINOU_MIC_SOCKET) are in the run's directory. /dev/audio is a FIFO the scenario
 keeps open for writing, so what it writes is what the microphone "hears"; its OSS ioctls (type 'P')
@@ -59,7 +60,7 @@ FAKE_SERVER = Path(__file__).resolve().parent.parent / "fakes" / "fake_audio_ser
 def sandbox_setup(workdir, sysroot):
     conf = Path(workdir) / "lapinou-conf"
     conf.mkdir()
-    (conf / "lapinou.conf").write_text("[server]\nhost=127.0.0.1\n")
+    (conf / "lapinou.conf").write_text("[server]\nenabled=1\nhost=127.0.0.1\n")
     (Path(workdir) / "uuid.conf").write_text(UUID + "\n")
     return (f"export LAPINOU_CONF_DIR={conf} LAPINOU_UUID_FILE={workdir}/uuid.conf "
             f"LAPINOU_MIC_SOCKET={workdir}/run/mic.sock; ")

@@ -736,6 +736,7 @@ class ButtonWatcherTest(unittest.TestCase):
 
 S40 = ROOT / "image/core/usr/etc/init.d/S40lapinlibre"
 LISTENER = ROOT / "image/core/usr/scripts/tag_listener"
+CONF_SH = ROOT / "image/core/usr/share/lapinou/conf.sh"
 
 
 class S40Test(unittest.TestCase):
@@ -759,8 +760,11 @@ class S40Test(unittest.TestCase):
         stub(sb / "bin/logger", f'echo "logger $*" >> {self.log}')
         for name in ("dbus_watcher", "tag_listener"):
             stub(sb / "usr/scripts" / name, "exit 0")
+        (sb / "usr/share/lapinou").mkdir(parents=True)
+        (sb / "usr/share/lapinou/conf.sh").write_text(CONF_SH.read_text(encoding="utf-8"), newline="\n")
         script = S40.read_text(encoding="utf-8")
-        for path in ("/usr/karotz/uuid.conf", "/usr/etc/conf/playsounds", "/usr/karotz/bin", "/var/run/karotz",
+        for path in ("/usr/karotz/uuid.conf", "/usr/etc/conf/playsounds", "/usr/etc/conf/account.conf",
+                     "/usr/share/lapinou/conf.sh", "/usr/karotz/bin", "/var/run/karotz",
                      "/usr/sbin/mdnsd", "/var/run/mdnsd.pid", "/usr/scripts/", "/karotz/scripts/web-files.sh",
                      "/usr/spool/cron/crontabs"):
             script = script.replace(path, f"{sb}{path}")
@@ -773,7 +777,8 @@ class S40Test(unittest.TestCase):
         self.tmp.cleanup()
 
     def run_s40(self, action):
-        r = subprocess.run(["sh", str(self.script), action], env={"PATH": f"{self.sb}/bin:/usr/bin:/bin"},
+        r = subprocess.run(["sh", str(self.script), action],
+                           env={"PATH": f"{self.sb}/bin:/usr/bin:/bin", "LAPINOU_CONF_DIR": f"{self.sb}/usr/etc/conf"},
                            capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)
 
@@ -828,8 +833,52 @@ class S40Test(unittest.TestCase):
         self.assertTrue((self.sb / "var/run/karotz/lapinou-mqtt.pid").is_file())
         self.run_s40("stop")
 
+    def test_cloud_only_when_enabled(self):
+        # Without [cloud] enabled=1, lapinou-cloud isn't started (its RAM is kept for the rest);
+        # "S40lapinlibre cloud" starts it once enabled, and stops it once disabled again.
+        conf = self.sb / "usr/etc/conf/lapinou.conf"
+        conf.write_text("[cloud]\nenabled=0\n", newline="\n")
+        self.run_s40("start")
+        self.assertNotIn("lapinou-cloud", self.started())
+        conf.write_text("[cloud]\nenabled=1\n", newline="\n")
+        self.run_s40("cloud")
+        self.assertEqual(self.started().count("lapinou-cloud"), 1)
+        pid_file = self.sb / "var/run/karotz/lapinou-cloud.pid"
+        self.assertTrue(pid_file.is_file())
+        self.run_s40("cloud")  # already running: not twice
+        self.assertEqual(self.started().count("lapinou-cloud"), 1)
+        conf.write_text("[cloud]\nenabled=0\n", newline="\n")
+        pid = pid_file.read_text().strip()
+        self.run_s40("cloud")
+        self.assertFalse(pid_file.exists())
+        time.sleep(0.3)
+        r = subprocess.run(["sh", "-c", f"kill -0 {pid} 2> /dev/null"], capture_output=True, timeout=10)
+        self.assertNotEqual(r.returncode, 0)
+        self.run_s40("stop")
+
+    def test_platform_login_is_the_uuid(self):
+        # R47: the controller's login is the rabbit's uuid; an older install's "lapinlibre" (or no
+        # account at all) is put right at the start, before the controller, its password kept.
+        account = self.sb / "usr/etc/conf/account.conf"
+        self.run_s40("start")
+        self.assertEqual((self.sb / "usr/karotz/uuid.conf").read_text(), "1234\n")
+        self.assertEqual(account.read_text(), "[account]\nid=1234\npwd=lapinlibre\n")
+        self.run_s40("stop")
+        account.write_text("[account]\nid=lapinlibre\npwd=secret\n", newline="\n")
+        self.log.unlink()
+        self.run_s40("start")
+        self.assertEqual(account.read_text(), "[account]\nid=1234\npwd=secret\n")
+        self.assertIn("logger -t S40lapinlibre platform login set to the rabbit's uuid", self.log.read_text())
+        self.run_s40("stop")
+        self.log.unlink()
+        self.run_s40("start")  # already right: left alone
+        self.assertNotIn("platform login", self.log.read_text())
+        self.run_s40("stop")
+
     def test_cloud_after_the_daemons_it_drives(self):
-        # lapinou-cloud (the program itself) once, after the microphone and the daemons it calls.
+        # lapinou-cloud (the program itself) once, after the microphone and the daemons it calls,
+        # when the mode without a server is on.
+        (self.sb / "usr/etc/conf/lapinou.conf").write_text("[cloud]\nenabled=1\n", newline="\n")
         self.run_s40("start")
         started = self.started()
         self.assertEqual(started.count("lapinou-cloud"), 1)

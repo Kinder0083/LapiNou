@@ -395,13 +395,26 @@ class ActionsTest(LapinouCase):
         self.assertEqual(self.post_json("restart", what="mqtt"), {"return": "0"})
         self.assertIn("killall lapinou-mqtt", self.box.actions_log())
         self.assertEqual(self.post_json("restart", what="cloud"), {"return": "0"})
-        self.assertIn("killall lapinou-cloud", self.box.actions_log())
+        # lapinou-cloud started or stopped as [cloud] enabled says (S40lapinlibre cloud), then the
+        # bridge again.
+        self.assertIn("S40lapinlibre cloud", self.box.actions_log())
+        self.assertGreater(self.box.actions_log().rindex("killall lapinou-mqtt"),
+                           self.box.actions_log().index("S40lapinlibre cloud"))
         self.assertError(self.post_json("restart", what="controller"), "what")
 
     def test_volume(self):
         self.assertEqual(self.post_json("volume", value="40"), {"return": "0"})
         self.assertIn("LapinouMqtt.set_volume\x1fint32:40", self.box.actions_log())
         self.assertError(self.post_json("volume", value="140"), "value")
+
+    def test_status_says_server_only_with_an_address(self):
+        # R49: lapinou-mic streams only with [server] enabled=1 and a host; the page says the same.
+        self.post_json("conf_set", server__enabled="1", server__host="")
+        self.assertEqual(self.get_json("status")["mode"], "none")
+        self.post_json("conf_set", server__host="192.168.1.30")
+        self.assertEqual(self.get_json("status")["mode"], "server")
+        self.post_json("conf_set", server__enabled="0")
+        self.assertEqual(self.get_json("status")["mode"], "none")
 
     def test_status(self):
         self.box.write("mqtt.state", "connected")

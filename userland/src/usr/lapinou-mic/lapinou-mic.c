@@ -39,7 +39,8 @@
  * goes on either way; nothing is kept for the server while it is off); signal stream_state(s)
  * says "connected" or "disconnected" when the connection to the server comes or goes.
  *
- * With no [server] host, nothing is sent: the microphone is only shared locally. For the tests,
+ * Only with [server] enabled=1 and a [server] host is anything sent (R49); otherwise the
+ * microphone is only shared locally. For the tests,
  * LAPINOU_UUID_FILE and LAPINOU_MIC_SOCKET move uuid.conf and the local socket (LAPINOU_CONF_DIR
  * moves lapinou.conf, lapinou_conf.h). A server host that is an address is used as it is; a name
  * is resolved at each attempt in a thread of its own, so the main loop (and the microphone) never
@@ -978,6 +979,7 @@ static void lapinou_mic_object_init(LapinouMicObject *self)
     GError *error = NULL;
     guint request_result;
     char *text = NULL;
+    char *enabled;
 
     self->audio_fd = -1;
     self->server_fd = -1;
@@ -986,6 +988,13 @@ static void lapinou_mic_object_init(LapinouMicObject *self)
     self->frames = g_queue_new();
     self->out = g_byte_array_new();
     self->host = lapinou_conf_get("server", "host", NULL);
+    /* R49: the microphone leaves the rabbit only for a server the owner turned on. */
+    enabled = lapinou_conf_get("server", "enabled", "0");
+    if (strcmp(enabled, "1") != 0) {
+        g_free(self->host);
+        self->host = NULL;
+    }
+    g_free(enabled);
     if (g_file_get_contents(BUILD_FILE, &text, NULL, NULL)) {
         char *nl = strchr(text, '\n');
         if (nl)
@@ -1025,7 +1034,7 @@ int main(void)
     g_log(NULL, G_LOG_LEVEL_MESSAGE, "Starting\n");
     mic = g_object_new(LAPINOU_MIC_TYPE_OBJECT, NULL);
     if (!mic->host)
-        g_log(NULL, G_LOG_LEVEL_MESSAGE, "no [server] host: the microphone is only shared locally");
+        g_log(NULL, G_LOG_LEVEL_MESSAGE, "no server ([server] enabled=1 and host): the microphone is only shared locally");
     local_listen(mic);
     audio_open(mic);
     mic->tick = g_timeout_add_seconds(1, server_tick, mic);

@@ -7,7 +7,8 @@
 # (it restarts a daemon that dies and writes its own pid file), LapiNou's microphone (lapinou-mic,
 # the only reader of /dev/audio) first, before voice-daemon and multimedia-daemon (which are to read
 # the microphone from lapinou-mic's socket: wired in Task 6), LapiNou's mode without a server
-# (lapinou-cloud: idle unless lapinou.conf has [cloud] enabled=1) and LapiNou's MQTT bridge to Home
+# (lapinou-cloud, only when lapinou.conf has [cloud] enabled=1: it costs RAM; "S40lapinlibre cloud"
+# starts or stops it after a change) and LapiNou's MQTT bridge to Home
 # Assistant (lapinou-mqtt) last, once the daemons they drive are started; then the head button's watcher
 # (/usr/scripts/dbus_watcher: tones and /etc/button.d hooks) and the web API's tag listener
 # (/usr/scripts/tag_listener: tag learning and the tags' actions, as the user web, like the web API
@@ -18,7 +19,7 @@
 # /etc/mdns.d (SSH), started as Buildroot's own mdnsd script starts it. Last, LapiNou's daily update
 # check in root's cron table (check only, never an install: webroot.sh ota check), added once.
 # NAME: the program NAME-daemon, or NAME itself for LapiNou's (lapinou-*).
-DAEMONS="lapinou-mic led rfid webcam button ears multimedia voice scheduler serial k2k lapinou-cloud lapinou-mqtt"
+DAEMONS="lapinou-mic led rfid webcam button ears multimedia voice scheduler serial k2k lapinou-mqtt"
 # The bus names the controller needs before it starts.
 NEEDS="Led Ears Multimedia Voice Scheduler Rfid Button"
 BIN=/usr/karotz/bin
@@ -29,6 +30,9 @@ MDNSD_ARGS="-i wlan0"
 WATCHER=/usr/scripts/dbus_watcher
 LISTENER=/usr/scripts/tag_listener
 PLAYSOUNDS=/usr/etc/conf/playsounds
+ACCOUNT=/usr/etc/conf/account.conf
+UUID=/usr/karotz/uuid.conf
+CONF_SH=/usr/share/lapinou/conf.sh
 WEB_FILES=/karotz/scripts/web-files.sh
 CRONTABS=/usr/spool/cron/crontabs
 OTA_DAILY="/bin/sh /usr/share/lapinou/webroot.sh ota check"
@@ -59,8 +63,39 @@ ota_cron() {
         echo root >> $CRONTABS/cron.update
 }
 
+# account_login: R47, the controller's platform login is the rabbit's uuid (as for lapinou-mic and
+# MQTT), so the LapiNou server sees one rabbit. An install made before that (login "lapinlibre",
+# or none) is put right here, before the controller starts; the password is kept.
+account_login() {
+    uuid=$(tr -d '[:space:]' < $UUID 2> /dev/null)
+    [ -n "$uuid" ] || return 0
+    login=$(sed -n 's/^id=//p' $ACCOUNT 2> /dev/null | head -n 1)
+    [ "$login" = "$uuid" ] && return 0
+    secret=$(sed -n 's/^pwd=//p' $ACCOUNT 2> /dev/null | head -n 1)
+    printf '[account]\nid=%s\npwd=%s\n' "$uuid" "${secret:-lapinlibre}" > $ACCOUNT.new && mv -f $ACCOUNT.new $ACCOUNT &&
+        logger -t S40lapinlibre "platform login set to the rabbit's uuid"
+}
+
+# cloud: lapinou-cloud (the mode without a server) runs only when [cloud] enabled=1; otherwise it
+# is stopped (immortaldog ends it), so it takes no RAM.
+cloud() {
+    enabled=$( (. $CONF_SH && lapinou_get cloud enabled) 2> /dev/null)
+    if [ "$enabled" = 1 ]; then
+        pid=$(cat "$RUN/lapinou-cloud.pid" 2> /dev/null)
+        if [ -z "$pid" ] || ! kill -0 "$pid" 2> /dev/null; then
+            rm -f "$RUN/lapinou-cloud.pid"
+            $BIN/immortaldog "$RUN/lapinou-cloud.pid" "$BIN/lapinou-cloud"
+        fi
+    elif [ -f "$RUN/lapinou-cloud.pid" ]; then
+        kill "$(cat "$RUN/lapinou-cloud.pid")" 2> /dev/null
+        rm -f "$RUN/lapinou-cloud.pid"
+    fi
+    return 0
+}
+
 start() {
-    [ -s /usr/karotz/uuid.conf ] || uuidgen > /usr/karotz/uuid.conf
+    [ -s $UUID ] || uuidgen > $UUID
+    account_login
     if [ ! -e $PLAYSOUNDS.default ]; then
         [ -e $PLAYSOUNDS ] || echo 1 > $PLAYSOUNDS
         [ -e $PLAYSOUNDS ] && touch $PLAYSOUNDS.default
@@ -72,6 +107,7 @@ start() {
         *) $BIN/immortaldog "$RUN/$name.pid" "$BIN/$name-daemon" ;;
         esac
     done
+    cloud
     # The watcher and the listener, each only when no live process holds its pid file.
     once dbus_watcher $WATCHER
     $WEB_FILES
@@ -95,7 +131,7 @@ start() {
 stop() {
     start-stop-daemon -K -q -p $MDNSD_PID -x $MDNSD
     # immortaldog stops its daemon on SIGTERM and removes its pid file.
-    for name in controller tag_listener dbus_watcher $DAEMONS; do
+    for name in controller tag_listener dbus_watcher lapinou-cloud $DAEMONS; do
         [ -f "$RUN/$name.pid" ] && kill "$(cat "$RUN/$name.pid")" 2> /dev/null
     done
     return 0
@@ -105,5 +141,6 @@ case "$1" in
 start) start ;;
 stop) stop ;;
 restart) stop; sleep 1; start ;;
-*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+cloud) cloud ;;
+*) echo "Usage: $0 {start|stop|restart|cloud}"; exit 1 ;;
 esac

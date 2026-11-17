@@ -130,7 +130,7 @@
   "mqtt.password": "Mot de passe MQTT",
   "mqtt.prefix": "Début des topics",
   "mqtt.discovery_prefix": "Préfixe de découverte Home Assistant",
-  "serveur.intro": "Le serveur LapiNou écoute, réfléchit et répond pour le lapin.",
+  "serveur.intro": "Le serveur LapiNou écoute, réfléchit et répond pour le lapin. Le son du micro ne part vers lui que si « Utiliser un serveur LapiNou » est activé et qu'une adresse est réglée ; sinon, il reste dans le lapin.",
   "serveur.enabled": "Utiliser un serveur LapiNou",
   "serveur.host": "Adresse du serveur",
   "cloud.intro": "Sans serveur, le lapin utilise directement des services en ligne. Chaque service a sa clé.",

@@ -271,7 +271,7 @@
       ]]],
     },
     cloud: {
-      intro: "cloud.intro", restart: "mqtt", tests: ["stt", "llm", "tts"],
+      intro: "cloud.intro", restart: "cloud", tests: ["stt", "llm", "tts"],
       groups: [
         [null, [["switch", "cloud.enabled", "cloud.enabled"]]],
         ["cloud.stt", [["text", "cloud.stt_url", "cloud.url", "settings.address_clears"], ["text", "cloud.stt_model", "cloud.model"],

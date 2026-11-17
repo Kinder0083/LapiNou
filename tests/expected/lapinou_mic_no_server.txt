@@ -1,0 +1,17 @@
+== registered: True
+microphone opened by the daemon: True
+== 1. no server turned on
+fake server ready: True
+== 2. the microphone, shared locally only
+local client: 4096 bytes, the microphone's with the gain: True
+set_streaming('boolean:true',): ok
+connections the fake server saw: 0
+== signals
+== device I/O
+open /dev/audio
+ioctl /dev/audio 0x5000
+ioctl /dev/audio 0xc0045005
+ioctl /dev/audio 0xc0045003
+ioctl /dev/audio 0xc0045002
+read /dev/audio 2048
+== daemon still running: True

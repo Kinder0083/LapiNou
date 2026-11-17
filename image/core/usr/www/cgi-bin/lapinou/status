@@ -14,8 +14,11 @@ first_line /usr/etc/conf/sys_version
 sys_version=$FL
 read_controller
 server_enabled=$(lapinou_get server enabled)
+server_host=$(lapinou_get server host)
 cloud_enabled=$(lapinou_get cloud enabled)
-if [ "$server_enabled" = 1 ]; then
+# The server mode is what lapinou-mic does (R49): enabled AND an address, or the microphone stays on
+# the rabbit.
+if [ "$server_enabled" = 1 ] && [ -n "$server_host" ]; then
     mode=server
 elif [ "$cloud_enabled" = 1 ]; then
     mode=cloud
@@ -47,7 +50,7 @@ jo_str version "${sys_version:-$BUILD}"
 jo_str build "$BUILD"
 jo_str build_id "$BUILD_ID"
 jo_str mode "$mode"
-jo_str server_host "$(lapinou_get server host)"
+jo_str server_host "$server_host"
 jo_str server_link "$server_link"
 jo_str controller "$CONTROLLER"
 jo_str mqtt "$mqtt"

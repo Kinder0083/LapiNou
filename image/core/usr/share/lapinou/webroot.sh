@@ -21,7 +21,8 @@
 #   ota check|install|status  lapinou-ota check (its answer kept in /usr/ota/check.json, which
 #                             lapinou-mqtt publishes), lapinou-ota install started on its own, or
 #                             where an install is and its log
-#   restart mqtt|cloud|all    lapinou-mqtt or lapinou-cloud started again (immortaldog does it), or
+#   restart mqtt|cloud|all    lapinou-mqtt started again (immortaldog does it); cloud: lapinou-cloud
+#                             started or stopped as [cloud] enabled says, and lapinou-mqtt again; or
 #                             every LapiNou daemon (S40lapinlibre restart)
 #   test mqtt|server|stt|llm|tts
 #                             the MQTT bridge's connection, the LapiNou server's /api/health, or a
@@ -794,7 +795,9 @@ cmd_ota() {
 cmd_restart() {
     case $1 in
     mqtt) killall lapinou-mqtt > /dev/null 2>&1 ;;
-    cloud) killall lapinou-cloud > /dev/null 2>&1 ;;
+    # lapinou-cloud runs only while [cloud] enabled=1 (S40lapinlibre cloud starts or stops it);
+    # lapinou-mqtt starts again, its cmd/say following the mode.
+    cloud) "$S40" cloud > /dev/null 2>&1; killall lapinou-mqtt > /dev/null 2>&1 ;;
     all) (umask 022 && exec setsid "$S40" restart < /dev/null > /dev/null 2>&1) & ;;
     *) fail "Commande inconnue." ;;
     esac
