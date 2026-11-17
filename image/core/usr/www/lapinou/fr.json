@@ -157,7 +157,7 @@
   "securite.rule": "8 à 64 caractères, sans espace, guillemet, barre oblique inverse ni deux-points.",
   "securite.mismatch": "Les deux mots de passe sont différents.",
   "securite.save": "Enregistrer le mot de passe",
-  "securite.press": "Pour prouver que vous êtes près du lapin, appuyez une fois sur sa tête : son nez clignote. Encore {s} s.",
+  "securite.press": "Pour prouver que vous êtes près du lapin, appuyez une fois sur sa tête quand son nez clignote en {c}. Si le nez clignote dans une autre couleur, n'appuyez pas : une autre page attend. Encore {s} s.",
   "securite.press_late": "La tête du lapin n'a pas été appuyée à temps : recommencez.",
   "securite.saved": "Mot de passe enregistré : le navigateur va vous le demander (identifiant admin).",
   "maj.intro": "Les mises à jour sont signées : le lapin vérifie chacune avant de l'installer.",

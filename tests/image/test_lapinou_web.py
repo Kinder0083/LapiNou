@@ -71,10 +71,12 @@ class LapinouSandbox(Sandbox):
              f'install) echo "Downloading usr.tar.gz" > {sb}/usr/ota/last.log ;;\n'
              'esac')
         self.write("ota.answer", '{"installed":"v1.0.0","available":"v1.1.0"}\n')
-        # inetd.sh conf: hashes the new password as the real one does (the form only).
+        # inetd.sh conf: hashes the new password as the real one does (the form only), and keeps
+        # each password it was given in passwords.log, for the tests to see whose was put in place.
         stub(sb / "karotz/scripts/inetd.sh",
              f'echo "inetd.sh $*" >> {self.actions}\n'
              f'c={sb}/usr/etc/conf\n'
+             f'[ -s $c/web_password ] && cat $c/web_password >> {sb}/passwords.log\n'
              '[ -s $c/web_password ] && { echo \'$6$salt$hashhashhash\' > $c/web_password.hash; rm -f $c/web_password; }\n'
              'exit 0')
         stub(sb / "usr/etc/init.d/S40lapinlibre", f'echo "S40lapinlibre $*" >> {self.actions}')
@@ -597,11 +599,81 @@ class CorrectionTest(LapinouCase):
         self.assertFalse(self.press_status("")["pressed"])
         self.assertError(self.first_password(other), "tête du lapin")
         self.assertError(self.first_password(""), "tête du lapin")
-        self.assertError(self.post_json("press", action="start"), "attente est en cours")
+        self.assertError(self.post_json("press", action="start"), "attend déjà un appui")
         self.assertTrue((self.sb / "var/run/lapinou-press.ok").exists())
         # Its own browser still can.
         self.assertTrue(self.press_status(token)["pressed"])
         self.assertEqual(self.first_password(token), {"return": "0"})
+
+    def passwords(self):
+        path = self.sb / "passwords.log"
+        return path.read_text().splitlines() if path.exists() else []
+
+    def test_first_password_race_only_the_token_holder_wins(self):
+        # The owner's request (with the press's token) against requests without one, all at once,
+        # several times: only the owner's password is ever put in place.
+        import threading
+        for round_ in range(3):
+            with self.subTest(round=round_):
+                self.no_password()
+                (self.sb / "passwords.log").unlink(missing_ok=True)
+                for name in ("lapinou-press.ok", "lapinou-press.pending"):
+                    (self.sb / "var/run" / name).unlink(missing_ok=True)
+                token = self.press_the_head()
+                replies = {}
+
+                def send(who, tok, value):
+                    replies[who] = self.first_password(tok, value)
+                threads = [threading.Thread(target=send, args=("owner", token, "ownerpass1"))]
+                threads += [threading.Thread(target=send, args=(f"other{i}", "", f"attacker{i}x")) for i in range(3)]
+                for th in threads:
+                    th.start()
+                for th in threads:
+                    th.join(120)
+                self.assertEqual(replies["owner"], {"return": "0"})
+                for i in range(3):
+                    self.assertEqual(replies[f"other{i}"]["return"], "1", replies)
+                self.assertEqual(self.passwords(), ["ownerpass1"])
+                # Wait for the watch to end (it gives the LED back) before the next round.
+                for _ in range(100):
+                    if len([c for c in self.box.dbus_calls() if c[:2] == ("Led", "light")]) > round_:
+                        break
+                    time.sleep(0.2)
+                time.sleep(0.5)
+
+    def test_first_mode_only_while_there_is_no_password(self):
+        # The helper itself: "first" is refused once a password exists, token or not; without
+        # "first" (a request httpd authenticated), never the first password.
+        self.assertError(self.helper("secret", "web_password", "first", stdin=b"\nnewpass123"), "déjà un mot de passe")
+        self.assertEqual(self.passwords(), [])
+        self.no_password()
+        self.assertError(self.helper("secret", "web_password", stdin=b"\nnewpass123"), "pas encore de mot de passe")
+        token = self.press_the_head()
+        self.assertError(self.helper("secret", "web_password", stdin=f"{token}\nnewpass123".encode()), "pas encore de mot de passe")
+        self.assertError(self.helper("secret", "mqtt_password", "first", stdin=b"x"), "inconnue")
+        self.assertEqual(self.passwords(), [])
+        self.assertEqual(self.helper("secret", "web_password", "first", stdin=f"{token}\nnewpass123".encode()), {"return": "0"})
+        self.assertEqual(self.passwords(), ["newpass123"])
+
+    def test_press_colour_only_for_its_browser(self):
+        self.no_password()
+        reply = self.post_json("press", action="start")
+        colour = reply["color"]
+        self.assertIn(colour, ("rouge", "bleu", "vert", "jaune", "violet", "blanc"))
+        hexes = {"rouge": "FF0000", "bleu": "0000FF", "vert": "00FF00", "jaune": "FFFF00", "violet": "FF00FF", "blanc": "FFFFFF"}
+        for _ in range(50):
+            pulses = [c for c in self.box.dbus_calls() if c[:2] == ("Led", "pulse")]
+            if pulses:
+                break
+            time.sleep(0.2)
+        self.assertEqual(pulses[0][2][1], f"string:{hexes[colour]}")
+        self.assertEqual(self.press_status(reply["token"]).get("color"), colour)
+        for token in ("", "f" * 32):
+            self.assertNotIn("color", self.press_status(token))
+        busy = self.post_json("press", action="start")
+        self.assertError(busy, "n'appuyez pas sur la tête")
+        self.assertNotIn(colour, busy["msg"])
+        self.assertNotIn("token", busy)
 
     def test_press_is_used_once_by_two_at_once(self):
         self.no_password()
@@ -658,7 +730,7 @@ class FilesTest(unittest.TestCase):
         for path in paths:
             for line in path.read_text(encoding="utf-8").splitlines():
                 if "lapinou_reply" in line and not line.lstrip().startswith("#"):
-                    self.assertRegex(line, r'lapinou_reply (get|set|secret "\$name"|test "\$PV"|ota "\$action"|restart "\$PV"|press start|press status)( |$)', line)
+                    self.assertRegex(line, r'lapinou_reply (get|set|secret "\$name"|test "\$PV"|ota "\$action"|restart "\$PV"|press start|press status|secret web_password first|secret web_password)( |$)', line)
         if shutil.which("shellcheck"):
             r = subprocess.run(["shellcheck", "-s", "sh", "-e", "SC1091,SC2034,SC2154", *map(str, paths),
                                 str(LAPINOU_SHARE / "web-lapinou.sh"), str(LAPINOU_SHARE / "webroot.sh")],

@@ -276,10 +276,13 @@ url_host() {
 # key_url_ok URL: false for an http:// URL to a host outside the local network (a key would go out
 # in clear); https://, and a URL on the local network, are fine.
 key_url_ok() {
-    case $1 in http://*) ;; *) return 0 ;; esac
     url_host "$1"
-    case $UA in *@*) return 1 ;; esac
-    lan_host "$UH"
+    case $UA in '' | *@*) return 1 ;; esac
+    case $1 in
+    https://*) return 0 ;;
+    http://*) lan_host "$UH" ;;
+    *) return 1 ;;
+    esac
 }
 
 # service_secret SECTION.KEY: the secret a destination's setting sends, in SS (empty: none).
@@ -517,8 +520,22 @@ cmd_set() {
 
 # --- secrets ---
 
+# set_web_password: the page's password ($value) in place: written for inetd.sh conf, which hashes it
+# and makes httpd's configuration again; then the end.
+set_web_password() {
+    printf '%s\n' "$value" | replace "$CONF/web_password" 600 || fail "Le mot de passe n'a pas pu être enregistré."
+    "$INETD" conf > /dev/null 2>&1
+    [ -s "$CONF/web_password.hash" ] && [ ! -e "$CONF/web_password" ] ||
+        fail "Le mot de passe n'a pas pu être mis en place."
+    ok
+}
+
+# cmd_secret NAME [first]: "first" only for the page's first password (web_password).
 cmd_secret() {
     name=$1
+    mode=${2:-}
+    case $mode in '' | first) ;; *) fail "Commande inconnue." ;; esac
+    [ -z "$mode" ] || [ "$name" = web_password ] || fail "Commande inconnue."
     read_stdin
     value=$IN
     case $name in
@@ -531,17 +548,22 @@ cmd_secret() {
         case $value in *[!!-~]* | *\"* | *\\* | *:*)
             fail "Le mot de passe ne peut avoir que des lettres, chiffres et signes, sans espace, guillemet (\"), barre oblique inverse (\\) ni deux-points (:)." ;;
         esac
-        # R46: the first password only after a press on the rabbit's head asked for by this
-        # browser (its token), which is used up.
-        if [ ! -s "$CONF/web_password.hash" ]; then
-            press_take "$token" ||
-                fail "Appuyez d'abord une fois sur la tête du lapin (bouton « Créer le mot de passe »)."
+        if [ "$mode" = first ]; then
+            # R46, the first password (the CGI saw no password, so no login checked this
+            # request): under the press lock, refused once a password exists, and only with a
+            # press on the rabbit's head asked for by this browser (its token), used up here.
+            (
+                flock -x 6 || fail "Le lapin n'a pas pu prendre son verrou."
+                [ -s "$CONF/web_password.hash" ] && fail "La page a déjà un mot de passe."
+                press_take_locked "$token" ||
+                    fail "Appuyez d'abord une fois sur la tête du lapin (bouton « Créer le mot de passe »)."
+                set_web_password
+            ) 6>> "$PRESS_USE_LOCK"
+            exit $?
         fi
-        printf '%s\n' "$value" | replace "$CONF/web_password" 600 || fail "Le mot de passe n'a pas pu être enregistré."
-        "$INETD" conf > /dev/null 2>&1
-        [ -s "$CONF/web_password.hash" ] && [ ! -e "$CONF/web_password" ] ||
-            fail "Le mot de passe n'a pas pu être mis en place."
-        ok
+        # A change: the CGI saw a password, so httpd checked the login. Never the first one here.
+        [ -s "$CONF/web_password.hash" ] || fail "La page n'a pas encore de mot de passe : créez-le depuis l'onglet Sécurité."
+        set_web_password
         ;;
     wifi_password)
         [ ${#value} -ge 8 ] && [ ${#value} -le 63 ] ||
@@ -588,28 +610,37 @@ is_token() {
 # TOKEN when given).
 marker_fresh() {
     [ -f "$1" ] || return 1
-    _mt="" _mtime=""
-    read -r _mt _mtime < "$1"
+    _mt="" _mtime="" _mrest=""
+    read -r _mt _mtime _mrest < "$1"
     case $_mtime in '' | *[!0-9]*) return 1 ;; esac
     [ -z "${3:-}" ] || [ "$_mt" = "$3" ] || return 1
     _age=$(($(date +%s) - _mtime))
     [ "$_age" -ge 0 ] && [ "$_age" -le "$2" ]
 }
 
-# press_take TOKEN: uses the press up, once: under the lock, the marker is moved away (one taker
-# only), then checked; a press that isn't TOKEN's goes back.
-press_take() {
+# press_color N: the nose's colour number N (0 to 5): its French name in PC_NAME, the LED's in PC_HEX.
+press_color() {
+    case $1 in
+    0) PC_NAME=rouge PC_HEX=FF0000 ;;
+    1) PC_NAME=bleu PC_HEX=0000FF ;;
+    2) PC_NAME=vert PC_HEX=00FF00 ;;
+    3) PC_NAME=jaune PC_HEX=FFFF00 ;;
+    4) PC_NAME=violet PC_HEX=FF00FF ;;
+    *) PC_NAME=blanc PC_HEX=FFFFFF ;;
+    esac
+}
+
+# press_take_locked TOKEN: uses the press up, once; the caller holds PRESS_USE_LOCK. The marker is
+# moved away (one taker only), then checked; a press that isn't TOKEN's goes back.
+press_take_locked() {
     is_token "$1" || return 1
-    (
-        flock -x 6 || exit 1
-        mv -f "$PRESS_OK" "$PRESS_OK.$$" 2> /dev/null || exit 1
-        if marker_fresh "$PRESS_OK.$$" "$PRESS_KEEP" "$1"; then
-            rm -f "$PRESS_OK.$$" "$PRESS_PENDING"
-            exit 0
-        fi
-        mv -f "$PRESS_OK.$$" "$PRESS_OK"
-        exit 1
-    ) 6>> "$PRESS_USE_LOCK"
+    mv -f "$PRESS_OK" "$PRESS_OK.$$" 2> /dev/null || return 1
+    if marker_fresh "$PRESS_OK.$$" "$PRESS_KEEP" "$1"; then
+        rm -f "$PRESS_OK.$$" "$PRESS_PENDING"
+        return 0
+    fi
+    mv -f "$PRESS_OK.$$" "$PRESS_OK"
+    return 1
 }
 
 # press_waiting: true while a watch holds the press lock.
@@ -626,15 +657,15 @@ led_call() {
         /com/mindscape/karotz/Led "com.mindscape.karotz.KarotzInterface.$_m" string:webroot:press "$@" > /dev/null 2>&1
 }
 
-# press_watch TOKEN: the LED blinks while a click from the head's button is waited for, PRESS_WAIT s
-# at most; a click writes PRESS_OK for TOKEN. Then the LED goes back to the web API's colour. The
-# click is button-daemon's signal (the one the button watcher follows): the match names its bus
-# name and path, so a signal sent by anyone else on the bus doesn't count (karotz.conf lets only
-# root own a com.mindscape.karotz name).
+# press_watch TOKEN HEX: the LED blinks in HEX while a click from the head's button is waited for,
+# PRESS_WAIT s at most; a click writes PRESS_OK for TOKEN. Then the LED goes back to the web API's
+# colour. The click is button-daemon's signal (the one the button watcher follows): the match names
+# its bus name and path, so a signal sent by anyone else on the bus doesn't count (karotz.conf lets
+# only root own a com.mindscape.karotz name).
 press_watch() {
     exec 7>> "$PRESS_LOCK"
     flock -n 7 || exit 0
-    led_call pulse string:FF8A2A string:000000 int32:400 int32:-1
+    led_call pulse "string:$2" string:000000 int32:400 int32:-1
     _out=$PRESS_LOCK.out
     rm -f "$_out"
     timeout "$PRESS_WAIT" dbus-monitor --system \
@@ -670,27 +701,38 @@ cmd_press() {
             fi
             _tok=$(od -An -N16 -tx1 /dev/urandom 2> /dev/null | tr -cd 0-9a-f)
             is_token "$_tok" || return 1
+            # The nose blinks in a colour drawn at random, which only this browser is told: a
+            # short code, so nobody presses the head for someone else's wait.
+            _n=$(od -An -N1 -tu1 /dev/urandom 2> /dev/null | tr -cd 0-9)
+            press_color "$((${_n:-0} % 6))"
             rm -f "$PRESS_OK"
-            (umask 077 && printf '%s %s\n' "$_tok" "$(date +%s)" > "$PRESS_PENDING.new") &&
+            (umask 077 && printf '%s %s %s\n' "$_tok" "$(date +%s)" "$PC_NAME" > "$PRESS_PENDING.new") &&
                 mv -f "$PRESS_PENDING.new" "$PRESS_PENDING" || return 1
-            (press_watch "$_tok") < /dev/null > /dev/null 2>&1 6>&- &
-            echo "$_tok"
+            (press_watch "$_tok" "$PC_HEX") < /dev/null > /dev/null 2>&1 6>&- &
+            echo "$_tok $PC_NAME"
         }
-        tok=$( (flock -x 6 || exit 1; start_press) 6>> "$PRESS_USE_LOCK")
-        [ "$tok" = busy ] && fail "Une attente est en cours (une autre page attend l'appui) : réessayez dans une minute."
+        out=$( (flock -x 6 || exit 1; start_press) 6>> "$PRESS_USE_LOCK")
+        [ "$out" = busy ] &&
+            fail "Une autre page attend déjà un appui : n'appuyez pas sur la tête du lapin, et réessayez dans une minute."
+        tok=${out%% *}
         is_token "$tok" || fail "L'attente de l'appui n'a pas pu commencer."
-        ok "\"wait\":$PRESS_WAIT,\"token\":\"$tok\""
+        ok "\"wait\":$PRESS_WAIT,\"token\":\"$tok\",\"color\":\"${out#* }\""
         ;;
     status)
         read_stdin
         tok=$IN
         p=false
         w=false
+        c=""
         if is_token "$tok"; then
             marker_fresh "$PRESS_OK" "$PRESS_KEEP" "$tok" && p=true
-            press_waiting && marker_fresh "$PRESS_PENDING" "$PRESS_WAIT" "$tok" && w=true
+            if marker_fresh "$PRESS_PENDING" "$PRESS_WAIT" "$tok"; then
+                press_waiting && w=true
+                # The colour, for this browser only.
+                case $_mrest in rouge | bleu | vert | jaune | violet | blanc) c=",\"color\":\"$_mrest\"" ;; esac
+            fi
         fi
-        ok "\"pressed\":$p,\"waiting\":$w"
+        ok "\"pressed\":$p,\"waiting\":$w$c"
         ;;
     *) fail "Commande inconnue." ;;
     esac
@@ -854,7 +896,7 @@ cmd_test() {
 case ${1:-} in
 get) cmd_get ;;
 set) cmd_set ;;
-secret) cmd_secret "${2:-}" ;;
+secret) cmd_secret "${2:-}" "${3:-}" ;;
 ota) cmd_ota "${2:-}" ;;
 restart) cmd_restart "${2:-}" ;;
 test) cmd_test "${2:-}" ;;

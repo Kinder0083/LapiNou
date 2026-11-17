@@ -431,7 +431,7 @@
     box.classList.add("waiting");
     try {
       for (let left = wait; left > 0; left--) {
-        say(result, t("securite.press", { s: left }), true);
+        say(result, t("securite.press", { s: left, c: start.color || "" }), true);
         await new Promise((r) => setTimeout(r, 1000));
         const st = await call("lapinou/press", { action: "status", token: start.token });
         if (st.pressed) return start.token;
