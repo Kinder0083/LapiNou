@@ -4,7 +4,7 @@
 `/usr/karotz/bin/lapinou-ota` met le lapin à jour sans clé USB, avec une version publiée et signée. Le format des versions et les adresses du serveur sont ceux de `docs/lapinou/ota.md` (branche du serveur).
 
 ```
-lapinou-ota check      # {"installed":"v1.0.0","available":"v1.1.0"}
+lapinou-ota check      # {"installed":"v0.1.0","available":"v0.2.0"}
 lapinou-ota install    # télécharge, vérifie, écrit, redémarre
 lapinou-ota install --allow-downgrade   # accepte une version plus ancienne que celle installée
 ```
@@ -18,7 +18,7 @@ garde la réponse dans `/usr/ota/check.json` et `/usr/ota/available` pour la pag
 
 Une version publiée s'appelle `vX.Y.Z` : c'est l'étiquette de la Release et le champ `version` du manifeste (`tools/sign-ota.py` exige `--version vX.Y.Z`, le lapin refuse un manifeste dont la version n'a pas cette forme). `/usr/etc/conf/sys_version` contient cette étiquette, quelle que soit l'installation (clé USB, migration depuis FROS, `lapinou-ota`) ; une construction qui n'est pas exactement une étiquette (`install.conf` : `RELEASE_VERSION=0.0.0-<commit>`) écrit `0.0.0-<commit>`, plus ancienne que toute version publiée. `BUILD_VERSION` (le `git describe`) et `lapinlibre_build_id` (l'empreinte des images) restent à part.
 
-`lapinou-ota install` compare les nombres (`v1.10.0` > `v1.9.0`) : même version, ou même construction (l'empreinte calculée depuis les SHA-256 du manifeste égale `lapinlibre_build_id`) : rien à faire ; version plus ancienne : refus sans `--allow-downgrade`. Un `sys_version` d'avant R44 (une empreinte de commit) compte comme 0.0.0.
+`lapinou-ota install` compare les nombres (`v0.10.0` > `v0.9.0`) : même version, ou même construction (l'empreinte calculée depuis les SHA-256 du manifeste égale `lapinlibre_build_id`) : rien à faire ; version plus ancienne : refus sans `--allow-downgrade`. Un `sys_version` d'avant R44 (une empreinte de commit) compte comme 0.0.0.
 
 ## D'où vient la mise à jour
 
@@ -26,7 +26,7 @@ Réglages de `/usr/etc/conf/lapinou.conf` :
 
 | Réglage | Rôle |
 |---|---|
-| `[ota] url` | le relais d'un serveur LapiNou. Par défaut, quand `[server] enabled=1` : `http://<[server] host>:8080/ota/` |
+| `[ota] url` | le relais d'un serveur LapiNou. Par défaut, quand `[server] enabled=1` : `http://<[server] host>:<[server] port>/ota/`, le port valant `8080` sauf si `[server] port` en donne un autre |
 | `[ota] repo` | sans serveur : le dépôt GitHub dont on prend la dernière Release (`Kinder0083/LapiNou` par défaut) |
 | `ota_token` (dans `lapinou.secrets`) | pour un dépôt privé : jeton à grain fin, lecture seule de « Contents » |
 

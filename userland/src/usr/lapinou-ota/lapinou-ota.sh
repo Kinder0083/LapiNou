@@ -13,7 +13,7 @@
 # manifest's SHA-256s give equals lapinlibre_build_id), is not installed again.
 #
 # Where an update comes from (lapinou.conf):
-#   [ota] url, else http://<[server] host>:8080/ota/ when [server] enabled=1: a LapiNou server's
+#   [ota] url, else http://<[server] host>:<[server] port, 8080>/ota/ when [server] enabled=1: a LapiNou server's
 #     relay. The rabbit reads <url>manifest.json and <url>manifest.json.sig, checks the signature,
 #     then reads each file from <url><version>/<name>, <version> being the manifest's.
 #   Otherwise GitHub: the latest release of [ota] repo (Kinder0083/LapiNou by default), HTTPS only.
@@ -275,11 +275,16 @@ gh_get() { # url file accept max
 
 # SOURCE=server with BASE (ending in /), or SOURCE=github with REPO and TOKEN.
 pick_source() {
-    local url host
+    local url host port
     url=$(lapinou_get ota url)
     if [ -z "${url}" ] && [ "$(lapinou_get server enabled)" = 1 ]; then
         host=$(lapinou_get server host)
-        [ -n "${host}" ] && url="http://${host}:8080/ota/"
+        port=$(lapinou_get server port 8080)
+        case "${port}" in
+        ''|*[!0-9]*) die "[server] port must be a number (8080: the LapiNou server's page and relay)" ;;
+        esac
+        [ "${port}" -ge 1 ] && [ "${port}" -le 65535 ] || die "[server] port must be from 1 to 65535"
+        [ -n "${host}" ] && url="http://${host}:${port}/ota/"
     fi
     if [ -n "${url}" ]; then
         case "${url}" in

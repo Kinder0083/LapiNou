@@ -15,11 +15,15 @@ file stays, and nobody answers on it).
      the outage is replaced, which ends it).
   3. Killed once more and not started again: after the retries (20 s) the ASR session ends with an
      error event, the recording ends with a recordFinished error, and the daemons still answer.
+  4. An ASR session asked for while lapinou-mic is still down (its socket refuses): voice-daemon tries
+     its socket again for a few seconds, the call still pending, instead of failing at once; a new
+     lapinou-mic comes meanwhile, and the session starts (the call answers true) and gets its audio.
 """
 
 import os
 import re
 import signal
+import threading
 import time
 from pathlib import Path
 
@@ -112,6 +116,25 @@ def drive(d, bus):
         record.append(f"the recording ends: {wait_until(lambda: ended('recordfinished'), 60)}")
         record.append(call(bus, VOICE_SERVICE, VOICE_PATH, "asr_stop", "string:s1", "int32:0"))
         record.append(m("stop", "string:r1", "int32:0"))
+
+        record.append("== 4. an ASR session asked for while lapinou-mic is down")
+        answer = []
+        asking = threading.Thread(target=lambda: answer.append(
+            call(bus, VOICE_SERVICE, VOICE_PATH, "asr_start_string", "string:s2", "string:oui | non",
+                 "string:fr-FR", "int32:0")))
+        asking.start()
+        time.sleep(0.5)  # voice-daemon has found the socket refusing, and waits
+        record.append(f"still pending: {asking.is_alive()}")
+        third = work / "mic3"
+        third.mkdir()
+        d3 = Daemon("lapinou-mic", d.sysroot, d.build, third, ["audio"], bus, FAKE_IOCTL_TYPES, (), setup)
+        rig.extra.append(d3)
+        asr2 = rig.saved_size()
+        record.append(f"fake audio server ready: {rig.start_microphone(d3)}")
+        asking.join(60)
+        record.extend(answer)
+        record.append(f"the session gets its audio: {wait_until(lambda: rig.saved_size() >= asr2 + 8192, 60)}")
+        record.append(call(bus, VOICE_SERVICE, VOICE_PATH, "asr_stop", "string:s2", "int32:0"))
         record.append("== warnings the other daemons logged beyond the expected ones")
         record.extend(rig.warnings())
     finally:

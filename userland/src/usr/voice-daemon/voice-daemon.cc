@@ -104,6 +104,7 @@ typedef struct {
     int asr_socket;    /* connection to the server, 0 when no session */
     int audio_fd;      /* /dev/audio, or lapinou-mic's socket, 0 when closed */
     int mic_retries;   /* reconnections to lapinou-mic tried since it was lost */
+    int mic_start_tries; /* connections to lapinou-mic tried as the session starts */
     int audio_shared;  /* audio_fd is lapinou-mic's socket (the same mu-law 16 kHz) */
     char *asr_server;  /* host of the server in use */
     int asr_port;
@@ -748,7 +749,21 @@ static void asr_start(VoiceObject *self, const char *uid, const char *grammar, c
     self->asr_lang = g_strdup(lang);
     self->asr_file = g_strdup(filename);
     self->connect_attempt = 0;
+    self->mic_start_tries = 0;
     asr_connect_next(self);
+}
+
+/* lapinou-mic's socket refused the session's start (lapinou-mic restarting): asr_connected again,
+ * the asr_start_* call still pending; the timer is connect_timeout, so asr_cancel removes it. */
+#define LAPINOU_MIC_START_TRIES 25 /* 5 s, LAPINOU_MIC_RETRY_MS apart */
+static gboolean asr_mic_start_retry(gpointer data)
+{
+    VoiceObject *self = (VoiceObject *)data;
+
+    self->connect_timeout = 0;
+    self->mic_start_tries++;
+    asr_connected(self, 0);
+    return FALSE;
 }
 
 /* The session's connection is made (ret 0) or no server could be reached
@@ -766,6 +781,12 @@ static void asr_connected(VoiceObject *self, int ret)
     /* With lapinou-mic running, the microphone comes from its socket, already mu-law 16 kHz. */
     self->audio_fd = lapinou_mic_connect();
     self->audio_shared = self->audio_fd != LAPINOU_MIC_ABSENT;
+    if (self->audio_fd == LAPINOU_MIC_REFUSED && self->mic_start_tries < LAPINOU_MIC_START_TRIES) {
+        /* lapinou-mic is there but doesn't answer yet (restarting): tried again shortly. */
+        self->audio_fd = 0;
+        self->connect_timeout = g_timeout_add(LAPINOU_MIC_RETRY_MS, asr_mic_start_retry, self);
+        return;
+    }
     if (self->audio_fd == LAPINOU_MIC_REFUSED) {
         /* lapinou-mic is there but doesn't answer: its /dev/audio isn't ours to take. */
         g_log(NULL, G_LOG_LEVEL_DEBUG, "asr server cant reach lapinou-mic");

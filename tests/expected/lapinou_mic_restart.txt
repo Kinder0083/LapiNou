@@ -21,6 +21,12 @@ the ASR session ends with an error event: True
 the recording ends: True
 asr_stop('string:s1', 'int32:0'): boolean true
 stop('string:r1', 'int32:0'): boolean true
+== 4. an ASR session asked for while lapinou-mic is down
+still pending: True
+fake audio server ready: True
+asr_start_string('string:s2', 'string:oui | non', 'string:fr-FR', 'int32:0'): boolean true
+the session gets its audio: True
+asr_stop('string:s2', 'int32:0'): boolean true
 == warnings the other daemons logged beyond the expected ones
 voice-daemon: []
 multimedia-daemon: []

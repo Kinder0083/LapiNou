@@ -474,11 +474,20 @@ class OtaTest(unittest.TestCase):
         self.assertNotIn(f"/ota/{NEW}/lapinou-key-{NEW}.zip", [path for path, _ in srv.log])
 
     def test_server_from_the_settings(self):
-        # No [ota] url: the LapiNou server's relay, http://<[server] host>:8080/ota/.
+        # No [ota] url: the LapiNou server's relay, http://<[server] host>:<[server] port>/ota/,
+        # the port 8080 unless lapinou.conf says another.
         r = self.rabbit("server-host", conf="[server]\nenabled=1\nhost=127.0.0.1\n")
         p = r.run("check")
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("http://127.0.0.1:8080/ota/manifest.json", (r.sb / "curl.log").read_text())
+        srv = self.ota_server()
+        r = self.rabbit("server-port", conf=f"[server]\nenabled=1\nhost=127.0.0.1\nport={srv.port}\n")
+        self.assert_installed(r, r.run("install"))
+        self.assertIn("/ota/manifest.json", [path for path, _ in srv.log])
+        r = self.rabbit("server-bad-port", conf="[server]\nenabled=1\nhost=127.0.0.1\nport=80a\n")
+        p = r.run("check")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("[server] port must be a number", p.stdout + p.stderr)
 
     def test_files_come_from_the_manifests_version(self):
         # The files are read from /ota/<the manifest's version>/, never the short form /ota/<name>
