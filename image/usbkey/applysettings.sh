@@ -176,8 +176,24 @@ fi
 # the rabbit itself makes that check fail at once, server or not. LapiNou's updates are
 # lapinou-ota's (signed, from the LapiNou server or GitHub).
 set_ini "${CONF}/karotz.conf" karotz url_update "http://127.0.0.1:1"
-# The controller's platform account, whatever the app server: any values, but both set.
-[ -s "${CONF}/account.conf" ] || printf '[account]\nid=lapinlibre\npwd=lapinlibre\n' > "${CONF}/account.conf"
+# The controller's platform account, whatever the app server: both set. R47: the login is the
+# rabbit's one id, its uuid (/usr/karotz/uuid.conf, as lapinou-mic and lapinou-mqtt use it), so the
+# LapiNou server sees one rabbit on its platform (9123) and its microphone (9300). A rabbit with no
+# uuid yet gets one here (S40 would make it only at the next boot). The password is kept.
+UUID_FILE=/usr/karotz/uuid.conf
+if [ ! -s "${UUID_FILE}" ] && [ -d "${UUID_FILE%/*}" ] && [ -r /proc/sys/kernel/random/uuid ]; then
+    cat /proc/sys/kernel/random/uuid > "${UUID_FILE}" || ERROR "can't write ${UUID_FILE}"
+fi
+uuid=$(tr -d '[:space:]' < "${UUID_FILE}" 2> /dev/null)
+login=$(sed -n 's/^id=//p' "${CONF}/account.conf" 2> /dev/null | head -n 1)
+secret=$(sed -n 's/^pwd=//p' "${CONF}/account.conf" 2> /dev/null | head -n 1)
+if [ -n "${uuid}" ] && [ "${login}" != "${uuid}" ]; then
+    printf '[account]\nid=%s\npwd=%s\n' "${uuid}" "${secret:-lapinlibre}" > "${CONF}/account.conf.new" &&
+        mv -f "${CONF}/account.conf.new" "${CONF}/account.conf" || ERROR "can't write ${CONF}/account.conf"
+    LOG "Settings: platform login ${uuid} (the rabbit's uuid)"
+elif [ -z "${uuid}" ] && [ ! -s "${CONF}/account.conf" ]; then
+    printf '[account]\nid=lapinlibre\npwd=lapinlibre\n' > "${CONF}/account.conf"
+fi
 TTS_URL=${TTS_SERVER:-${SERVER:+http://${SERVER}:8081}}
 if [ -n "${TTS_URL}" ]; then
     # voice-daemon looks a language's server up by its first two letters.

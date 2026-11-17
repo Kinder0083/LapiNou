@@ -10,6 +10,39 @@ tools/lapinou-migrate/migrate-from-fros.sh --rabbit 192.168.1.103 --key out/usbk
     --ssh-key ~/.ssh/id_ed25519 --backup sauvegarde
 ```
 
+## Quelle clé donner à `--key`
+
+`--key` est un **dossier** qui contient les fichiers d'une clé USB LapiNou. Trois sources
+conviennent :
+
+1. **La clé de la Release** : téléchargez `lapinou-key-vX.Y.Z.zip` sur la page Releases du dépôt
+   (par exemple `v0.1.0`) et décompressez-le dans un dossier vide (`--key lapinou-key-v0.1.0`).
+   Son `lapinlibre.txt` est vide : remplissez au besoin `WEB_PASSWORD`, `LAPINOU_SERVER`,
+   `MQTT_HOST`… (pas le Wi-Fi : voir plus bas).
+2. **La clé faite par le serveur LapiNou** (page de réglages, « Clé USB ») : décompressez
+   l'archive téléchargée dans un dossier vide. Elle contient déjà l'adresse du serveur, MQTT et
+   le fuseau horaire, et aussi le Wi-Fi (`WIFI_SSID`, `WIFI_PASSWORD`, et `IP`… pour une adresse
+   fixe) : ces lignes-là sont **ignorées** par la migration (dit dans le journal : « … ignored:
+   the migration keeps the rabbit's Wi-Fi and address »), qui garde le réseau du lapin.
+3. **Une clé construite** : `out/usbkey` (voir `docs/build.md`).
+
+## Créer la clé SSH
+
+LapinLibre n'accepte pas de connexion SSH par mot de passe : il faut une paire de clés. Si vous
+n'en avez pas, créez-en une sur le PC (Linux, Git Bash ou PowerShell sous Windows, même commande) :
+
+```
+ssh-keygen -t ed25519 -f ~/.ssh/lapinou -C lapinou
+```
+
+(une phrase de passe est conseillée ; Entrée deux fois pour aucune). Cela donne `~/.ssh/lapinou`
+(la clé **privée**, qui ne quitte jamais le PC) et `~/.ssh/lapinou.pub` (la clé publique, une
+ligne `ssh-ed25519 AAAA… lapinou`). Donnez ensuite `--ssh-key ~/.ssh/lapinou` : le script prend
+`~/.ssh/lapinou.pub` comme `--ssh-pubkey` et se reconnecte avec la clé privée après le
+redémarrage. Plus tard : `ssh -i ~/.ssh/lapinou karotz@<lapin>`.
+
+## Le PC
+
 Il tourne sur un PC du même réseau (Linux, ou Git Bash sous Windows) avec `ssh`, `md5sum`, `gzip`, `sed` et `curl`. La passerelle et le DNS du PC (secours de l'adresse fixe, voir `--dhcp`) sont lus par `ip route` et `/etc/resolv.conf` (ou `resolvectl`) sous Linux, par PowerShell (`Get-NetRoute`, `Get-DnsClientServerAddress`) sous Windows ; les variables `LAPINOU_PC_GATEWAY` et `LAPINOU_PC_DNS`, si elles sont définies (même vides), les remplacent. FROS accepte `ssh karotz@<lapin>` (uid 0) avec un mot de passe vide ; son vieux Dropbear demande `-o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -o MACs=+hmac-sha1`, que le script passe lui-même.
 
 ## Options
@@ -25,13 +58,13 @@ Il tourne sur un PC du même réseau (Linux, ou Git Bash sous Windows) avec `ssh
 | `--dry-run` | toutes les vérifications, sur le PC et sur le lapin, puis arrêt. La mémoire flash n'est pas touchée : seuls les petits fichiers vont dans `/dev/shm` (mémoire vive du lapin), effacés à la fin ; `usr.tar.gz` n'est pas envoyé. |
 | `--no-wait` | après le redémarrage, ne pas attendre le SSH et la page web de LapinLibre |
 
-Les réglages appliqués sont ceux du `lapinlibre.txt` de la clé (valeurs vides : on garde ceux du lapin), puis la clé SSH donnée. Le Wi-Fi de FROS (`/usr/etc/conf/wpa.conf`, le même `wpa_supplicant -Dwext`) est gardé tel quel : un `lapinlibre.txt` qui donne `WIFI_SSID`, `WIFI_PASSWORD` ou `IP` est refusé (code 2), car `applysettings.sh` remplacerait alors `wpa.conf` et `network.conf`. Le DNS lu dans `/etc/resolv.conf` n'est retenu que s'il est une adresse IPv4 (sinon la passerelle), parce que `network.conf` est lu par le shell en root.
+Les réglages appliqués sont ceux du `lapinlibre.txt` de la clé (valeurs vides : on garde ceux du lapin), puis la clé SSH donnée. Le Wi-Fi de FROS (`/usr/etc/conf/wpa.conf`, le même `wpa_supplicant -Dwext`) est gardé tel quel : les lignes `WIFI_SSID`, `WIFI_PASSWORD`, `IP`, `NETMASK`, `GATEWAY` et `DNS` du `lapinlibre.txt` (celles d'une clé faite par le serveur, par exemple) sont retirées de la copie envoyée au lapin et le journal le dit, car `applysettings.sh` remplacerait sinon `wpa.conf` et `network.conf` ; le `lapinlibre.txt` du PC n'est pas modifié. Le login de la plateforme (`account.conf`) devient l'identifiant du lapin (`/usr/karotz/uuid.conf`, R47), comme pour le micro et MQTT. Le DNS lu dans `/etc/resolv.conf` n'est retenu que s'il est une adresse IPv4 (sinon la passerelle), parce que `network.conf` est lu par le shell en root.
 
 ## Déroulement
 
 1. **Sur le PC** : présence des fichiers, MD5 de `zImage`, `rootfs.img.gz` et `usr.tar.gz` contre `install.conf`, tailles (noyau ≤ 3 Mio, système ≤ 5 Mio), décompression, système ≤ 5 Mio une fois décompressé, présence d'une clé SSH.
 2. **Envoi** dans `/dev/shm/lapinou-migrate` (29 Mo de mémoire vive) : `on-rabbit.sh`, `install-lib.sh` et `applysettings.sh` de la clé (leur `/mnt/usbkey` devient ce dossier), `lapinlibre.txt`, `install.conf`, `build_id`, `zImage`, `rootfs.img.gz`.
-3. **Vérifications sur le lapin** (`on-rabbit.sh check`), rien n'est écrit : pas déjà sous LapinLibre ; outils `/sbin/nandwrite`, `/sbin/nanddump`, `flash_erase(all)` ; `/` est le disque en mémoire (`root=/dev/ram`) et `/usr` le yaffs de mtd6 ; noms des partitions (`mtd1` « Kernel », `mtd2` « ramdisk », `mtd6` « yaffs ») ; MD5 des fichiers reçus ; place dans les partitions et dans le disque en mémoire ; essai de relecture (un bloc de mtd1 par `nanddump -o -b`) ; Wi-Fi présent ; adresse réseau prévue (passerelle et DNS qui répondent, pour une adresse fixe) ; `applysettings.sh --check` ; réglages Wi-Fi/adresse absents de `lapinlibre.txt` ; place libre dans `/usr`. En mode `check`, il affiche aussi `ls /usr/etc/conf`, compare mtd1 et mtd2 entières avec la sauvegarde (`--backup`) et liste les processus que l'installation arrêtera. `--dry-run` s'arrête ici.
+3. **Vérifications sur le lapin** (`on-rabbit.sh check`), rien n'est écrit : pas déjà sous LapinLibre ; outils `/sbin/nandwrite`, `/sbin/nanddump`, `flash_erase(all)` ; `/` est le disque en mémoire (`root=/dev/ram`) et `/usr` le yaffs de mtd6 ; noms des partitions (`mtd1` « Kernel », `mtd2` « ramdisk », `mtd6` « yaffs ») ; MD5 des fichiers reçus ; place dans les partitions et dans le disque en mémoire ; essai de relecture (un bloc de mtd1 par `nanddump -o -b`) ; Wi-Fi présent ; adresse réseau prévue (passerelle et DNS qui répondent, pour une adresse fixe) ; `applysettings.sh --check` ; réglages Wi-Fi/adresse retirés de la copie de `lapinlibre.txt` (et signalés) ; place libre dans `/usr`. En mode `check`, il affiche aussi `ls /usr/etc/conf`, compare mtd1 et mtd2 entières avec la sauvegarde (`--backup`) et liste les processus que l'installation arrêtera. `--dry-run` s'arrête ici.
 4. **`usr.tar.gz`** (17 Mo, trop gros pour la mémoire vive) est envoyé en flux par `ssh` dans `/usr/.lapinou-migrate/`, puis `on-rabbit.sh install` refait toutes les vérifications, avec son MD5 et sa décompression, **avant d'effacer quoi que ce soit**.
 5. **Arrêt de FROS** : tous les processus sont gelés (`SIGSTOP`) puis tués (`SIGKILL`), sauf `init`, `syslogd`, `klogd`, `inetd`, `dropbear`, `wpa_supplicant`, `udhcpc`, `power`, `getty`, la session SSH en cours et un éventuel détenteur de `/dev/watchdog` (l'arrêter laisserait le chien de garde redémarrer le lapin). Ainsi le contrôleur, `immortaldog`, `crond`, OpenKarotz… ne peuvent plus redémarrer le lapin entre l'effacement de mtd1 et la fin de la relecture de mtd2. Le journal dit ce qui tourne encore.
 6. **Écriture**, comme l'`autorun` de la clé : `zImage` dans mtd1, `rootfs.img.gz` dans mtd2 (`flash_eraseall` puis `nandwrite -pm`), chacune relue par `nanddump -o -b` et comparée (MD5). FROS tourne depuis la mémoire vive : réécrire mtd1 et mtd2 ne le gêne pas. Puis `/usr` : `karotz.conf`, `voice.conf`, `wpa.conf` et `network.conf` mis de côté, `/usr` vidé sauf `/usr/etc/conf`, `/usr/karotz/apps`, `/usr/karotz/messages`, `/usr/karotz/uuid.conf`, `lost+found`, `usr.tar.gz` décompressé, réglages remis, `network.conf` écrit s'il n'existait pas, `applysettings.sh`, `lapinlibre_build_id`, `/usr/etc/inittab` retiré.
@@ -78,4 +111,4 @@ $S 'nanddump -o -b /dev/mtd2 | md5sum'    # 0b2bd27d3d305a45c82f203b58282595 (da
 
 - Le SSH de LapinLibre n'accepte que la clé donnée : `ssh karotz@192.168.1.103` (Dropbear récent, plus besoin des options `ssh-rsa`/`hmac-sha1`). Sa clé d'hôte n'est plus celle de FROS : retirer l'ancienne ligne de `~/.ssh/known_hosts` (`ssh-keygen -R 192.168.1.103`).
 - Sans `WEB_PASSWORD` dans `lapinlibre.txt`, la page web est ouverte au réseau local sans mot de passe.
-- Les mises à jour suivantes se font par la clé USB ou les moyens de LapinLibre ; le script refuse un lapin déjà sous LapinLibre.
+- Les mises à jour suivantes se font **sans clé, par OTA** : l'onglet « Mises à jour » de la page web du lapin, la vérification quotidienne, ou le relais du serveur LapiNou (`docs/lapinou/ota-lapin.md`) ; une version n'est installée que si sa signature est vérifiée par la clé publique **embarquée** dans le lapin. Un lapin installé avant la vraie clé publique (fichier provisoire `PLACEHOLDER`) refuse donc toute mise à jour OTA jusqu'à une réinstallation (clé USB) avec une version signée. La clé USB reste possible à tout moment ; ce script, lui, refuse un lapin déjà sous LapinLibre.

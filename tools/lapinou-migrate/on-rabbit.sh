@@ -206,6 +206,30 @@ setting() { # NAME
     printf '%s' "${v}"
 }
 
+# The settings that would replace the rabbit's network, which the migration keeps.
+NETWORK_SETTINGS="WIFI_SSID WIFI_PASSWORD IP NETMASK GATEWAY DNS"
+
+# lapinlibre.txt (standard input) without its lines for NETWORK_SETTINGS, read as applysettings.sh
+# reads them (CR, byte-order mark, spaces); every other line is kept as it is.
+without_network_settings() {
+    local line orig key bom n=0
+    bom=$(printf '\357\273\277')
+    while IFS= read -r orig || [ -n "${orig}" ]; do
+        n=$((n + 1))
+        line=${orig%$'\r'}
+        [ ${n} -eq 1 ] && line=${line#${bom}}
+        line="${line#"${line%%[![:space:]]*}"}"
+        case "${line}" in
+        *=*)
+            key=${line%%=*}
+            key="${key%"${key##*[![:space:]]}"}"
+            case " ${NETWORK_SETTINGS} " in *" ${key} "*) continue ;; esac
+            ;;
+        esac
+        printf '%s\n' "${orig}"
+    done
+}
+
 # The processes, kernel threads (an empty command line) left out: "pid name ppid" per line. Run it
 # in this shell, not in $( ): the /proc list is taken before it starts any command of its own.
 # (/proc's files all have size 0, so their content is what tells.)
@@ -346,12 +370,18 @@ check_all() { # [usr]
     # The Wi-Fi network the rabbit uses now: LapinLibre starts the same wpa_supplicant with it.
     [ -s "${CONF}/wpa.conf" ] && grep -q 'network={' "${CONF}/wpa.conf" && grep -q 'ssid=' "${CONF}/wpa.conf" ||
         ERROR "${CONF}/wpa.conf has no Wi-Fi network"
-    # The migration keeps that network: settings that would replace it (applysettings.sh rewrites
-    # wpa.conf and network.conf when WIFI_SSID is set) are refused.
-    for f in WIFI_SSID WIFI_PASSWORD IP; do
-        [ -z "$(setting "${f}")" ] ||
-            ERROR "lapinlibre.txt sets ${f}: the migration keeps the rabbit's Wi-Fi and address; leave it empty"
+    # The migration keeps that network: the lines that would replace it (applysettings.sh rewrites
+    # wpa.conf and network.conf when WIFI_SSID is set), which a key made by the LapiNou server has,
+    # are taken out of the staged lapinlibre.txt (the PC's copy is untouched), and said.
+    ignored=""
+    for f in ${NETWORK_SETTINGS}; do
+        [ -z "$(setting "${f}")" ] || ignored="${ignored} ${f}"
     done
+    if [ -n "${ignored}" ]; then
+        without_network_settings < "${STAGE}/lapinlibre.txt" > "${STAGE}/lapinlibre.txt.new" &&
+            mv -f "${STAGE}/lapinlibre.txt.new" "${STAGE}/lapinlibre.txt" || ERROR "can't rewrite the staged lapinlibre.txt"
+        LOG "Settings:${ignored} ignored: the migration keeps the rabbit's Wi-Fi and address"
+    fi
     LOG "Settings files: $(ls "${CONF}" | tr '\n' ' ')"
     plan_network
     case "${NET_PLAN}" in

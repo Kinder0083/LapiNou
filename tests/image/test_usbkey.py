@@ -45,6 +45,9 @@ def stub(path: Path, body: str):
     path.chmod(0o755)
 
 
+# R47: the controller's account once installed: its login is the simulated rabbit's uuid.conf.
+ACCOUNT = "[account]\nid=0e1f2a3b-4c5d-6e7f-8091-a2b3c4d5e6f7\npwd=lapinlibre\n"
+
 class Rabbit:
     """A sandboxed Karotz with the USB key at <sb>/mnt/usbkey."""
 
@@ -297,7 +300,8 @@ class UsbKeyTest(unittest.TestCase):
         for line in ("en=http://192.168.1.10:8081/en", "fr=http://192.168.1.10:8081/fr", "nbserver=1", "server0=10.0.0.5",
                      "port=9000"):
             self.assertIn(line + "\n", voice)
-        self.assertEqual((conf / "account.conf").read_text(), "[account]\nid=lapinlibre\npwd=lapinlibre\n")
+        # R47: the platform login is the rabbit's uuid (uuid.conf), as for lapinou-mic and MQTT.
+        self.assertEqual((conf / "account.conf").read_text(), ACCOUNT)
         self.assertEqual((conf / "hostname").read_text(), "kitchen\n")
 
     def test_no_server_keeps_the_rabbits(self):
@@ -316,8 +320,8 @@ class UsbKeyTest(unittest.TestCase):
         self.assertIn("server0=127.0.0.1\n", voice)
         self.assertNotIn("188.165", voice)
         # The controller's account is written without a server too (an older install's voos.conf
-        # isn't read).
-        self.assertEqual((conf / "account.conf").read_text(), "[account]\nid=lapinlibre\npwd=lapinlibre\n")
+        # isn't read), its login the rabbit's uuid (R47).
+        self.assertEqual((conf / "account.conf").read_text(), ACCOUNT)
 
     def test_bad_settings_flash_nothing(self):
         # A bad value stops the install before anything is erased, and says why.

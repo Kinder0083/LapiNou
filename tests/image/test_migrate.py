@@ -271,6 +271,8 @@ class MigrateTest(unittest.TestCase):
         self.assertEqual((sb / "usr/karotz/apps/myapp").read_text(), "kept\n")
         self.assertEqual((sb / "usr/karotz/messages/m1").read_text(), "kept\n")
         self.assertEqual((sb / "usr/karotz/uuid.conf").read_text(), "0e1f2a3b-4c5d-6e7f-8091-a2b3c4d5e6f7\n")
+        # R47: one id for the rabbit, its uuid, as the platform login too.
+        self.assertEqual(r.conf("account.conf"), "[account]\nid=0e1f2a3b-4c5d-6e7f-8091-a2b3c4d5e6f7\npwd=lapinlibre\n")
         self.assertEqual(r.conf("authorized_keys"), TEST_KEY + "\n")
         self.assertIn("reboot -f", r.actions())
 
@@ -481,16 +483,22 @@ class MigrateTest(unittest.TestCase):
             f.write(extra)
         return key
 
-    def test_wifi_settings_are_refused(self):
-        # applysettings.sh would replace the rabbit's wpa.conf and network.conf: refused up front.
-        for name, extra in (("ssid", 'WIFI_SSID = "autre"\nWIFI_PASSWORD=motdepasse2\n'), ("ip", "IP=192.168.1.50\n")):
+    def test_wifi_settings_are_ignored(self):
+        # A key made by the LapiNou server has WIFI_* lines (and maybe IP, NETMASK, GATEWAY, DNS):
+        # applysettings.sh would replace the rabbit's wpa.conf and network.conf, so the migration
+        # takes them out of its staged copy, says so, and keeps the rabbit's network; the other
+        # settings still apply.
+        for name, extra in (("ssid", 'WIFI_SSID = "autre"\r\nWIFI_PASSWORD=motdepasse2\n'),
+                            ("ip", "IP=192.168.1.50\nNETMASK=255.255.255.0\nGATEWAY=192.168.1.1\nDNS=192.168.1.1\n")):
             with self.subTest(name):
                 r = self.rabbit(f"settings-{name}")
-                p = r.migrate(self.key_with_settings(f"key-{name}", extra))
-                self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
-                self.assertIn("the migration keeps the rabbit's Wi-Fi", p.stdout)
-                self.assertEqual(r.writes(), [])
+                p = r.migrate(self.key_with_settings(f"key-{name}", extra + "HOSTNAME=cuisine\n"))
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                self.assertIn("ignored: the migration keeps the rabbit's Wi-Fi and address", p.stdout)
+                self.assert_migrated(r)
                 self.assertEqual(r.conf("wpa.conf"), WPA)
+                self.assertEqual(r.conf("network.conf"), NETWORK_CONF)
+                self.assertEqual(r.conf("hostname"), "cuisine\n")
 
     def test_key_without_the_settings_library_is_refused(self):
         key = self.tmp / "no-conf-lib"
