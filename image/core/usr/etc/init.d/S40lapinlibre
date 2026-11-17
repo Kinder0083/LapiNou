@@ -79,6 +79,7 @@ account_login() {
 # cloud: lapinou-cloud (the mode without a server) runs only when [cloud] enabled=1; otherwise it
 # is stopped (immortaldog ends it), so it takes no RAM.
 cloud() {
+    # shellcheck source=/dev/null
     enabled=$( (. $CONF_SH && lapinou_get cloud enabled) 2> /dev/null)
     if [ "$enabled" = 1 ]; then
         pid=$(cat "$RUN/lapinou-cloud.pid" 2> /dev/null)
