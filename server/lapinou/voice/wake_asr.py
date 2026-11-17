@@ -252,6 +252,13 @@ class AsrWakeDetector:
                 return None
         text = self._transcribe(samples)
         found = match_wake_word(text, self.names)
+        # Diagnostic sans contenu (vie privée) : ni le texte, ni un mot, seulement la durée,
+        # le niveau sonore, le nombre de mots et la décision.
+        rms = float(np.sqrt(np.mean(np.square(samples.astype(np.float64))))) if len(samples) else 0.0
+        level = 20 * np.log10(max(rms, 1.0) / 32768.0)
+        log.info("parole entendue : %.1f s, niveau %.0f dBFS, %d mot(s), « %s » %s",
+                 len(samples) / SAMPLE_RATE, level, len(text.split()), self.names[0],
+                 "reconnu" if found is not None else "non reconnu")
         if found is None:
             return None
         return WakeHit(at_sample=start, text=text, command=found[1])
