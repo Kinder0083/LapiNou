@@ -33,6 +33,9 @@ QUEUE_MAX = 1000  # blocs de ~2048 échantillons : plus de 2 minutes d'audio
 MARK_KEEP = 10 * SAMPLE_RATE  # une marque finie est oubliée 10 s (axe du micro) après sa fin
 OPEN_MARK_KEEP = 3600 * SAMPLE_RATE  # une lecture sans fin reçue est oubliée après 1 h
 REWIND = SAMPLE_RATE  # first_sample qui recule de plus de 1 s : lapinou-mic a redémarré
+# lapinou-mic envoie ~8 trames par seconde : une connexion muette plus longtemps est morte
+# (connexion à moitié ouverte : lapin débranché, Wi-Fi coupé sans FIN).
+READ_TIMEOUT_S = 20.0
 
 
 def _build_mulaw_table() -> np.ndarray:
@@ -213,8 +216,10 @@ class AudioGateway:
         host: str = "0.0.0.0",
         port: int = 9300,
         on_stream: Callable[[RabbitStream], None] | None = None,
+        read_timeout_s: float = READ_TIMEOUT_S,
     ) -> None:
         self.host, self.port = host, port
+        self.read_timeout_s = read_timeout_s
         self.on_stream = on_stream
         self.streams: dict[str, RabbitStream] = {}
         self._server: asyncio.Server | None = None
@@ -242,12 +247,13 @@ class AudioGateway:
             await self._waiters.setdefault(rabbit_id, asyncio.Event()).wait()
         return self.streams[rabbit_id]
 
-    @staticmethod
-    async def _read_frame(reader: asyncio.StreamReader) -> Frame:
-        (size,) = struct.unpack(">I", await reader.readexactly(4))
-        if size > MAX_FRAME:
-            raise ValueError(f"trame trop grande ({size} octets)")
-        return parse_frame(await reader.readexactly(size))
+    async def _read_frame(self, reader: asyncio.StreamReader) -> Frame:
+        """Une trame ; TimeoutError si rien n'arrive pendant `read_timeout_s`."""
+        async with asyncio.timeout(self.read_timeout_s):
+            (size,) = struct.unpack(">I", await reader.readexactly(4))
+            if size > MAX_FRAME:
+                raise ValueError(f"trame trop grande ({size} octets)")
+            return parse_frame(await reader.readexactly(size))
 
     async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername")
@@ -287,6 +293,9 @@ class AudioGateway:
                 stream._feed(frame)
         except (asyncio.IncompleteReadError, ConnectionError):
             pass
+        except TimeoutError:
+            log.info("flux audio %s muet depuis %g s : connexion fermée", peer,
+                     self.read_timeout_s)
         except ValueError as exc:
             log.warning("flux audio %s refusé : %s", peer, exc)
         finally:

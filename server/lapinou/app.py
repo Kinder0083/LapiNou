@@ -24,7 +24,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from . import __version__
-from .config import DEFAULT_CONFIG_PATH, Settings, load_settings
+from .config import DEFAULT_CONFIG_PATH, ConfigError, Settings, load_settings
 from .voice import tts
 
 log = logging.getLogger(__name__)
@@ -106,6 +106,9 @@ class Services:
     recogniser: Any = None
     tts_server: Any = None
     asr_server: Any = None
+    # Tâches de fond du démarrage (Home Assistant, chargement de la voix) : jamais attendues
+    # par le démarrage, annulées à l'arrêt.
+    background: set[Any] = field(default_factory=set)
 
     def refresh_tools(self) -> None:
         """La boîte à outils des sessions (après le démarrage de ha-mcp : sa liste d'outils)."""
@@ -114,12 +117,12 @@ class Services:
         self.orchestrator.deps.tools = ToolBox(t for s in self.tool_sources for t in s.tools())
 
     async def start(self) -> None:
+        """Lance tout ; ce qui peut être long (ha-mcp jusqu'à 30 s, la voix quelques
+        secondes) part en tâche de fond : la page (8080) et le TTS (8081) répondent tout de
+        suite, et l'orchestrateur reçoit les outils de Home Assistant dès qu'ils sont là."""
         server = self.settings.server
         await self.registry.start(port=server.platform_port)
         await self.gateway.start()
-        if self.ha is not None:
-            await self.ha.start()
-            self.refresh_tools()
         await self.timers.start()
         self.state.start()
         from .web import apps as apps_mod
@@ -135,7 +138,28 @@ class Services:
             await self.ota.start()
         if self.web is not None:
             self.web.auth.prepare_setup()  # code d'installation si aucun mot de passe (R40)
+        if self.ha is not None:
+            self._background(self._start_ha(), "ha")
+        load = getattr(self.voice, "load", None)
+        if load is not None:  # voix préchargée : la première réponse n'attend pas le modèle
+            self._background(asyncio.to_thread(load), "voix")
         log.info("serveur LapiNou démarré")
+
+    async def _start_ha(self) -> None:
+        await self.ha.start()  # journalise lui-même un ha-mcp injoignable, sans lever
+        self.refresh_tools()
+        log.info("Home Assistant : outils prêts")
+
+    def _background(self, coro: Any, name: str) -> None:
+        task = asyncio.create_task(coro, name=f"lapinou-{name}")
+        self.background.add(task)
+
+        def done(t: asyncio.Task) -> None:
+            self.background.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                log.error("démarrage : %s en échec (%s)", name, t.exception())
+
+        task.add_done_callback(done)
 
     @staticmethod
     def _serve(server: Any, name: str) -> None:
@@ -152,7 +176,14 @@ class Services:
                 stop = getattr(srv, "stop", None)  # asr_compat : coupe aussi les sessions
                 await (asyncio.to_thread(stop) if stop else asyncio.to_thread(_stop_http, srv))
 
+        async def stop_background() -> None:
+            tasks = list(self.background)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
         steps: list[tuple[str, Any]] = [
+            ("background", stop_background),
             ("ota", lambda: self.ota.close() if self.ota is not None else None),
             ("asr", lambda: stop_server("asr_server")),
             ("tts", lambda: stop_server("tts_server")),
@@ -318,7 +349,11 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    settings = load_settings(args.config)
+    try:
+        settings = load_settings(args.config)
+    except ConfigError as e:
+        log.error("%s", e)
+        raise SystemExit(2) from None
     services = build_services(settings, db_path=args.db)
     uvicorn.run(create_app(settings, services=services), host="0.0.0.0",
                 port=settings.server.http_port, timeout_graceful_shutdown=10)

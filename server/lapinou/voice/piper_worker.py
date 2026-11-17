@@ -7,7 +7,8 @@ de `piper`.
 
 stdin : une ligne JSON `{"text": "..."}` par phrase. stdout : `{"ready": true}` une fois la voix
 chargée, puis pour chaque phrase `{"rate": 22050, "bytes": N}` suivi de N octets de PCM int16
-mono, ou `{"error": "..."}`. Le texte n'est jamais écrit sur stderr (vie privée).
+mono, ou `{"error": "<type d'erreur>"}`. Le texte n'est jamais écrit sur stderr ni dans une
+erreur (vie privée).
 """
 
 from __future__ import annotations
@@ -38,7 +39,8 @@ def main(argv: list[str]) -> int:
             out.write(json.dumps({"rate": chunks[0].sample_rate, "bytes": len(pcm)}).encode())
             out.write(b"\n" + pcm)
         except Exception as error:  # noqa: BLE001 : le worker reste vivant pour la phrase suivante
-            out.write(json.dumps({"error": type(error).__name__ + ": " + str(error)[:80]}).encode())
+            # Le type seulement : le message peut contenir le texte de la phrase.
+            out.write(json.dumps({"error": type(error).__name__}).encode())
             out.write(b"\n")
     return 0
 

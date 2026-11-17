@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: MIT
-"""État de l'assistant publié sur MQTT : `lapinou/<id>/assistant` (retenu, QoS 1).
+"""État de l'assistant publié sur MQTT : `<prefix>/<id>/assistant` (retenu, QoS 1).
+
+`prefix` est `mqtt.prefix` (« lapinou » par défaut) : il doit valoir `[mqtt] prefix` de
+lapinou.conf sur le lapin, sinon le lapin n'entend pas l'état.
 
 `lapinou-mqtt`, sur le lapin, relit ce topic et le recopie dans l'état de l'appareil (capteur
 « Assistant » de Home Assistant, 64 octets au plus). Valeurs : « repos », « écoute »,
@@ -68,7 +71,7 @@ class AssistantState:
     @classmethod
     def from_settings(cls, settings: Settings) -> AssistantState:
         m = settings.mqtt
-        return cls(m.host, m.port, m.username, m.password)
+        return cls(m.host, m.port, m.username, m.password, prefix=m.prefix)
 
     @property
     def enabled(self) -> bool:

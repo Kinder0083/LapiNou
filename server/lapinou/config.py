@@ -14,8 +14,8 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import tomli_w
-from pydantic import (AfterValidator, BaseModel, ConfigDict, Field, PrivateAttr, field_validator,
-                      model_validator)
+from pydantic import (AfterValidator, BaseModel, ConfigDict, Field, PrivateAttr, ValidationError,
+                      field_validator, model_validator)
 
 DEFAULT_CONFIG_PATH = Path("/etc/lapinou/config.toml")
 SECRETS_NAME = "secrets.toml"
@@ -23,6 +23,10 @@ SECRETS_NAME = "secrets.toml"
 
 class _Section(BaseModel):
     model_config = ConfigDict(extra="ignore")
+
+
+class ConfigError(ValueError):
+    """config.toml ou secrets.toml invalide : le message dit quoi corriger (en français)."""
 
 
 # Valeurs contrôlées dès le chargement : une valeur fausse enregistrée par la page empêcherait
@@ -73,11 +77,20 @@ class ServerConfig(_Section):
     allowed_hosts: list[str] = Field(default_factory=list)
 
 
+def _topic_part(value: str) -> str:
+    if not value or any(c in value for c in "/+#") or len(value) > 64:
+        raise ValueError("un mot sans « / », « + » ni « # » (64 caractères au plus)")
+    return value
+
+
 class MqttConfig(_Section):
     host: str = ""
     port: Port = 1883
     username: str = ""
     password: str = ""  # secret
+    # Début des topics : <prefix>/<id du lapin>/…, comme [mqtt] prefix de lapinou.conf sur le
+    # lapin (« lapinou » des deux côtés par défaut) ; les deux doivent être égaux.
+    prefix: Annotated[str, AfterValidator(_topic_part)] = "lapinou"
 
 
 class HaConfig(_Section):
@@ -170,7 +183,11 @@ class VoiceConfig(_Section):
     followup_s: int = Field(default=5, ge=0, le=60)
 
 
-class SafetyConfig(_Section):
+class SafetyConfig(BaseModel):
+    # Une faute de frappe dans [safety] ne doit jamais retomber en silence sur un réglage par
+    # défaut : clé inconnue = démarrage refusé, avec son nom.
+    model_config = ConfigDict(extra="forbid")
+
     # Domaines où le cerveau peut appeler un service (les domaines sensibles en plus, mais
     # seulement pour les entités de `allowed_entities`, avec confirmation).
     allowed_domains: list[str] = Field(
@@ -329,9 +346,24 @@ def load_settings(path: Path = DEFAULT_CONFIG_PATH) -> Settings:
     """Charge config.toml puis fusionne secrets.toml (même dossier)."""
     path = Path(path)
     data = _merge(_read_toml(path), _read_toml(_secrets_path(path)))
-    settings = Settings.model_validate(data)
+    try:
+        settings = Settings.model_validate(data)
+    except ValidationError as e:
+        raise ConfigError(describe_errors(path, e)) from None
     settings._path = path
     return settings
+
+
+def describe_errors(path: Path, error: ValidationError) -> str:
+    """Les erreurs de validation, une par ligne, lisibles (sans aucune valeur : secrets)."""
+    lines = [f"{path} : réglages invalides, le serveur ne démarre pas :"]
+    for err in error.errors():
+        where = ".".join(str(x) for x in err["loc"])
+        if err["type"] == "extra_forbidden":
+            lines.append(f"- {where} : clé inconnue (faute de frappe ?)")
+        else:
+            lines.append(f"- {where} : {err['msg']}")
+    return "\n".join(lines)
 
 
 def _atomic_write(path: Path, content: bytes, mode: int) -> None:

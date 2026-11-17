@@ -274,7 +274,11 @@ def build_detector(voice, recogniser: Recognising) -> AsrWakeDetector:
         if voice.wake_model:
             from lapinou.voice import wakeword
 
-            prefilter = wakeword.load_wakeword(voice)
+            try:
+                prefilter = wakeword.load_wakeword(voice)
+            except Exception as e:  # noqa: BLE001 - jamais un lapin sourd : transcription seule
+                log.warning("classifieur « Lapinou » (voice.wake_model) non chargé (%s : %s) : "
+                            "détection par transcription seule", type(e).__name__, e)
         else:
             log.warning("wake_method = « both » sans voice.wake_model : transcription seule")
     return AsrWakeDetector(recogniser, silence_s=voice.vad_silence_ms / 1000, prefilter=prefilter)

@@ -26,6 +26,12 @@ tuer `lapinou-mqtt`, qu'`immortaldog` relance).
 `[audio] volume` (0-100) est appliqué au démarrage du démon et mis à jour par `cmd/volume` (voir
 « Volume »). `[assistant] language` (`fr`) est la langue de `cmd/say`.
 
+Le serveur LapiNou publie l'état de l'assistant (`<p>/<id>/assistant`) avec son propre réglage
+`mqtt.prefix` (`config.toml`, section `[mqtt]`, `lapinou` par défaut). Les deux préfixes doivent
+être égaux : si vous changez `prefix` sur le lapin, mettez la même valeur dans `mqtt.prefix` du
+serveur (un mot sans `/`, `+` ni `#`), puis redémarrez le service, sinon le capteur « Assistant »
+reste vide.
+
 L'identifiant du lapin (`/usr/karotz/uuid.conf`) n'est utilisé que s'il n'a que des lettres,
 chiffres, `_` et `-` (64 au plus) ; sinon le démon ne se connecte pas et le note au journal.
 

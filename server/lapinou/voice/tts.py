@@ -61,6 +61,7 @@ PIPER_VENV = Path.home() / ".local" / "share" / "lapinou" / "piper-venv"
 PIPER_PYTHON = PIPER_VENV / "bin" / "python"
 PIPER_WORKER = Path(__file__).with_name("piper_worker.py")
 PIPER_TIMEOUT_S = 60
+PIPER_READY_S = 120  # chargement de la voix par le worker (« prêt »)
 DEFAULT_PIPER_VOICE = "fr_FR-siwis-medium"
 # Voix Piper utilisables : révision de rhasspy/piper-voices et SHA-256 de leurs fichiers (R31).
 # fr_FR-siwis-medium : CC BY 4.0 (upmc est CC BY-SA : non retenue).
@@ -190,8 +191,10 @@ class PiperProcess:
     Protocole : une ligne JSON `{"text": ...}` en entrée ; en sortie `{"rate": r, "bytes": n}`
     puis n octets de PCM int16 mono, ou `{"error": ...}` ; `{"ready": true}` au démarrage."""
 
-    def __init__(self, python: Path, model: Path, worker: Path = PIPER_WORKER):
+    def __init__(self, python: Path, model: Path, worker: Path = PIPER_WORKER,
+                 ready_s: float = PIPER_READY_S):
         self.python, self.model, self.worker = python, model, worker
+        self.ready_s = ready_s
         self.proc: subprocess.Popen | None = None
 
     def _start(self) -> None:
@@ -200,7 +203,14 @@ class PiperProcess:
             [str(self.python), "-I", str(self.worker), str(self.model)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         )  # fmt: skip
-        if self._line().get("ready") is not True:
+        # Un worker qui ne dit jamais « prêt » (bloqué au chargement) est tué : EOFError.
+        timer = threading.Timer(self.ready_s, self.proc.kill)
+        timer.start()
+        try:
+            ready = self._line().get("ready")
+        finally:
+            timer.cancel()
+        if ready is not True:
             raise OSError("le worker Piper n'est pas prêt")
 
     def _line(self) -> dict:
@@ -216,7 +226,9 @@ class PiperProcess:
         self.proc.stdin.flush()
         head = self._line()
         if "error" in head:
-            raise RuntimeError(f"Piper : {head['error']}")
+            # Seulement le type d'erreur : jamais le texte de la phrase (vie privée).
+            kind = re.match(r"[A-Za-z_][A-Za-z0-9_]{0,40}", str(head["error"]))
+            raise RuntimeError(f"Piper : {kind.group(0) if kind else 'erreur'}")
         size = int(head["bytes"])
         pcm = self.proc.stdout.read(size)
         if len(pcm) != size:
