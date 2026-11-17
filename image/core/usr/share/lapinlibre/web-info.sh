@@ -6,6 +6,8 @@
 # space from df, the controller from dbus-send).
 
 # Escapes each input line for XML text, leaving out control characters.
+# ShellCheck: A && B || C means "C unless both A and B succeed"; awk programs are kept in single quotes; names set by web.sh or by a function.
+# shellcheck disable=SC2015,SC2016,SC2153
 WEB_XML_AWK='BEGIN { for (i = 1; i < 32; i++) drop[sprintf("%c", i)] = 1; drop[sprintf("%c", 127)] = 1 }
 {
     o = ""

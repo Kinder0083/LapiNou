@@ -69,6 +69,7 @@ fi
 # 3. Preflight: nothing is erased unless every check passes.
 LOG "Checking the key before installing build ${BUILD_ID}"
 play checks-start.mp3
+[ -n "${RELEASE_VERSION}" ] || ERROR "install.conf has no RELEASE_VERSION"
 start_loop
 # A failed check sounds the alarm, then says so in words.
 ERROR_SOUND="error.mp3 checks-failed.mp3"
@@ -146,7 +147,9 @@ for f in karotz.conf voice.conf; do
 done
 
 # 6. The system version, and no leftovers of earlier installs.
-echo "${BUILD_VERSION}" > "${CONF}/sys_version"
+# R44: the release tag (vX.Y.Z), or 0.0.0-<commit> for a build that is not a release; the build id
+# stays apart (lapinlibre_build_id).
+echo "${RELEASE_VERSION}" > "${CONF}/sys_version"
 rm -rf /usr/install /usr/yaffs* /usr/.install_yaffs_start
 
 # 7. The settings and the build's id.

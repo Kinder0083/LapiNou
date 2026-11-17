@@ -1,0 +1,66 @@
+/* SPDX-License-Identifier: MIT */
+/* LapiNou's design tokens (R45), shared by the rabbit's page and, later, the server's (T23b):
+   colours, radii, type and motion. docs/lapinou/design.md says what each is for. Light by default,
+   dark when the device prefers it. Every text colour here passes WCAG AA on the surfaces it is
+   meant for. */
+:root {
+  /* Surfaces */
+  --ln-sky: #e9f5ff;        /* the page */
+  --ln-paper: #ffffff;      /* panels */
+  --ln-cloud: #d6ebfb;      /* quiet fills, inactive tabs */
+  /* Ink */
+  --ln-ink: #1b2a4a;        /* text, outlines of the drawing */
+  --ln-ink-soft: #46597d;   /* secondary text (AA on sky and paper) */
+  /* The toy box: bright fills, always with --ln-ink on top */
+  --ln-carrot: #ff8a2a;
+  --ln-carrot-deep: #b8460a; /* carrot as text or a focus ring (AA on paper) */
+  --ln-raspberry: #ff5c93;
+  --ln-lemon: #ffd23f;
+  --ln-mint: #3ddc97;
+  --ln-lagoon: #39b7e6;
+  --ln-lilac: #b89cff;
+  --ln-on-bright: #1b2a4a;  /* text on a bright fill, in both themes */
+  /* Messages */
+  --ln-ok-bg: #c9f6e1;
+  --ln-ok-ink: #0d5a38;
+  --ln-bad-bg: #ffe0e8;
+  --ln-bad-ink: #9a1240;
+  --ln-warn-bg: #fff1bf;
+  --ln-warn-ink: #6b4b00;
+  /* Shapes: the bigger the thing, the rounder */
+  --ln-radius-blob: 36px;   /* the hero, the rabbit's panel */
+  --ln-radius-panel: 24px;  /* panels */
+  --ln-radius-field: 14px;  /* inputs */
+  --ln-radius-pill: 999px;  /* buttons, tabs, stickers */
+  --ln-border: 3px;         /* the drawing's line, panels' outline */
+  --ln-lift: 0 5px 0 var(--ln-ink); /* the "toy" shadow: a solid offset, not a blur */
+  /* Type: the device's rounded face when it has one */
+  --ln-font: ui-rounded, "SF Pro Rounded", "Nunito", "Varela Round", "Segoe UI", system-ui, sans-serif;
+  --ln-step--1: 0.875rem;
+  --ln-step-0: 1rem;
+  --ln-step-1: 1.25rem;
+  --ln-step-2: 1.6rem;
+  --ln-step-3: 2.3rem;
+  /* Motion */
+  --ln-bounce: cubic-bezier(.34, 1.56, .64, 1);
+  /* The rabbit's nose: the LED's colour, set by the page */
+  --ln-led: #3ddc97;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ln-sky: #121c33;
+    --ln-paper: #1c2a4a;
+    --ln-cloud: #2a3c63;
+    --ln-ink: #f2f6ff;
+    --ln-ink-soft: #b9c6e4;
+    --ln-carrot-deep: #ffa45c;
+    --ln-ok-bg: #0f4a33;
+    --ln-ok-ink: #b8f5da;
+    --ln-bad-bg: #5a1430;
+    --ln-bad-ink: #ffd0de;
+    --ln-warn-bg: #4d3a05;
+    --ln-warn-ink: #ffe9a3;
+    --ln-lift: 0 5px 0 #070d1c;
+  }
+}

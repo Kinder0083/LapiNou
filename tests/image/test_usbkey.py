@@ -303,13 +303,15 @@ class UsbKeyTest(unittest.TestCase):
     def test_no_server_keeps_the_rabbits(self):
         # The install keeps the rabbit's own karotz.conf and voice.conf when
         # lapinlibre.txt names no server; a rabbit with none gets the image's, which name no one's
-        # servers.
+        # servers. The factory controller's update check is turned off all the same (R38): it
+        # would reboot the rabbit into the factory's updates.
         r = self.rabbit("keep-server", rootfs_version="11.03.10.00")
         conf = r.sb / "usr/etc/conf"
-        (conf / "karotz.conf").write_text("[karotz]\nip_server=192.168.7.7\n", newline="\n")
+        (conf / "karotz.conf").write_text("[karotz]\nip_server=192.168.7.7\nurl_update=http://update.karotz.com/eabi/\n",
+                                          newline="\n")
         r.boot()
         self.assert_flashed(r)
-        self.assertEqual((conf / "karotz.conf").read_text(), "[karotz]\nip_server=192.168.7.7\n")
+        self.assertEqual((conf / "karotz.conf").read_text(), "[karotz]\nip_server=192.168.7.7\nurl_update=http://127.0.0.1:1\n")
         voice = (conf / "voice.conf").read_text()
         self.assertIn("server0=127.0.0.1\n", voice)
         self.assertNotIn("188.165", voice)
@@ -409,7 +411,7 @@ class UsbKeyTest(unittest.TestCase):
         core = self.rootfs_file("karotz/etc/inetd.conf").decode()
         self.assertNotIn("telnetd", core)
         self.assertNotIn("ftpd", core)
-        self.assertIn("80 stream tcp nowait.60 root /bin/busybox httpd -i -c /var/run/httpd.conf -h /usr/www", core)
+        self.assertIn("80 stream tcp nowait.60 web /bin/busybox httpd -i -c /var/run/httpd.conf -h /usr/www", core)
         self.assertNotIn("/karotz/etc/httpd.conf", core)
         # The fixed part alone refuses everyone; inetd.sh makes the configuration with the password.
         self.assertIn("D:*", self.rootfs_file("karotz/etc/httpd.conf").decode())
@@ -503,6 +505,24 @@ class UsbKeyTest(unittest.TestCase):
                                                    or b"/home/" in files[label][path].data)]
         self.assertEqual(unstripped, [])
 
+    def test_core_has_lapinou_ota(self):
+        # lapinou-ota (Task 11) and the OTA public key are in /usr; the key's install helpers and the
+        # boot's resume of an interrupted /usr are in the root filesystem (mtd2), which an
+        # interrupted /usr can't take away. All as in the repository.
+        import fstree
+        import gzip
+        usr = fstree.TarPart(gzip.decompress((self.key / "usr.tar.gz").read_bytes()), 0)
+        root = fstree.CramfsPart(gzip.decompress((self.key / "rootfs.img.gz").read_bytes()))
+        for part, name, src, mode in (
+                (usr, "karotz/bin/lapinou-ota", "userland/src/usr/lapinou-ota/lapinou-ota.sh", 0o755),
+                (usr, "share/lapinou/ota-pubkey.pub", "image/core/usr/share/lapinou/ota-pubkey.pub", 0o644),
+                (root, "karotz/scripts/install-lib.sh", "image/usbkey/install-lib.sh", 0o644),
+                (root, "karotz/scripts/ota-resume.sh", "image/core/rootfs/karotz/scripts/ota-resume.sh", 0o755)):
+            entries = {e.path: e for e in part.entries()}
+            self.assertIn(name, entries)
+            self.assertEqual(entries[name].data, (ROOT / src).read_bytes(), name)
+            self.assertEqual(entries[name].mode & 0o777, mode, name)
+
     def test_installed_files_match_the_record(self):
         # The key's layout (every entry's path, kind, mode, owner and link target, not
         # the data) is tests/expected/key-files.txt's.
@@ -542,16 +562,19 @@ class UsbKeyTest(unittest.TestCase):
         self.assertIn("MD5 checksum error: install-tools.tar", r.setuplog())
 
     def test_key_layout(self):
-        # The key carries our own install (autorun, install-lib.sh, applysettings.sh)
+        # The key carries our own install (autorun, install-lib.sh, applysettings.sh, lapinou-conf.sh)
         # and a generated install.conf of plain assignments, and nothing else at its top.
         files = ["applysettings.sh", "autorun", "autorun.sig", "build_id", "install-lib.sh", "install-tools.tar",
-                 "install.conf", "lapinlibre.txt", "rootfs.img.gz", "usr.tar.gz", "zImage"]
+                 "install.conf", "lapinlibre.txt", "lapinou-conf.sh", "rootfs.img.gz", "usr.tar.gz", "zImage"]
         for name in files:
             self.assertTrue((self.key / name).is_file(), name)
         self.assertEqual(sorted(p.name for p in self.key.iterdir()), sorted(files + ["sound"]))
         conf = (self.key / "install.conf").read_text()
         self.assertEqual(sorted(line.split("=")[0] for line in conf.splitlines()),
-                         ["BUILD_ID", "BUILD_VERSION", "INSTALL_TOOLS_MD5", "KERNEL_MD5", "ROOTFS_MD5", "USR_MD5"])
+                         ["BUILD_ID", "BUILD_VERSION", "INSTALL_TOOLS_MD5", "KERNEL_MD5", "RELEASE_VERSION", "ROOTFS_MD5",
+                          "USR_MD5"])
+        # R44: the release tag, or 0.0.0-<commit> for a build that isn't a release.
+        self.assertRegex(conf, r"\nRELEASE_VERSION=(v[0-9]+\.[0-9]+\.[0-9]+|0\.0\.0-[0-9a-f]+)\n")
         self.assertIn(f"BUILD_ID={self.build_id}\n", conf)
         self.assertNotIn("/", conf)
 
@@ -561,7 +584,7 @@ class UsbKeyTest(unittest.TestCase):
         r.boot()
         self.assert_flashed(r)
         sounds = sorted((ROOT / "image/core/usr/karotz/sounds").glob("*.mp3"))
-        self.assertEqual(len(sounds), 14)
+        self.assertEqual(len(sounds), 15)
         for f in sounds:
             self.assertEqual((r.sb / "usr/karotz/sounds" / f.name).read_bytes(), f.read_bytes(), f.name)
 
@@ -648,12 +671,13 @@ class UsbKeyTest(unittest.TestCase):
         self.assertNotIn("trying once more", ram.setuplog())
 
     def test_full_flash_sets_the_system_version(self):
-        # After a full flash the rabbit's sys_version is LapinLibre's build version.
+        # After a full flash the rabbit's sys_version is the release's tag (R44), as lapinou-ota and
+        # the migration write it.
         conf = dict(line.split("=", 1) for line in (self.key / "install.conf").read_text().splitlines())
         r = self.rabbit("sys-version", build_id="0123456789abcdef")
         r.boot()
         self.assert_flashed(r)
-        self.assertEqual((r.sb / "usr/etc/conf/sys_version").read_text(), conf["BUILD_VERSION"] + "\n")
+        self.assertEqual((r.sb / "usr/etc/conf/sys_version").read_text(), conf["RELEASE_VERSION"] + "\n")
 
     def test_cleaning_usr_keeps_settings_apps_and_messages(self):
         # The install empties /usr but for /usr/etc/conf (all of it), /usr/karotz/apps,
@@ -761,6 +785,17 @@ def elf_needed(data):
     needed = [string(v) for t, v in tags if t == 1]
     paths = [d for t, v in tags if t in (15, 29) for d in string(v).split(":") if d]
     return needed, paths
+
+
+class ReleaseVersionTest(unittest.TestCase):
+    """R44: the version a build installs (sys_version) is its release tag, or 0.0.0-<commit>."""
+
+    def test_release_version(self):
+        for describe, want in (("v1.2.3", "v1.2.3"), ("v1.2.3-dirty", "0.0.0-0123456789ab"),
+                               ("v1.2.3-4-gabcdef012345", "0.0.0-0123456789ab"), ("abcdef012345", "0.0.0-0123456789ab"),
+                               ("unversioned", "0.0.0-0123456789ab")):
+            self.assertEqual(image.release_version(describe, "0123456789ab"), want, describe)
+        self.assertEqual(image.release_version("unversioned", ""), "0.0.0-unversioned")
 
 
 if __name__ == "__main__":

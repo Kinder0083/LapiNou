@@ -1,0 +1,5 @@
+SPDX-License-Identifier: MIT
+LAPINOU OTA PUBLIC KEY: PLACEHOLDER, NOT A KEY.
+lapinou-ota refuses every update while this file is the placeholder (R42, fail closed).
+The owner replaces it with the real Ed25519 public key in PEM form (openssl pkey -pubout), keeping
+this file's name and its licence line first (OpenSSL skips text before the key), at Task 26.

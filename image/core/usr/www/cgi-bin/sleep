@@ -4,6 +4,8 @@
 # recalibrated and go down (unless the API's ear moves are off), the LED goes off, and the API's
 # sleep flag is set in RAM with the time (a reboot wakes the rabbit). The controller isn't asked
 # to sleep.
+# ShellCheck: A && B || C means "C unless both A and B succeed".
+# shellcheck disable=SC2015
 . /usr/share/lapinlibre/web.sh
 web_begin change
 read_controller
@@ -16,7 +18,7 @@ dbus_call Multimedia stop "string:$WEB_ID" int32:0 || web_log "the playback coul
 rm -f "$WEB_RUN/playback"
 dbus_call Voice tts_stop "string:$WEB_ID" int32:0 || web_log "the speech couldn't be stopped"
 if [ "$EARS_DISABLED" = 0 ]; then
-    ears_reset_wait && ears_move $WEB_EARS_ASLEEP $WEB_EARS_ASLEEP || web_log "the ears couldn't be put down"
+    ears_reset_wait && ears_move "$WEB_EARS_ASLEEP" "$WEB_EARS_ASLEEP" || web_log "the ears couldn't be put down"
 fi
 led_set 000000 0 || web_log "the LED couldn't be turned off"
 state_write sleep "$(date +%s)" || web_fail "the sleep state couldn't be kept"

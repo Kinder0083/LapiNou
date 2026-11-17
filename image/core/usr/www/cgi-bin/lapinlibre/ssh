@@ -5,6 +5,8 @@
 # host key fingerprints, and the name and address to connect to. The keys are read from the public
 # parts that sshd.sh writes at each start (the key files are root's). The fingerprints are kept in
 # RAM (the API's state) until a key file changes.
+# ShellCheck: A && B || C means "C unless both A and B succeed"; awk programs are kept in single quotes.
+# shellcheck disable=SC2015,SC2016
 . /usr/share/lapinlibre/web.sh
 web_begin read
 
@@ -112,6 +114,8 @@ if [ -f "$CACHE" ]; then
         fresh=1
     set -f
     for f in $sources; do
+        # BusyBox test has -nt.
+        # shellcheck disable=SC3013
         [ "$CACHE" -nt "$f" ] || fresh=""
     done
     set +f

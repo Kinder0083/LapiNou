@@ -45,3 +45,28 @@ LANGUAGE=
 # ssh karotz@lapinlibre.local). Lower-case letters, digits and dashes; give each rabbit its own.
 # Empty keeps the rabbit's (lapinlibre unless an earlier install set one).
 HOSTNAME=
+
+# --- LapiNou (the voice assistant), all optional: remove the # in front of a line to use it.
+# Empty or commented out: the rabbit keeps what it has. Change them later on the rabbit's web page.
+# The LapiNou server on your network (host name or address); the rabbit's microphone goes there.
+# It is also the app server, speech and speech recognition (as SERVER= above) unless SERVER=,
+# TTS_SERVER= or ASR_SERVER= say otherwise.
+#LAPINOU_SERVER=192.168.1.10
+# Home Assistant's MQTT broker: its address, port (1883 if you leave it out), user and password.
+#MQTT_HOST=192.168.1.50
+#MQTT_PORT=1883
+#MQTT_USER=lapinou
+#MQTT_PASSWORD=
+# Cloud services, when no LapiNou server is used: speech recognition, the language model (kind:
+# anthropic or openai, a URL and a model name), and speech. The keys stay on the rabbit, in a
+# file only root reads.
+#CLOUD_STT_URL=https://api.example.com/v1/audio/transcriptions
+#CLOUD_STT_KEY=
+#CLOUD_LLM_KIND=anthropic
+#CLOUD_LLM_URL=https://api.anthropic.com
+#CLOUD_LLM_MODEL=claude-haiku-5-5
+#CLOUD_LLM_KEY=
+#CLOUD_TTS_URL=https://api.example.com/v1/audio/speech
+#CLOUD_TTS_KEY=
+# The time zone, for example Europe/Paris.
+#TZ=Europe/Paris

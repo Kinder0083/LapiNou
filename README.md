@@ -81,6 +81,7 @@ LapinLibre's own code is under the MIT licence (`LICENSES/MIT.txt`), with these 
 - `kernel/` is GPL-2.0-only (`LICENSES/GPL-2.0-only.txt`, also `kernel/COPYING`).
 - `system/external/`, whose package recipes are adapted from Buildroot's, is GPL-2.0-or-later (`LICENSES/GPL-2.0-or-later.txt`).
 - Patches to other projects' code (`*.patch`) are under the licence of what they patch.
+- `image/core/usr/karotz/sounds/lapinou-no-server.mp3` is spoken by Piper's `fr_FR-siwis-medium` voice (made with `image/tools/piper_sounds.py`), trained on the SIWIS French Speech Synthesis Database (its authors as credited at https://datashare.is.ed.ac.uk/handle/10283/2353), under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/); the sound is under CC BY 4.0 too.
 
 Each file names its licence in an `SPDX-License-Identifier` line, and `scripts/check-repo.py` checks that it does. A few files have no such line, either because the program that reads them takes no comments, or because they are test data or recorded test output; the list and the reason for each are in `check-repo.py`. Those files are MIT too.
 

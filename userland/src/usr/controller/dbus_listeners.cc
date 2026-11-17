@@ -87,7 +87,8 @@ static void button_dclick(DBusGProxy *proxy, gpointer data)
         send_button(pm::ButtonCallback::DOUBLE);
 }
 
-/* Triple click: reset the Karotz, waking it up if asleep. */
+/* Triple click: reset the Karotz, waking it up if asleep; available again with a platform or in
+ * LapiNou's standalone mode. */
 static void button_tclick(DBusGProxy *proxy, gpointer data)
 {
     (void)proxy;
@@ -100,7 +101,7 @@ static void button_tclick(DBusGProxy *proxy, gpointer data)
         sleep(3);
         global_controller->sleeping = FALSE;
     }
-    if (global_controller->platform_authenticated) {
+    if (global_controller->platform_authenticated || lapinou_standalone()) {
         controller_set_status(global_controller, E_STATUS_KAROTZ_AVAILABLE);
         earsMove(global_controller->ears, NULL, 14, 30, 14, 30);
         if (global_controller->status.karotz == E_STATUS_KAROTZ_AVAILABLE)
@@ -138,14 +139,17 @@ static void button_mclick(DBusGProxy *proxy, int count, gpointer data)
         send_button(pm::ButtonCallback::MULTIPLE);
 }
 
-/* Long press: listen for an application's name (orange light). */
+/* Long press: listen for an application's name (orange light). Without a platform, LapiNou's
+ * (lapinou.cc). */
 static void button_lclick_start(DBusGProxy *proxy, gpointer data)
 {
     (void)proxy;
     (void)data;
     g_log(NULL, G_LOG_LEVEL_DEBUG, "Received ButtonLClickStart signal");
-    if (!global_controller->platform_authenticated)
+    if (!global_controller->platform_authenticated) {
+        lapinou_long_press_start(global_controller);
         return;
+    }
     if (global_controller->status.karotz == E_STATUS_KAROTZ_AVAILABLE && global_controller->rfid_asr_timer == 0) {
         multimediaStop(global_controller->multimedia, NULL, 0);
         if (asrStartFile(global_controller->voice, NULL, "/tmp/apps.abnf", 0))
@@ -159,7 +163,8 @@ static void button_lclick_stop(DBusGProxy *proxy, gpointer data)
     (void)proxy;
     (void)data;
     g_log(NULL, G_LOG_LEVEL_DEBUG, "Received ButtonLClickStop signal");
-    if (!global_controller->platform_authenticated)
+    /* A press that went to LapinouCloud ends there: no LONG_STOP without its LONG_START. */
+    if (lapinou_long_press_stop(global_controller) || !global_controller->platform_authenticated)
         return;
     pm::PlatformMessage *msg = new_callback();
     msg->mutable_buttoncallback()->set_type(pm::ButtonCallback::LONG_STOP);
@@ -870,4 +875,5 @@ void init_dbus_listeners(void)
     init_dbus_k2k_listeners();
     init_dbus_serial_listeners();
     init_dbus_dock_listeners();
+    lapinou_watch_cloud(global_controller->bus);
 }

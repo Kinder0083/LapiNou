@@ -718,11 +718,13 @@ class EndpointTest(WebApiCase):
         listed = (ROOT / "system/core-files.txt").read_text(encoding="utf-8")
         for name in CGIS:
             self.assertRegex(listed, rf"(?m)^usr:www/cgi-bin/{re.escape(name)} f 0755 0:0 core\b")
-        for name in ("index.html", "app.js", "style.css"):
+        for name in ("avance.html", "app.js", "style.css"):
             self.assertRegex(listed, rf"(?m)^usr:www/{name} f 0644 0:0 core\b")
         for path in LIBRARIES:
             self.assertRegex(listed, rf"(?m)^usr:share/lapinlibre/{re.escape(path.name)} f 0644 0:0 core\b")
-        on_disk = sorted(str(p.relative_to(WWW / "cgi-bin")).replace(os.sep, "/") for p in (WWW / "cgi-bin").rglob("*") if p.is_file())
+        # LapiNou's programs (cgi-bin/lapinou) are test_lapinou_web.py's.
+        on_disk = sorted(str(p.relative_to(WWW / "cgi-bin")).replace(os.sep, "/") for p in (WWW / "cgi-bin").rglob("*")
+                         if p.is_file() and p.parent.name != "lapinou")
         self.assertEqual(on_disk, sorted(CGIS))
         for path in [*LIBRARIES, *[WWW / "cgi-bin" / c for c in CGIS]]:
             text = path.read_text(encoding="utf-8")
@@ -745,7 +747,7 @@ class EndpointTest(WebApiCase):
         script = (WWW / "app.js").read_text(encoding="utf-8")
         for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "http://", "https://"):
             self.assertNotIn(bad, script)
-        page = (WWW / "index.html").read_text(encoding="utf-8")
+        page = (WWW / "avance.html").read_text(encoding="utf-8")
         self.assertNotRegex(page, r"(src|href)=\"(https?:)?//")
         # Stage 2's sections, each with its place for the result, and the endpoints they use.
         for section in ("sleep", "led", "ears", "sound", "speech", "camera", "tags", "stick"):
@@ -2502,7 +2504,7 @@ class HttpdTest(unittest.TestCase):
     def setUp(self):
         self.box = Sandbox(self.busybox)
         sb = self.sb = self.box.sb
-        for name in ("index.html", "app.js", "style.css"):
+        for name in ("index.html", "avance.html", "app.js", "style.css"):
             shutil.copy(WWW / name, sb / "usr/www" / name)
         self.box.write("usr/www/cgi-bin/env", "#!/bin/sh\nprintf 'Content-Type: text/plain\\r\\n\\r\\n'\n/usr/bin/env\n", mode=0o755)
         self.httpd = None

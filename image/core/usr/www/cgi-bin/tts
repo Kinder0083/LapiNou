@@ -8,6 +8,8 @@
 #            rabbit's language when it is a name, absent, or a language without a speech server
 #   mute     1: say nothing (0)
 #   nocache  accepted and ignored: there is no speech cache
+# ShellCheck: A && B || C means "C unless both A and B succeed".
+# shellcheck disable=SC2015
 . /usr/share/lapinlibre/web.sh
 web_begin change text
 param text

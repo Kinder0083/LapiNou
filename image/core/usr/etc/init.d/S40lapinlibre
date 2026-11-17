@@ -4,15 +4,21 @@
 # UUID (/usr/karotz/uuid.conf, made once and kept by the install) and the button sounds' switch
 # (/usr/etc/conf/playsounds, turned on once, the first time; the platform's settings may remove it
 # later, and that stays); then the hardware and service daemons, each kept running by immortaldog
-# (it restarts a daemon that dies and writes its own pid file), and the head button's watcher
+# (it restarts a daemon that dies and writes its own pid file), LapiNou's microphone (lapinou-mic,
+# the only reader of /dev/audio) first, before voice-daemon and multimedia-daemon (which are to read
+# the microphone from lapinou-mic's socket: wired in Task 6), LapiNou's mode without a server
+# (lapinou-cloud: idle unless lapinou.conf has [cloud] enabled=1) and LapiNou's MQTT bridge to Home
+# Assistant (lapinou-mqtt) last, once the daemons they drive are started; then the head button's watcher
 # (/usr/scripts/dbus_watcher: tones and /etc/button.d hooks) and the web API's tag listener
 # (/usr/scripts/tag_listener: tag learning and the tags' actions, as the user web, like the web API
 # whose programs it runs; web-files.sh makes its files first), each also under immortaldog and
 # never twice; then, once the daemons it talks to are on the bus (at most 15 s), the controller,
 # which connects to the app server karotz.conf names and starts karotzVM for the applications; then
 # mDNS: mdnsd answers to the host name (<name>.local) on wlan0 and advertises the services in
-# /etc/mdns.d (SSH), started as Buildroot's own mdnsd script starts it.
-DAEMONS="led rfid webcam button ears multimedia voice scheduler serial k2k"
+# /etc/mdns.d (SSH), started as Buildroot's own mdnsd script starts it. Last, LapiNou's daily update
+# check in root's cron table (check only, never an install: webroot.sh ota check), added once.
+# NAME: the program NAME-daemon, or NAME itself for LapiNou's (lapinou-*).
+DAEMONS="lapinou-mic led rfid webcam button ears multimedia voice scheduler serial k2k lapinou-cloud lapinou-mqtt"
 # The bus names the controller needs before it starts.
 NEEDS="Led Ears Multimedia Voice Scheduler Rfid Button"
 BIN=/usr/karotz/bin
@@ -24,6 +30,8 @@ WATCHER=/usr/scripts/dbus_watcher
 LISTENER=/usr/scripts/tag_listener
 PLAYSOUNDS=/usr/etc/conf/playsounds
 WEB_FILES=/karotz/scripts/web-files.sh
+CRONTABS=/usr/spool/cron/crontabs
+OTA_DAILY="/bin/sh /usr/share/lapinou/webroot.sh ota check"
 
 # once NAME PROGRAM [USER]: PROGRAM under immortaldog with the pid file NAME.pid (as USER, when
 # given), unless a live process holds that file already.
@@ -40,6 +48,17 @@ once() {
     return 0
 }
 
+# ota_cron: root's cron table gets the daily update check, at a minute of its own between 3:00 and
+# 5:59, unless it has it already; crond reads the table again (cron.update).
+ota_cron() {
+    [ -d $CRONTABS ] || return 0
+    grep -qF "$OTA_DAILY" $CRONTABS/root 2> /dev/null && return 0
+    n=$(od -An -N2 -tu2 /dev/urandom 2> /dev/null | tr -cd 0-9)
+    n=${n:-0}
+    echo "$((n % 60)) $((3 + n / 60 % 3)) * * * $OTA_DAILY > /dev/null 2>&1" >> $CRONTABS/root &&
+        echo root >> $CRONTABS/cron.update
+}
+
 start() {
     [ -s /usr/karotz/uuid.conf ] || uuidgen > /usr/karotz/uuid.conf
     if [ ! -e $PLAYSOUNDS.default ]; then
@@ -48,7 +67,10 @@ start() {
     fi
     mkdir -p $RUN
     for name in $DAEMONS; do
-        $BIN/immortaldog "$RUN/$name.pid" "$BIN/$name-daemon"
+        case $name in
+        lapinou-*) $BIN/immortaldog "$RUN/$name.pid" "$BIN/$name" ;;
+        *) $BIN/immortaldog "$RUN/$name.pid" "$BIN/$name-daemon" ;;
+        esac
     done
     # The watcher and the listener, each only when no live process holds its pid file.
     once dbus_watcher $WATCHER
@@ -67,6 +89,7 @@ start() {
     $BIN/immortaldog "$RUN/controller.pid" "$BIN/controller"
     # shellcheck disable=SC2086
     start-stop-daemon -S -q -p $MDNSD_PID -x $MDNSD -- $MDNSD_ARGS
+    ota_cron
 }
 
 stop() {

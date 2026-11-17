@@ -3,6 +3,8 @@
 # reads this file the first time one of its functions is called).
 
 # An http(s) URL as valid_url takes it, for awk: goodurl(URL).
+# ShellCheck: A && B || C means "C unless both A and B succeed"; awk programs are kept in single quotes.
+# shellcheck disable=SC2015,SC2016
 WEB_URL_AWK='function goodurl(u,   h, p, re) {
     re = "^https?://[A-Za-z0-9.-]+(:[0-9]+)?([/?#]([]A-Za-z0-9._~:/?#@!$&()*+,;=[-]|%[0-9A-Fa-f][0-9A-Fa-f])*)?$"
     if (length(u) > 1024 || u !~ re || index(u, "::")) return 0
@@ -366,7 +368,7 @@ learning() {
     first_line "$WEB_RUN/learning" || return 1
     case $FL in '' | *[!0-9]*) rm -f "$WEB_RUN/learning"; return 1 ;; esac
     _age=$(($(date +%s) - FL))
-    if [ $_age -ge 0 ] && [ $_age -lt $WEB_LEARN_TIME ]; then
+    if [ "$_age" -ge 0 ] && [ "$_age" -lt "$WEB_LEARN_TIME" ]; then
         return 0
     fi
     rm -f "$WEB_RUN/learning"
@@ -418,7 +420,7 @@ lang_sound() {
 # it lets go of the request's input, output and locks first, so the answer isn't held back.
 learn_timer() {
     exec < /dev/null > /dev/null 2>&1 8>&- 9>&-
-    sleep $WEB_LEARN_TIME
+    sleep "$WEB_LEARN_TIME"
     first_line "$WEB_RUN/learning" || return 0
     [ "$FL" = "$1" ] || return 0
     cgi_run rfid_stop_record ""

@@ -5,6 +5,8 @@
 # with the API's data on the flash, written only when it changes. Turning them on also
 # recalibrates the ears, unless the rabbit sleeps or an application owns it.
 #   disable  1 turns the moves off; anything else, or none, turns them on
+# ShellCheck: A && B || C means "C unless both A and B succeed".
+# shellcheck disable=SC2015
 . /usr/share/lapinlibre/web.sh
 web_begin change
 disable=0

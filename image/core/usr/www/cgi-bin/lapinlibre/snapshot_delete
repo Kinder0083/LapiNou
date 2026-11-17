@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 # lapinlibre/snapshot_delete: deletes one stored snapshot and its thumbnail.
 #   filename  a picture's name as snapshot gave it (snapshot_<time>.jpg)
+# ShellCheck: A && B || C means "C unless both A and B succeed".
+# shellcheck disable=SC2015
 . /usr/share/lapinlibre/web.sh
 web_begin change
 param filename

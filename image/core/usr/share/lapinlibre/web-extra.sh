@@ -5,6 +5,8 @@
 
 # Escapes each input line for a JSON string (quotes, backslashes, control characters) and joins
 # the lines with \n.
+# ShellCheck: awk programs are kept in single quotes.
+# shellcheck disable=SC2016
 WEB_JSON_AWK='BEGIN {
     for (i = 1; i < 32; i++) esc[sprintf("%c", i)] = sprintf("\\u%04x", i)
     esc[sprintf("%c", 127)] = "\\u007f"

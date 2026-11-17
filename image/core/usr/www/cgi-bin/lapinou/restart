@@ -1,0 +1,12 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# lapinou/restart (POST only): a LapiNou daemon started again, so it reads its new settings.
+#   what  mqtt (lapinou-mqtt), cloud (lapinou-cloud) or all (every daemon: S40lapinlibre restart)
+. /usr/share/lapinlibre/web.sh
+web_begin change
+. /usr/share/lapinou/web-lapinou.sh
+lapinou_post
+lapinou_guard
+param_choice what "" mqtt cloud all
+[ -n "$PV" ] || web_fail "Le paramètre what manque."
+lapinou_reply restart "$PV" < /dev/null

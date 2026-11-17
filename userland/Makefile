@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# The Karotz userland: 18 programs and two shared libraries.
+# The Karotz userland: 19 programs and two shared libraries.
 #
 #   make OUT=<dir>                 build with the host toolchain (for tests)
 #   make OUT=<dir> CROSS=... ...   build for the rabbit (system/userland.sh
@@ -37,7 +37,7 @@ all: tools libs daemons
 .SECONDEXPANSION:
 
 # --- standalone tools (no D-Bus) -----------------------------------------
-TOOLS := rootfs/power rootfs/ears rootfs/led usr/immortaldog \
+TOOLS := rootfs/power rootfs/ears rootfs/led usr/immortaldog usr/lapinou-webroot \
          usr/scripts/k2k/playback usr/scripts/k2k/rec
 tools: $(addprefix $(OUT)/,$(TOOLS))
 $(addprefix $(OUT)/,$(TOOLS)): $(OUT)/%: $$(wildcard $(S)/src/%/*.c)
@@ -53,7 +53,7 @@ $(LIBDIR)/libkarotz-messages.so: $(S)/src/usr/libkarotz-messages/karotz-messages
 	$(CC) $(CFLAGS) -fPIC -shared $(DBUS_CFLAGS) $(INCLUDES) -o $@ $< $(LDFLAGS) $(DBUS_LIBS)
 
 COMMON_SRC := $(wildcard $(S)/src/usr/libkarotz-common/*.c)
-$(LIBDIR)/libkarotz-common.so: $(COMMON_SRC) $(S)/src/usr/libkarotz-common/karotz-common.h
+$(LIBDIR)/libkarotz-common.so: $(COMMON_SRC) $(wildcard $(S)/src/usr/libkarotz-common/*.h)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -fPIC -shared $(DBUS_CFLAGS) $(INCLUDES) -o $@ $(COMMON_SRC) $(LDFLAGS) $(DBUS_LIBS) -luuid
 
@@ -61,11 +61,11 @@ $(LIBDIR)/libkarotz-common.so: $(COMMON_SRC) $(S)/src/usr/libkarotz-common/karot
 # Each daemon's server glue is generated from its D-Bus interface, with the
 # GObject prefix the daemon's methods use.
 DAEMONS := button-daemon ears-daemon led-daemon rfid-daemon scheduler-daemon webcam-daemon \
-           serial-daemon controller multimedia-daemon voice-daemon k2k-daemon karotzVM
+           serial-daemon controller multimedia-daemon voice-daemon k2k-daemon karotzVM lapinou-mic lapinou-mqtt lapinou-cloud
 
-# These need libmpd 0.17, protobuf 2.3, linphone 3.4 or V8 2.5, which only
+# These need libmpd 0.17, protobuf 2.3, linphone 3.4, V8 2.5 or Paho MQTT, which only
 # the system build has: they are built for the rabbit, not for the host.
-ARM_ONLY := multimedia-daemon voice-daemon k2k-daemon karotzVM
+ARM_ONLY := multimedia-daemon voice-daemon k2k-daemon karotzVM lapinou-mqtt
 
 # Per daemon: <name>_PREFIX (dbus-binding-tool --prefix, from the GObject
 # type name), <name>_CFLAGS and <name>_LIBS (extra pkg-config flags/libs; 2010-era
@@ -81,6 +81,9 @@ multimedia-daemon_PREFIX := multimedia_object
 voice-daemon_PREFIX      := voice_object
 controller_PREFIX        := controller_object
 k2k-daemon_PREFIX        := k2k_object
+lapinou-mic_PREFIX       := lapinou_mic_object
+lapinou-mqtt_PREFIX      := lapinou_mqtt_object
+lapinou-cloud_PREFIX     := lapinou_cloud_object
 
 ears-daemon_LIBS       :=
 led-daemon_LIBS        :=
@@ -88,6 +91,9 @@ rfid-daemon_LIBS       := $(shell $(PKG_CONFIG) --libs expat 2>/dev/null || echo
 scheduler-daemon_LIBS  :=
 webcam-daemon_LIBS     := $(shell $(PKG_CONFIG) --libs libcurl) $(shell $(PKG_CONFIG) --libs libjpeg 2>/dev/null || echo -ljpeg)
 serial-daemon_LIBS     :=
+lapinou-mic_LIBS       := -lm
+lapinou-mqtt_LIBS      := -lpaho-mqtt3a -lm
+lapinou-cloud_LIBS     := $(shell $(PKG_CONFIG) --libs libcurl)
 multimedia-daemon_LIBS := $(shell $(PKG_CONFIG) --libs libmpd gthread-2.0)
 multimedia-daemon_CFLAGS := $(shell $(PKG_CONFIG) --cflags libmpd)
 voice-daemon_LIBS      := $(shell $(PKG_CONFIG) --cflags --libs libcurl libxml-2.0 protobuf uuid)

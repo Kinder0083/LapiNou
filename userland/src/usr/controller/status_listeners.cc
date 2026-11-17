@@ -162,7 +162,9 @@ static void network_online(ControllerObject *controller, int status)
     if (status == E_STATUS_NETWORK_ONLINE) {
         g_log(NULL, G_LOG_LEVEL_DEBUG, "Network - Online %d", E_STATUS_NETWORK_ONLINE);
         g_socket_service_start(controller->server);
-        if (!platform_connect(controller)) {
+        if (lapinou_standalone()) {
+            lapinou_standalone_online(controller);
+        } else if (!platform_connect(controller)) {
             g_log(NULL, G_LOG_LEVEL_DEBUG, "Network - controller_platform_connect FALSE");
             ControllerObject **data = new ControllerObject *[2]; /* freed by retry_connection() */
             data[0] = controller;

@@ -1,0 +1,24 @@
+== registered: True
+== platform connection: 1
+== long press before the login
+== LapinouCloud, after the press: ['call LapinouCloud /com/mindscape/karotz/LapinouCloud com.mindscape.karotz.LapinouCloud.start_listening()']
+== authentication while the button is held
+conn 1: id: "<u1>" | correlationId: "p-auth" | authenticationResponse { |   login: "rabbit-id" |   authentication: "e427b20810b376f0505139bf360771ff" | }
+== release after the login: no LONG_STOP
+== LapinouCloud, after the release: ['call LapinouCloud /com/mindscape/karotz/LapinouCloud com.mindscape.karotz.LapinouCloud.stop_listening()']
+== long press once logged in: the platform's
+conn 1: id: "<u>" | buttonCallback { |   type: LONG_START | }
+conn 1: id: "<u>" | buttonCallback { |   type: LONG_STOP | }
+call Led light("", "000000")
+== LapinouCloud, after the logged-in press: no call
+== signals
+com.mindscape.karotz.KarotzInterface.registered()
+com.mindscape.karotz.KarotzInterface.karotz_status_changed(int32 15)
+com.mindscape.karotz.KarotzInterface.lclick_start()
+com.mindscape.karotz.KarotzInterface.karotz_status_changed(int32 14)
+com.mindscape.karotz.KarotzInterface.lclick_stop()
+com.mindscape.karotz.KarotzInterface.lclick_start()
+com.mindscape.karotz.KarotzInterface.lclick_stop()
+== device I/O
+system cp -f /usr/etc/conf/account.conf /tmp/account.conf
+== daemon still running: True

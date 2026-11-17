@@ -13,6 +13,9 @@
 # quote its values. Never logs the Wi-Fi password or the web password.
 
 source /mnt/usbkey/install-lib.sh
+# LapiNou's settings library, shipped on the key: without it the check fails, before anything is written.
+source /mnt/usbkey/lapinou-conf.sh 2> /dev/null && type lapinou_set > /dev/null 2>&1 ||
+    ERROR "lapinou-conf.sh is missing from the key or unreadable"
 
 FILE=/mnt/usbkey/lapinlibre.txt
 CONF=/usr/etc/conf
@@ -20,6 +23,8 @@ BOM=$(printf '\357\273\277')
 
 WIFI_SSID= WIFI_PASSWORD= IP= NETMASK= GATEWAY= DNS= SSH_PUBKEY= TELNET= WEB_PASSWORD=
 SERVER= TTS_SERVER= ASR_SERVER= LANGUAGE= HOSTNAME=
+LAPINOU_SERVER= MQTT_HOST= MQTT_PORT= MQTT_USER= MQTT_PASSWORD= TZ=
+CLOUD_STT_URL= CLOUD_STT_KEY= CLOUD_LLM_KIND= CLOUD_LLM_URL= CLOUD_LLM_MODEL= CLOUD_LLM_KEY= CLOUD_TTS_URL= CLOUD_TTS_KEY=
 problems=""
 problem() { problems="${problems}${problems:+; }$1"; }
 
@@ -40,7 +45,9 @@ if [ -f "${FILE}" ]; then
         value="${value#"${value%%[![:space:]]*}"}"
         case "${value}" in \"*\") value=${value#\"}; value=${value%\"} ;; \'*\') value=${value#\'}; value=${value%\'} ;; esac
         case "${key}" in
-        WIFI_SSID|WIFI_PASSWORD|IP|NETMASK|GATEWAY|DNS|SSH_PUBKEY|TELNET|WEB_PASSWORD|SERVER|TTS_SERVER|ASR_SERVER|LANGUAGE|HOSTNAME)
+        WIFI_SSID|WIFI_PASSWORD|IP|NETMASK|GATEWAY|DNS|SSH_PUBKEY|TELNET|WEB_PASSWORD|SERVER|TTS_SERVER|ASR_SERVER|LANGUAGE|HOSTNAME|\
+        LAPINOU_SERVER|MQTT_HOST|MQTT_PORT|MQTT_USER|MQTT_PASSWORD|TZ|CLOUD_STT_URL|CLOUD_STT_KEY|CLOUD_LLM_KIND|CLOUD_LLM_URL|\
+        CLOUD_LLM_MODEL|CLOUD_LLM_KEY|CLOUD_TTS_URL|CLOUD_TTS_KEY)
             printf -v "${key}" '%s' "${value}" ;;
         *) problem "line ${n}: unknown setting ${key}" ;;
         esac
@@ -90,6 +97,23 @@ is_host() { [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; }
 [ -z "${HOSTNAME}" ] || [[ "${HOSTNAME}" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] ||
     problem "HOSTNAME must be lower-case letters, digits and dashes, like lapinlibre or kitchen-rabbit"
 
+# LapiNou's settings: any text goes in a stored value safely, so the checks are for typos.
+# Host names and addresses, ports, URLs, a model's name, the time zone, no control characters.
+printable() { local LC_ALL=C; case "$1" in *[[:cntrl:]]*) return 1 ;; esac; return 0; }
+[ -z "${LAPINOU_SERVER}" ] || is_host "${LAPINOU_SERVER}" || problem "LAPINOU_SERVER must be a host name or address, like 192.168.1.10"
+[ -z "${MQTT_HOST}" ] || is_host "${MQTT_HOST}" || problem "MQTT_HOST must be a host name or address, like 192.168.1.50"
+[ -z "${MQTT_PORT}" ] || { [[ "${MQTT_PORT}" =~ ^[0-9]{1,5}$ ]] && [ "${MQTT_PORT}" -ge 1 ] && [ "${MQTT_PORT}" -le 65535 ]; } ||
+    problem "MQTT_PORT must be a number from 1 to 65535"
+for v in MQTT_USER MQTT_PASSWORD CLOUD_STT_KEY CLOUD_LLM_KEY CLOUD_TTS_KEY; do
+    printable "${!v}" || problem "${v} can't have control characters"
+done
+for v in CLOUD_STT_URL CLOUD_LLM_URL CLOUD_TTS_URL; do
+    [ -z "${!v}" ] || [[ "${!v}" =~ ^https?://[^[:space:]]+$ ]] || problem "${v} must be a URL like https://api.example.com/v1"
+done
+case "${CLOUD_LLM_KIND}" in ''|anthropic|openai) ;; *) problem "CLOUD_LLM_KIND must be anthropic or openai" ;; esac
+[ -z "${CLOUD_LLM_MODEL}" ] || [[ "${CLOUD_LLM_MODEL}" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]] || problem "CLOUD_LLM_MODEL isn't a model name"
+[ -z "${TZ}" ] || [[ "${TZ}" =~ ^[A-Za-z0-9][A-Za-z0-9_+:./,-]*$ ]] || problem "TZ must be a time zone like Europe/Paris"
+
 [ -z "${problems}" ] || ERROR "lapinlibre.txt: ${problems}"
 [ "$1" = "--check" ] && { LOG "Settings: lapinlibre.txt is fine"; exit 0; }
 
@@ -138,16 +162,20 @@ set_ini() { # file section key value
 }
 # The app server (tools/app-server: the platform on 9123, apps on 8080, speech on 8081, speech
 # recognition on 8443), read by the controller (karotz.conf) and voice-daemon (voice.conf).
+# The LapiNou server is also the rabbit's platform and speech servers, on the same ports: without
+# SERVER=, LAPINOU_SERVER= is the app server (TTS_SERVER= and ASR_SERVER= still win for speech).
+[ -n "${SERVER}" ] || SERVER=${LAPINOU_SERVER}
 if [ -n "${SERVER}" ]; then
     set_ini "${CONF}/karotz.conf" karotz ip_server "${SERVER}"
     set_ini "${CONF}/karotz.conf" karotz port_server 9123
     set_ini "${CONF}/karotz.conf" karotz url_app "http://${SERVER}:8080"
     set_ini "${CONF}/karotz.conf" karotz domain_app "${SERVER}"
-    # The controller reboots the rabbit when the update server offers newer versions: a closed
-    # port on the rabbit itself makes that check fail at once.
-    set_ini "${CONF}/karotz.conf" karotz url_update "http://127.0.0.1:1"
     LOG "Settings: app server ${SERVER}"
 fi
+# The controller reboots the rabbit when the update server offers newer versions: a closed port on
+# the rabbit itself makes that check fail at once, server or not. LapiNou's updates are
+# lapinou-ota's (signed, from the LapiNou server or GitHub).
+set_ini "${CONF}/karotz.conf" karotz url_update "http://127.0.0.1:1"
 # The controller's platform account, whatever the app server: any values, but both set.
 [ -s "${CONF}/account.conf" ] || printf '[account]\nid=lapinlibre\npwd=lapinlibre\n' > "${CONF}/account.conf"
 TTS_URL=${TTS_SERVER:-${SERVER:+http://${SERVER}:8081}}
@@ -173,5 +201,39 @@ fi
 if [ -n "${LANGUAGE}" ]; then
     set_ini "${CONF}/karotz.conf" karotz lang "${LANGUAGE}"
     LOG "Settings: language ${LANGUAGE}"
+fi
+
+# LapiNou's settings, in /usr/etc/conf/lapinou.conf; the passwords and keys in lapinou.secrets (0600).
+# The library is the key's lapinou-conf.sh (image/core/usr/share/lapinou/conf.sh), which the rabbit has once installed.
+LAPINOU_CONF_DIR=${CONF}
+# A value left empty keeps what the rabbit has. Never logs a password or key.
+ln_set() { lapinou_set "$1" "$2" "$3" || ERROR "can't write ${CONF}/lapinou.conf"; }
+ln_secret() { lapinou_secret_set "$1" "$2" || ERROR "can't write ${CONF}/lapinou.secrets"; }
+if [ -n "${LAPINOU_SERVER}" ]; then
+    ln_set server host "${LAPINOU_SERVER}"; ln_set server enabled 1
+    LOG "Settings: LapiNou server ${LAPINOU_SERVER}"
+fi
+if [ -n "${MQTT_HOST}" ]; then
+    ln_set mqtt host "${MQTT_HOST}"; ln_set mqtt enabled 1
+    LOG "Settings: MQTT ${MQTT_HOST}"
+fi
+[ -z "${MQTT_PORT}" ] || ln_set mqtt port "${MQTT_PORT}"
+[ -z "${MQTT_USER}" ] || ln_set mqtt user "${MQTT_USER}"
+[ -z "${MQTT_PASSWORD}" ] || { ln_secret mqtt_password "${MQTT_PASSWORD}"; LOG "Settings: MQTT password set"; }
+[ -z "${CLOUD_STT_URL}" ] || ln_set cloud stt_url "${CLOUD_STT_URL}"
+[ -z "${CLOUD_STT_KEY}" ] || ln_secret cloud_stt_key "${CLOUD_STT_KEY}"
+[ -z "${CLOUD_LLM_KIND}" ] || ln_set cloud llm_kind "${CLOUD_LLM_KIND}"
+[ -z "${CLOUD_LLM_URL}" ] || ln_set cloud llm_url "${CLOUD_LLM_URL}"
+[ -z "${CLOUD_LLM_MODEL}" ] || ln_set cloud llm_model "${CLOUD_LLM_MODEL}"
+[ -z "${CLOUD_LLM_KEY}" ] || ln_secret cloud_llm_key "${CLOUD_LLM_KEY}"
+[ -z "${CLOUD_TTS_URL}" ] || ln_set cloud tts_url "${CLOUD_TTS_URL}"
+[ -z "${CLOUD_TTS_KEY}" ] || ln_secret cloud_tts_key "${CLOUD_TTS_KEY}"
+if [ -n "${CLOUD_STT_URL}${CLOUD_LLM_URL}${CLOUD_TTS_URL}" ]; then
+    ln_set cloud enabled 1
+    LOG "Settings: cloud services"
+fi
+if [ -n "${TZ}" ]; then
+    ln_set time tz "${TZ}"
+    LOG "Settings: time zone ${TZ}"
 fi
 exit 0

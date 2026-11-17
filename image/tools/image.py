@@ -45,7 +45,10 @@ SIGNED = "autorun.sig"
 # The key's own files, copied as they are: the install (autorun and its helpers), the settings the
 # user fills in, and their installer. The install's tools are LapinLibre's install-tools.tar
 # (system/install-tools.sh).
-KEY_FILES = ["autorun", "install-lib.sh", "applysettings.sh", "lapinlibre.txt"]
+KEY_FILES = ["autorun", "install-lib.sh", "applysettings.sh", "lapinou-conf.sh", "lapinlibre.txt"]
+# Key files that are the image's own files (applysettings.sh sources LapiNou's settings library
+# from the key, since the rabbit being installed may not have it yet), not image/usbkey's.
+KEY_SOURCES = {"lapinou-conf.sh": IMAGE / "core" / "usr" / "share" / "lapinou" / "conf.sh"}
 
 
 class ImageError(Exception):
@@ -73,6 +76,24 @@ def git_describe():
                                "--abbrev=12"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         return "unversioned"
+
+
+def git_commit():
+    """The commit's short hash (12 digits), or "" outside git."""
+    try:
+        return subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], cwd=ROOT, capture_output=True, text=True,
+                              check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+
+
+def release_version(describe, commit):
+    """The version the build installs as the rabbit's sys_version (R44): the release tag vX.Y.Z when
+    the build is exactly that tag (git_describe() is the tag alone: no commit after it, no change),
+    else "0.0.0-<commit>", lower than every release."""
+    if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", describe):
+        return describe
+    return f"0.0.0-{commit or 'unversioned'}"
 
 
 def source_epoch():
@@ -203,6 +224,16 @@ def core_generated(changes):
            ("usr", "etc/timezone.list"): timezone_list(changes)}
     for path, data in ca_certificates(changes).items():
         out[("usr", path)] = data
+    # LapiNou's updates (Task 11): lapinou-ota, a shell script (nothing to compile, so not the
+    # userland stage's), in /usr; the key's install helpers it shares with the key's autorun, in the
+    # root filesystem, where the boot's resume of an interrupted /usr (karotz/scripts/ota-resume.sh)
+    # finds them whatever is left of /usr.
+    for part, path, src in (("usr", "karotz/bin/lapinou-ota", ROOT / "userland/src/usr/lapinou-ota/lapinou-ota.sh"),
+                            ("rootfs", "karotz/scripts/install-lib.sh", IMAGE / "usbkey" / "install-lib.sh")):
+        data = src.read_bytes()
+        if b"\r" in data:
+            raise ImageError(f"{src} has CRLF line endings; the rabbit's shell can't run it")
+        out[(part, path)] = data
     for name, notes in SOUNDS.items():
         out[("usr", f"karotz/sounds/{name}")] = tone_wav(notes)
     for name, notes in EFFECTS.items():
@@ -249,9 +280,9 @@ def stick_files(config, names):
     image/usbkey (CRLF refused), autorun.sig, the install tools and the install sounds."""
     files = {}
     for name in names:
-        files[name] = (IMAGE / "usbkey" / name).read_bytes()
+        files[name] = KEY_SOURCES.get(name, IMAGE / "usbkey" / name).read_bytes()
         if b"\r" in files[name]:
-            raise ImageError(f"image/usbkey/{name} has CRLF line endings; the rabbit's shell can't run it")
+            raise ImageError(f"{name} has CRLF line endings; the rabbit's shell can't run it")
     signed = (IMAGE / "usbkey" / SIGNED).read_bytes()
     if md5(signed) != config["key"]["md5"][SIGNED]:
         raise ImageError(f"image/usbkey/{SIGNED} has md5 {md5(signed)}, not config.toml's: it must stay as it is")
@@ -352,7 +383,8 @@ def build(out):
     for name, data in images.items():
         (out / name).write_bytes(data)
     (out / "install.conf").write_bytes(install_conf({
-        "BUILD_ID": build_id, "BUILD_VERSION": version, "KERNEL_MD5": md5(images["zImage"]),
+        "BUILD_ID": build_id, "BUILD_VERSION": version, "RELEASE_VERSION": release_version(version, git_commit()),
+        "KERNEL_MD5": md5(images["zImage"]),
         "ROOTFS_MD5": md5(images["rootfs.img.gz"]), "USR_MD5": md5(images["usr.tar.gz"]),
         "INSTALL_TOOLS_MD5": md5(common["install-tools.tar"])}))
     (out / "build_id").write_text(build_id + "\n", encoding="utf-8", newline="\n")

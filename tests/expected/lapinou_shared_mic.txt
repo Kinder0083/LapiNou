@@ -1,0 +1,42 @@
+== registered: True
+microphone opened by lapinou-mic: True
+fake audio server ready: True
+voice-daemon registered: True
+multimedia-daemon registered: True
+== 1. asr_start_string
+fake ASR servers ready: True
+asr_start_string('string:s1', 'string:oui | non', 'string:fr-FR', 'int32:0'): boolean true
+asr audio received (at least 8192 bytes): True, every second byte of the microphone's with +12 dB: True
+  server: asr: grammar '#ABNF 1.0 UTF-8;\r\nlanguage fr-FR;\r\nmode voice;\r\ntag-format <semantics/1.0>;\r\nroot $App;\r\npublic $App = oui | non;\r\n'
+  server: asr: audio chunk of 1024 bytes
+== 2. play and the marks
+play('string:p1', 'string:song.mp3', 'int32:0'): boolean true
+after play: ['mark(p1, start=True)']
+stop('string:p1', 'int32:0'): boolean true
+after stop: ['mark(p1, start=True)', 'mark(p1, start=False)']
+play('string:p2', 'string:quick.mp3', 'int32:0'): boolean true
+after a sound that ends by itself: ['mark(p1, start=True)', 'mark(p1, start=False)', 'mark(p2, start=True)', 'mark(p2, start=False)']
+== 3. record, the session still going
+record('string:r1', 'string:x', 'int32:0'): boolean true
+encoder input (at least 8192 bytes): True, most samples not silence: True
+asr audio kept coming meanwhile: True
+stop('string:r1', 'int32:0'): boolean true
+recording ended: True
+asr_stop('string:s1', 'int32:0'): boolean true
+== warnings the other daemons logged beyond the expected ones
+voice-daemon: []
+multimedia-daemon: []
+== signals
+com.mindscape.karotz.KarotzInterface.multi_playfinished(string "p1", int32 4)
+com.mindscape.karotz.KarotzInterface.multi_playfinished(string "p2", int32 4)
+com.mindscape.karotz.KarotzInterface.multi_recordfinished(string "r1", int32 4)
+== device I/O
+open /dev/audio
+ioctl /dev/audio 0x5000
+ioctl /dev/audio 0xc0045005
+ioctl /dev/audio 0xc0045003
+ioctl /dev/audio 0xc0045002
+read /dev/audio 2048
+ioctl /dev/audio 0x8010500d
+read /dev/audio 2048
+== daemon still running: True

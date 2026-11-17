@@ -1,0 +1,388 @@
+== registered: True
+== introspection
+method com.mindscape.karotz.LapinouCloud.say(in:s)
+method com.mindscape.karotz.LapinouCloud.start_listening()
+method com.mindscape.karotz.LapinouCloud.stop_listening()
+signal com.mindscape.karotz.LapinouCloud.state(out:s)
+fake daemons ready: True
+== 1. a question
+  STT POST /v1/audio/transcriptions (multipart/form-data, user agent lapinou-cloud)
+    Authorization is Bearer + the STT key: True
+    fields: {'model': 'whisper-test', 'language': 'fr', 'response_format': 'json'}
+    file audio.wav (audio/wav): {'riff_size_ok': True, 'fmt_size': 16, 'pcm': True, 'channels': 1, 'rate': 16000, 'byte_rate': 32000, 'align': 2, 'bits': 16, 'data_bytes_ok': True}
+    data: at least 1 s and under 3 s: True; its first second is the tone decoded: True
+  LLM POST /v1/messages (application/json, user agent lapinou-cloud)
+    x-api-key is the LLM key: True, Authorization: None, anthropic-version: 2023-06-01, anthropic-beta: server-side-fallback-2026-07-01
+    keys: ['fallbacks', 'max_tokens', 'messages', 'model', 'output_config', 'system']; model claude-opus-5-5, max_tokens 2048, fallbacks default, output_config {'effort': 'low'}
+    system is persona_fr_court.txt: True
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+  TTS POST /v1/audio/speech (application/json, user agent lapinou-cloud)
+    Authorization is Bearer + the TTS key: True
+    keys: ['input', 'model', 'response_format', 'voice']; model tts-test, voice nova, response_format mp3
+    input: Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil.
+  call Multimedia.play('lapinou-cloud', '/tmp/lapinou-tts.mp3', 1)
+the played file is the service's MP3: True
+idle once played: True
+== 2. a follow-up: the history comes with it
+  STT POST /v1/audio/transcriptions (multipart/form-data, user agent lapinou-cloud)
+    Authorization is Bearer + the STT key: True
+    fields: {'model': 'whisper-test', 'language': 'fr', 'response_format': 'json'}
+    file audio.wav (audio/wav): {'riff_size_ok': True, 'fmt_size': 16, 'pcm': True, 'channels': 1, 'rate': 16000, 'byte_rate': 32000, 'align': 2, 'bits': 16, 'data_bytes_ok': True}
+    data: at least 1 s and under 3 s: True; its first second is the tone decoded: True
+  LLM POST /v1/messages (application/json, user agent lapinou-cloud)
+    x-api-key is the LLM key: True, Authorization: None, anthropic-version: 2023-06-01, anthropic-beta: server-side-fallback-2026-07-01
+    keys: ['fallbacks', 'max_tokens', 'messages', 'model', 'output_config', 'system']; model claude-opus-5-5, max_tokens 2048, fallbacks default, output_config {'effort': 'low'}
+    system is persona_fr_court.txt: True
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+  TTS POST /v1/audio/speech (application/json, user agent lapinou-cloud)
+    Authorization is Bearer + the TTS key: True
+    keys: ['input', 'model', 'response_format', 'voice']; model tts-test, voice nova, response_format mp3
+    input: Oui, et le soir il devient orange, car la lumière traverse plus d'air.
+  call Multimedia.play('lapinou-cloud', '/tmp/lapinou-tts.mp3', 1)
+idle once played: True
+say: answered
+== 3. say()
+  TTS POST /v1/audio/speech (application/json, user agent lapinou-cloud)
+    Authorization is Bearer + the TTS key: True
+    keys: ['input', 'model', 'response_format', 'voice']; model tts-test, voice nova, response_format mp3
+    input: Il est l'heure du goûter !
+  call Multimedia.play('lapinou-cloud', '/tmp/lapinou-tts.mp3', 1)
+idle once played: True
+== 4. speech to text answers 500: the error
+  STT POST /v1/audio/transcriptions (multipart/form-data, user agent lapinou-cloud)
+    Authorization is Bearer + the STT key: True
+    fields: {'model': 'whisper-test', 'language': 'fr', 'response_format': 'json'}
+    file audio.wav (audio/wav): {'riff_size_ok': True, 'fmt_size': 16, 'pcm': True, 'channels': 1, 'rate': 16000, 'byte_rate': 32000, 'align': 2, 'bits': 16, 'data_bytes_ok': True}
+    data: at least 1 s and under 3 s: True; its first second is the tone decoded: True
+    answered HTTP 500
+  call Multimedia.play('lapinou-cloud', '/usr/karotz/sounds/error.mp3', 1)
+  call Led.light('', 'FFA500')
+  call Led.pulse('', '00FF00', '000000', 1600, -1)
+state error, then idle: True, True
+still running: True
+== 5. the language model refuses: the error and a gentle sentence
+  STT POST /v1/audio/transcriptions (multipart/form-data, user agent lapinou-cloud)
+    Authorization is Bearer + the STT key: True
+    fields: {'model': 'whisper-test', 'language': 'fr', 'response_format': 'json'}
+    file audio.wav (audio/wav): {'riff_size_ok': True, 'fmt_size': 16, 'pcm': True, 'channels': 1, 'rate': 16000, 'byte_rate': 32000, 'align': 2, 'bits': 16, 'data_bytes_ok': True}
+    data: at least 1 s and under 3 s: True; its first second is the tone decoded: True
+  LLM POST /v1/messages (application/json, user agent lapinou-cloud)
+    x-api-key is the LLM key: True, Authorization: None, anthropic-version: 2023-06-01, anthropic-beta: server-side-fallback-2026-07-01
+    keys: ['fallbacks', 'max_tokens', 'messages', 'model', 'output_config', 'system']; model claude-opus-5-5, max_tokens 2048, fallbacks default, output_config {'effort': 'low'}
+    system is persona_fr_court.txt: True
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Oui, et le soir il devient orange, car la lumière traverse plus d'air."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+  TTS POST /v1/audio/speech (application/json, user agent lapinou-cloud)
+    Authorization is Bearer + the TTS key: True
+    keys: ['input', 'model', 'response_format', 'voice']; model tts-test, voice nova, response_format mp3
+    input: Je ne peux pas répondre à ça. Demande-moi autre chose !
+  call Led.light('', 'FFA500')
+  call Multimedia.play('lapinou-cloud', '/tmp/lapinou-tts.mp3', 1)
+  call Led.pulse('', '00FF00', '000000', 1600, -1)
+idle once played: True
+still running: True
+== 6. a recording not stopped: cut at 15 s
+  STT POST /v1/audio/transcriptions (multipart/form-data, user agent lapinou-cloud)
+    Authorization is Bearer + the STT key: True
+    fields: {'model': 'whisper-test', 'language': 'fr', 'response_format': 'json'}
+    file audio.wav (audio/wav): {'riff_size_ok': True, 'fmt_size': 16, 'pcm': True, 'channels': 1, 'rate': 16000, 'byte_rate': 32000, 'align': 2, 'bits': 16, 'data_bytes_ok': True}
+    data: 480000 bytes, 15 s exactly; it starts with the tone decoded: True
+  LLM POST /v1/messages (application/json, user agent lapinou-cloud)
+    x-api-key is the LLM key: True, Authorization: None, anthropic-version: 2023-06-01, anthropic-beta: server-side-fallback-2026-07-01
+    keys: ['fallbacks', 'max_tokens', 'messages', 'model', 'output_config', 'system']; model claude-opus-5-5, max_tokens 2048, fallbacks default, output_config {'effort': 'low'}
+    system is persona_fr_court.txt: True
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Oui, et le soir il devient orange, car la lumière traverse plus d'air."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+  TTS POST /v1/audio/speech (application/json, user agent lapinou-cloud)
+    Authorization is Bearer + the TTS key: True
+    keys: ['input', 'model', 'response_format', 'voice']; model tts-test, voice nova, response_format mp3
+    input: Oui, et le soir il devient orange, car la lumière traverse plus d'air.
+  call Multimedia.play('lapinou-cloud', '/tmp/lapinou-tts.mp3', 1)
+idle once played: True
+== the late stop_listening(): nothing
+== 7. stop_listening() while idle: nothing
+== 8. llm_kind=openai: chat completions
+  STT POST /v1/audio/transcriptions (multipart/form-data, user agent lapinou-cloud)
+    Authorization is Bearer + the STT key: True
+    fields: {'model': 'whisper-test', 'language': 'fr', 'response_format': 'json'}
+    file audio.wav (audio/wav): {'riff_size_ok': True, 'fmt_size': 16, 'pcm': True, 'channels': 1, 'rate': 16000, 'byte_rate': 32000, 'align': 2, 'bits': 16, 'data_bytes_ok': True}
+    data: at least 1 s and under 3 s: True; its first second is the tone decoded: True
+  CHAT POST /v1/chat/completions (application/json, user agent lapinou-cloud)
+    Authorization is Bearer + the LLM key: True, x-api-key: None
+    keys: ['max_tokens', 'messages', 'model']; model gpt-test, max_tokens 2048
+    message: system, persona_fr_court.txt: True
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Oui, et le soir il devient orange, car la lumière traverse plus d'air."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Oui, et le soir il devient orange, car la lumière traverse plus d'air."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+  TTS POST /v1/audio/speech (application/json, user agent lapinou-cloud)
+    Authorization is Bearer + the TTS key: True
+    keys: ['input', 'model', 'response_format', 'voice']; model tts-test, voice nova, response_format mp3
+    input: Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil.
+  call Multimedia.play('lapinou-cloud', '/tmp/lapinou-tts.mp3', 1)
+idle once played: True
+== 9. a transcript longer than 64 kB: the error
+  STT POST /v1/audio/transcriptions (multipart/form-data, user agent lapinou-cloud)
+    Authorization is Bearer + the STT key: True
+    fields: {'model': 'whisper-test', 'language': 'fr', 'response_format': 'json'}
+    file audio.wav (audio/wav): {'riff_size_ok': True, 'fmt_size': 16, 'pcm': True, 'channels': 1, 'rate': 16000, 'byte_rate': 32000, 'align': 2, 'bits': 16, 'data_bytes_ok': True}
+    data: at least 1 s and under 3 s: True; its first second is the tone decoded: True
+  call Multimedia.play('lapinou-cloud', '/usr/karotz/sounds/error.mp3', 1)
+  call Led.light('', 'FFA500')
+  call Led.pulse('', '00FF00', '000000', 1600, -1)
+idle again: True
+== an answer that isn't JSON: the error
+  STT POST /v1/audio/transcriptions (multipart/form-data, user agent lapinou-cloud)
+    Authorization is Bearer + the STT key: True
+    fields: {'model': 'whisper-test', 'language': 'fr', 'response_format': 'json'}
+    file audio.wav (audio/wav): {'riff_size_ok': True, 'fmt_size': 16, 'pcm': True, 'channels': 1, 'rate': 16000, 'byte_rate': 32000, 'align': 2, 'bits': 16, 'data_bytes_ok': True}
+    data: at least 1 s and under 3 s: True; its first second is the tone decoded: True
+  CHAT POST /v1/chat/completions (application/json, user agent lapinou-cloud)
+    Authorization is Bearer + the LLM key: True, x-api-key: None
+    keys: ['max_tokens', 'messages', 'model']; model gpt-test, max_tokens 2048
+    message: system, persona_fr_court.txt: True
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Oui, et le soir il devient orange, car la lumière traverse plus d'air."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Oui, et le soir il devient orange, car la lumière traverse plus d'air."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+  call Multimedia.play('lapinou-cloud', '/usr/karotz/sounds/error.mp3', 1)
+  call Led.light('', 'FFA500')
+  call Led.pulse('', '00FF00', '000000', 1600, -1)
+idle again: True
+== 10. no llm_model: claude-haiku-5-5, effort low, no fallback
+  STT POST /v1/audio/transcriptions (multipart/form-data, user agent lapinou-cloud)
+    Authorization is Bearer + the STT key: True
+    fields: {'model': 'whisper-test', 'language': 'fr', 'response_format': 'json'}
+    file audio.wav (audio/wav): {'riff_size_ok': True, 'fmt_size': 16, 'pcm': True, 'channels': 1, 'rate': 16000, 'byte_rate': 32000, 'align': 2, 'bits': 16, 'data_bytes_ok': True}
+    data: at least 1 s and under 3 s: True; its first second is the tone decoded: True
+  LLM POST /v1/messages (application/json, user agent lapinou-cloud)
+    x-api-key is the LLM key: True, Authorization: None, anthropic-version: 2023-06-01, anthropic-beta: None
+    keys: ['max_tokens', 'messages', 'model', 'output_config', 'system']; model claude-haiku-5-5, max_tokens 2048, fallbacks None, output_config {'effort': 'low'}
+    system is persona_fr_court.txt: True
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Oui, et le soir il devient orange, car la lumière traverse plus d'air."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Oui, et le soir il devient orange, car la lumière traverse plus d'air."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+  TTS POST /v1/audio/speech (application/json, user agent lapinou-cloud)
+    Authorization is Bearer + the TTS key: True
+    keys: ['input', 'model', 'response_format', 'voice']; model tts-test, voice nova, response_format mp3
+    input: Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil.
+  call Multimedia.play('lapinou-cloud', '/tmp/lapinou-tts.mp3', 1)
+idle once played: True
+== max_tokens reached with no text: the error
+  STT POST /v1/audio/transcriptions (multipart/form-data, user agent lapinou-cloud)
+    Authorization is Bearer + the STT key: True
+    fields: {'model': 'whisper-test', 'language': 'fr', 'response_format': 'json'}
+    file audio.wav (audio/wav): {'riff_size_ok': True, 'fmt_size': 16, 'pcm': True, 'channels': 1, 'rate': 16000, 'byte_rate': 32000, 'align': 2, 'bits': 16, 'data_bytes_ok': True}
+    data: at least 1 s and under 3 s: True; its first second is the tone decoded: True
+  LLM POST /v1/messages (application/json, user agent lapinou-cloud)
+    x-api-key is the LLM key: True, Authorization: None, anthropic-version: 2023-06-01, anthropic-beta: None
+    keys: ['max_tokens', 'messages', 'model', 'output_config', 'system']; model claude-haiku-5-5, max_tokens 2048, fallbacks None, output_config {'effort': 'low'}
+    system is persona_fr_court.txt: True
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Oui, et le soir il devient orange, car la lumière traverse plus d'air."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Oui, et le soir il devient orange, car la lumière traverse plus d'air."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+  call Multimedia.play('lapinou-cloud', '/usr/karotz/sounds/error.mp3', 1)
+  call Led.light('', 'FFA500')
+  call Led.pulse('', '00FF00', '000000', 1600, -1)
+idle again: True
+== 11. start_listening() while the language model answers: only the new question is answered
+  STT POST /v1/audio/transcriptions (multipart/form-data, user agent lapinou-cloud)
+    Authorization is Bearer + the STT key: True
+    fields: {'model': 'whisper-test', 'language': 'fr', 'response_format': 'json'}
+    file audio.wav (audio/wav): {'riff_size_ok': True, 'fmt_size': 16, 'pcm': True, 'channels': 1, 'rate': 16000, 'byte_rate': 32000, 'align': 2, 'bits': 16, 'data_bytes_ok': True}
+    data: at least 1 s and under 3 s: True; its first second is the tone decoded: True
+  LLM POST /v1/messages (application/json, user agent lapinou-cloud)
+    x-api-key is the LLM key: True, Authorization: None, anthropic-version: 2023-06-01, anthropic-beta: None
+    keys: ['max_tokens', 'messages', 'model', 'output_config', 'system']; model claude-haiku-5-5, max_tokens 2048, fallbacks None, output_config {'effort': 'low'}
+    system is persona_fr_court.txt: True
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Oui, et le soir il devient orange, car la lumière traverse plus d'air."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Oui, et le soir il devient orange, car la lumière traverse plus d'air."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+  STT POST /v1/audio/transcriptions (multipart/form-data, user agent lapinou-cloud)
+    Authorization is Bearer + the STT key: True
+    fields: {'model': 'whisper-test', 'language': 'fr', 'response_format': 'json'}
+    file audio.wav (audio/wav): {'riff_size_ok': True, 'fmt_size': 16, 'pcm': True, 'channels': 1, 'rate': 16000, 'byte_rate': 32000, 'align': 2, 'bits': 16, 'data_bytes_ok': True}
+    data: at least 1 s and under 3 s: True; its first second is the tone decoded: True
+  LLM POST /v1/messages (application/json, user agent lapinou-cloud)
+    x-api-key is the LLM key: True, Authorization: None, anthropic-version: 2023-06-01, anthropic-beta: None
+    keys: ['max_tokens', 'messages', 'model', 'output_config', 'system']; model claude-haiku-5-5, max_tokens 2048, fallbacks None, output_config {'effort': 'low'}
+    system is persona_fr_court.txt: True
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Oui, et le soir il devient orange, car la lumière traverse plus d'air."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Oui, et le soir il devient orange, car la lumière traverse plus d'air."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+  TTS POST /v1/audio/speech (application/json, user agent lapinou-cloud)
+    Authorization is Bearer + the TTS key: True
+    keys: ['input', 'model', 'response_format', 'voice']; model tts-test, voice nova, response_format mp3
+    input: Oui, et le soir il devient orange, car la lumière traverse plus d'air.
+  call Multimedia.play('lapinou-cloud', '/tmp/lapinou-tts.mp3', 1)
+== the first answer, late: nothing more
+idle once played: True
+say while listening: answered
+== 12. say() while listening: refused, the question goes on
+  STT POST /v1/audio/transcriptions (multipart/form-data, user agent lapinou-cloud)
+    Authorization is Bearer + the STT key: True
+    fields: {'model': 'whisper-test', 'language': 'fr', 'response_format': 'json'}
+    file audio.wav (audio/wav): {'riff_size_ok': True, 'fmt_size': 16, 'pcm': True, 'channels': 1, 'rate': 16000, 'byte_rate': 32000, 'align': 2, 'bits': 16, 'data_bytes_ok': True}
+    data: at least 1 s and under 3 s: True; its first second is the tone decoded: True
+  LLM POST /v1/messages (application/json, user agent lapinou-cloud)
+    x-api-key is the LLM key: True, Authorization: None, anthropic-version: 2023-06-01, anthropic-beta: None
+    keys: ['max_tokens', 'messages', 'model', 'output_config', 'system']; model claude-haiku-5-5, max_tokens 2048, fallbacks None, output_config {'effort': 'low'}
+    system is persona_fr_court.txt: True
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Oui, et le soir il devient orange, car la lumière traverse plus d'air."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Oui, et le soir il devient orange, car la lumière traverse plus d'air."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+    message: {"role": "assistant", "content": "Oui, et le soir il devient orange, car la lumière traverse plus d'air."}
+    message: {"role": "user", "content": "Pourquoi le ciel est bleu ?"}
+  TTS POST /v1/audio/speech (application/json, user agent lapinou-cloud)
+    Authorization is Bearer + the TTS key: True
+    keys: ['input', 'model', 'response_format', 'voice']; model tts-test, voice nova, response_format mp3
+    input: Le ciel est bleu parce que l'air disperse surtout la lumière bleue du soleil.
+  call Multimedia.play('lapinou-cloud', '/tmp/lapinou-tts.mp3', 1)
+idle once played: True
+say: answered
+== 13. text to speech answers 500: the error
+  TTS POST /v1/audio/speech (application/json, user agent lapinou-cloud)
+    Authorization is Bearer + the TTS key: True
+    keys: ['input', 'model', 'response_format', 'voice']; model tts-test, voice nova, response_format mp3
+    input: Il est l'heure du goûter !
+    answered HTTP 500
+  call Multimedia.play('lapinou-cloud', '/usr/karotz/sounds/error.mp3', 1)
+  call Led.light('', 'FFA500')
+  call Led.pulse('', '00FF00', '000000', 1600, -1)
+state error, then idle: True
+still running: True
+microphone connections: 13
+still running: True
+== the daemon's log: failures
+  4 speech to text failed: HTTP 500
+  4 the language model refused to answer
+  5 the recording is cut at 15 s
+  4 speech to text failed: the answer is too long
+  4 the language model failed: not an answer
+  4 the language model failed: it stopped at max_tokens with no text
+  5 say refused: a question is in progress
+  4 text to speech failed: HTTP 500
+the log has a key, a transcript, an answer or said text: False
+== signals
+com.mindscape.karotz.LapinouCloud.state(string "listening")
+com.mindscape.karotz.LapinouCloud.state(string "thinking")
+com.mindscape.karotz.LapinouCloud.state(string "speaking")
+com.mindscape.karotz.KarotzInterface.multi_playfinished(string "lapinou-cloud", int32 4)
+com.mindscape.karotz.LapinouCloud.state(string "idle")
+com.mindscape.karotz.LapinouCloud.state(string "listening")
+com.mindscape.karotz.LapinouCloud.state(string "thinking")
+com.mindscape.karotz.LapinouCloud.state(string "speaking")
+com.mindscape.karotz.KarotzInterface.multi_playfinished(string "lapinou-cloud", int32 4)
+com.mindscape.karotz.LapinouCloud.state(string "idle")
+com.mindscape.karotz.LapinouCloud.state(string "thinking")
+com.mindscape.karotz.LapinouCloud.state(string "speaking")
+com.mindscape.karotz.KarotzInterface.multi_playfinished(string "lapinou-cloud", int32 4)
+com.mindscape.karotz.LapinouCloud.state(string "idle")
+com.mindscape.karotz.LapinouCloud.state(string "listening")
+com.mindscape.karotz.LapinouCloud.state(string "thinking")
+com.mindscape.karotz.LapinouCloud.state(string "error")
+com.mindscape.karotz.LapinouCloud.state(string "idle")
+com.mindscape.karotz.LapinouCloud.state(string "listening")
+com.mindscape.karotz.LapinouCloud.state(string "thinking")
+com.mindscape.karotz.LapinouCloud.state(string "error")
+com.mindscape.karotz.LapinouCloud.state(string "speaking")
+com.mindscape.karotz.KarotzInterface.multi_playfinished(string "lapinou-cloud", int32 4)
+com.mindscape.karotz.LapinouCloud.state(string "idle")
+com.mindscape.karotz.LapinouCloud.state(string "listening")
+com.mindscape.karotz.LapinouCloud.state(string "thinking")
+com.mindscape.karotz.LapinouCloud.state(string "speaking")
+com.mindscape.karotz.KarotzInterface.multi_playfinished(string "lapinou-cloud", int32 4)
+com.mindscape.karotz.LapinouCloud.state(string "idle")
+com.mindscape.karotz.LapinouCloud.state(string "listening")
+com.mindscape.karotz.LapinouCloud.state(string "thinking")
+com.mindscape.karotz.LapinouCloud.state(string "speaking")
+com.mindscape.karotz.KarotzInterface.multi_playfinished(string "lapinou-cloud", int32 4)
+com.mindscape.karotz.LapinouCloud.state(string "idle")
+com.mindscape.karotz.LapinouCloud.state(string "listening")
+com.mindscape.karotz.LapinouCloud.state(string "thinking")
+com.mindscape.karotz.LapinouCloud.state(string "error")
+com.mindscape.karotz.LapinouCloud.state(string "idle")
+com.mindscape.karotz.LapinouCloud.state(string "listening")
+com.mindscape.karotz.LapinouCloud.state(string "thinking")
+com.mindscape.karotz.LapinouCloud.state(string "error")
+com.mindscape.karotz.LapinouCloud.state(string "idle")
+com.mindscape.karotz.LapinouCloud.state(string "listening")
+com.mindscape.karotz.LapinouCloud.state(string "thinking")
+com.mindscape.karotz.LapinouCloud.state(string "speaking")
+com.mindscape.karotz.KarotzInterface.multi_playfinished(string "lapinou-cloud", int32 4)
+com.mindscape.karotz.LapinouCloud.state(string "idle")
+com.mindscape.karotz.LapinouCloud.state(string "listening")
+com.mindscape.karotz.LapinouCloud.state(string "thinking")
+com.mindscape.karotz.LapinouCloud.state(string "error")
+com.mindscape.karotz.LapinouCloud.state(string "idle")
+com.mindscape.karotz.LapinouCloud.state(string "listening")
+com.mindscape.karotz.LapinouCloud.state(string "thinking")
+com.mindscape.karotz.LapinouCloud.state(string "listening")
+com.mindscape.karotz.LapinouCloud.state(string "thinking")
+com.mindscape.karotz.LapinouCloud.state(string "speaking")
+com.mindscape.karotz.KarotzInterface.multi_playfinished(string "lapinou-cloud", int32 4)
+com.mindscape.karotz.LapinouCloud.state(string "idle")
+com.mindscape.karotz.LapinouCloud.state(string "listening")
+com.mindscape.karotz.LapinouCloud.state(string "thinking")
+com.mindscape.karotz.LapinouCloud.state(string "speaking")
+com.mindscape.karotz.KarotzInterface.multi_playfinished(string "lapinou-cloud", int32 4)
+com.mindscape.karotz.LapinouCloud.state(string "idle")
+com.mindscape.karotz.LapinouCloud.state(string "thinking")
+com.mindscape.karotz.LapinouCloud.state(string "error")
+com.mindscape.karotz.LapinouCloud.state(string "idle")
+== device I/O
+== daemon still running: True

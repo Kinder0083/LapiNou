@@ -634,6 +634,11 @@ At start, the controller sets NETWORK_ONLINE. Nothing watches the network after 
 
 The platform is a server on the network, for example the PC-side app server (see [app-server.md](app-server.md)). The controller connects to `ip_server`:`port_server` from `karotz.conf` (default port 9123). When `ip_server` is this rabbit (`127.x` or `localhost`, the default when `SERVER=` was not set), it does not connect: its own server is on that port. It logs that no platform server is set.
 
+LapiNou's settings (`/usr/etc/conf/lapinou.conf`, read at start-up) change two things. When they set neither `[server] enabled=1` nor `[cloud] enabled=1` (no `lapinou.conf`, or MQTT only, for example), they change nothing: the controller is LapinLibre's, and the long press does nothing before the login.
+
+- The standalone mode, `[server] enabled` not 1 and `[cloud] enabled=1`: there is no platform, so the controller does not connect to one. When the network is up it becomes AVAILABLE (green pulse, ears up), and writes `[time] tz` to `/etc/TZ`: a zone name's TZ from `/etc/timezone.list` (`Europe/Paris`), or a POSIX TZ string as it is (`CET-1CEST,M3.5.0,M10.5.0/3`). The triple click makes it AVAILABLE again, as a logged-in controller does.
+- The long press while no platform has logged the rabbit in: with `[cloud] enabled=1` and `com.mindscape.karotz.LapinouCloud` on the bus, `LapinouCloud.start_listening()`, and `stop_listening()` at the release. If the press went to LapinouCloud, the release goes there too, even if a platform logged the rabbit in meanwhile (no `LONG_STOP` then). Otherwise it plays `/usr/karotz/sounds/lapinou-no-server.mp3` ("Je n'arrive pas à me connecter.") and lights the nose orange for 3 seconds, then the status LED again. Asleep or while an application has control, nothing.
+
 - Each message is a `PlatformMessage` protobuf (`userland/proto/platform-message.proto`, package `lapinlibre.platform`), with a 4-byte length in network byte order before it.
 - A connection has a time limit of 5 seconds. A host name that does not resolve is a failed attempt. Any other connection error stops the controller; immortaldog starts it again.
 - Attempts are throttled: the first three go through, then one after 10 seconds, one after 30 seconds, then one each minute. The count goes back to zero when a configuration arrives.
@@ -728,11 +733,12 @@ The controller starts a hosted application with one line to karotzVM: `<apiKey> 
 | `mclick` | With 4 clicks, writes the IP address, the MAC address and the flash use to the log. Sends `buttonCallback` `MULTIPLE`. |
 | `lclick_start`, when AVAILABLE | Stops the sound, starts recognition with the grammar file `/tmp/apps.abnf` and fades the nose to orange. Sends `LONG_START`. |
 | `lclick_stop` | Sends `LONG_STOP`. |
+| `lclick_start`, `lclick_stop`, not logged in | LapiNou's long press (see [The platform connection](#the-platform-connection)); nothing without LapiNou's settings. |
 | `asr_event`, when AVAILABLE | For `<nomatch>` or `<noinput>`, plays `speech_no_match`. For `<error_server_timeout>`, plays `speech_server_timeout_fr-FR.mp3` (French) or `speech_server_timeout_en-GB.mp3`. Else, if the semantic has `<app>`, plays `acknowledge.mp3` and, when the score is above `asr_threshold` (default 30), starts the `<app>` application with the `<par>` instance and the trigger `ASR;<text>;<semantic>` (spaces become `_`). Else plays `speech_not_understood`. Then sends `asrCallback`. |
 | `schedule_event` | An application's schedule starts the application (hosted) or sends `scheduleEvent` (other). A one-time schedule is then forgotten. `E_STATUS_KAROTZ_WAKEUP` plays `wakeup.mp3` and stops the controller with status 1; immortaldog starts it again. `E_STATUS_KAROTZ_SLEEP` goes to SLEEP. |
 | `incoming_call` | Gives the call to the k2k application in karotzVM. |
 
-The controller does the `tclick` reset and the `mclick` log line also before the platform login. It does the other button actions, and sends the button callbacks, only after the login.
+The controller does the `tclick` reset and the `mclick` log line also before the platform login. It sends the button callbacks only after the login, and does the other button actions only after it too, except with LapiNou's settings: in the standalone mode the triple click makes the rabbit AVAILABLE again, and before the login the long press goes to LapinouCloud or gives the no-server sound (see [The platform connection](#the-platform-connection)).
 
 #### The update check
 

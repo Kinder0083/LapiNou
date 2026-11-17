@@ -568,6 +568,10 @@ usr:karotz/bin/ears-daemon f 0755 0:0
 usr:karotz/bin/immortaldog f 0755 0:0
 usr:karotz/bin/k2k-daemon f 0755 0:0
 usr:karotz/bin/karotzVM f 0755 0:0
+usr:karotz/bin/lapinou-cloud f 0755 0:0
+usr:karotz/bin/lapinou-mic f 0755 0:0
+usr:karotz/bin/lapinou-mqtt f 0755 0:0
+usr:karotz/bin/lapinou-webroot f 4750 0:80
 usr:karotz/bin/led-daemon f 0755 0:0
 usr:karotz/bin/multimedia-daemon f 0755 0:0
 usr:karotz/bin/rfid-daemon f 0755 0:0
@@ -606,6 +610,7 @@ usr:karotz/sounds/es_tag_unknown.mp3 f 0644 0:0
 usr:karotz/sounds/fr_speech_not_understood.mp3 f 0644 0:0
 usr:karotz/sounds/fr_tag_no_action.mp3 f 0644 0:0
 usr:karotz/sounds/fr_tag_unknown.mp3 f 0644 0:0
+usr:karotz/sounds/lapinou-no-server.mp3 f 0644 0:0
 usr:karotz/sounds/notify.wav f 0644 0:0
 usr:karotz/sounds/shutter.wav f 0644 0:0
 usr:karotz/sounds/speech_server_timeout_en-GB.mp3 f 0644 0:0
@@ -734,6 +739,9 @@ usr:lib/libosip2.so.6.2.0 f 0755 0:0
 usr:lib/libosipparser2.so l 0777 0:0 -> libosipparser2.so.6.2.0
 usr:lib/libosipparser2.so.6 l 0777 0:0 -> libosipparser2.so.6.2.0
 usr:lib/libosipparser2.so.6.2.0 f 0755 0:0
+usr:lib/libpaho-mqtt3a.so l 0777 0:0 -> libpaho-mqtt3a.so.1.3.15
+usr:lib/libpaho-mqtt3a.so.1 l 0777 0:0 -> libpaho-mqtt3a.so.1.3.15
+usr:lib/libpaho-mqtt3a.so.1.3.15 f 0755 0:0
 usr:lib/libpcre2-8.so l 0777 0:0 -> libpcre2-8.so.0.15.0
 usr:lib/libpcre2-8.so.0 l 0777 0:0 -> libpcre2-8.so.0.15.0
 usr:lib/libpcre2-8.so.0.15.0 f 0755 0:0
@@ -1491,8 +1499,14 @@ usr:share/lapinlibre/web-info.sh f 0644 0:0
 usr:share/lapinlibre/web-media.sh f 0644 0:0
 usr:share/lapinlibre/web-tags.sh f 0644 0:0
 usr:share/lapinlibre/web.sh f 0644 0:0
+usr:share/lapinou d 0755 0:0
+usr:share/lapinou/conf.sh f 0644 0:0
+usr:share/lapinou/persona_fr_court.txt f 0644 0:0
+usr:share/lapinou/web-lapinou.sh f 0644 0:0
+usr:share/lapinou/webroot.sh f 0644 0:0
 usr:www d 0755 0:0
 usr:www/app.js f 0644 0:0
+usr:www/avance.html f 0644 0:0
 usr:www/cgi-bin d 0755 0:0
 usr:www/cgi-bin/apps d 0755 0:0
 usr:www/cgi-bin/apps/clock f 0755 0:0
@@ -1513,6 +1527,16 @@ usr:www/cgi-bin/lapinlibre/snapshot_delete f 0755 0:0
 usr:www/cgi-bin/lapinlibre/ssh f 0755 0:0
 usr:www/cgi-bin/lapinlibre/status f 0755 0:0
 usr:www/cgi-bin/lapinlibre/tag_action f 0755 0:0
+usr:www/cgi-bin/lapinou d 0755 0:0
+usr:www/cgi-bin/lapinou/conf_get f 0755 0:0
+usr:www/cgi-bin/lapinou/conf_set f 0755 0:0
+usr:www/cgi-bin/lapinou/ota f 0755 0:0
+usr:www/cgi-bin/lapinou/restart f 0755 0:0
+usr:www/cgi-bin/lapinou/secret_set f 0755 0:0
+usr:www/cgi-bin/lapinou/status f 0755 0:0
+usr:www/cgi-bin/lapinou/test f 0755 0:0
+usr:www/cgi-bin/lapinou/volume f 0755 0:0
+usr:www/cgi-bin/lapinou/press f 0755 0:0
 usr:www/cgi-bin/leds f 0755 0:0
 usr:www/cgi-bin/moods_list f 0755 0:0
 usr:www/cgi-bin/radios_list f 0755 0:0
@@ -1547,4 +1571,14 @@ usr:www/cgi-bin/tts f 0755 0:0
 usr:www/cgi-bin/voice_list f 0755 0:0
 usr:www/cgi-bin/wakeup f 0755 0:0
 usr:www/index.html f 0644 0:0
+usr:www/lapinou d 0755 0:0
+usr:www/lapinou/app.js f 0644 0:0
+usr:www/lapinou/fr.json f 0644 0:0
+usr:www/lapinou/lapin.svg f 0644 0:0
+usr:www/lapinou/style.css f 0644 0:0
+usr:www/lapinou/tokens.css f 0644 0:0
 usr:www/style.css f 0644 0:0
+usr:karotz/bin/lapinou-ota f 0755 0:0
+usr:share/lapinou/ota-pubkey.pub f 0644 0:0
+rootfs:karotz/scripts/install-lib.sh f 0644 0:0
+rootfs:karotz/scripts/ota-resume.sh f 0755 0:0

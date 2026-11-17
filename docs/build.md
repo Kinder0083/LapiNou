@@ -388,7 +388,7 @@ The configuration (`system/buildroot.config`) enables these groups of packages:
 | Group | Packages |
 |---|---|
 | Root tools | BusyBox 1.37 (configuration `system/external/busybox.config`), bash, mtd-utils, wireless tools, e2fsprogs, util-linux (libuuid and programs), strace, netcat, iw, wpa_supplicant (WEXT and nl80211), Dropbear, mdnsd (with the SSH service), liblockfile and lockfile-progs, GnuPG 1.4 (AES and RSA), crda and wireless-regdb |
-| Libraries | libiconv, GNU gettext (`BR2_SYSTEM_ENABLE_NLS=y`, for `libintl.so.8`), ncurses, zlib, OpenSSL (with the `openssl` program), libcurl, ca-certificates (the image keeps its hash links in `/etc/ssl/certs`, each as a file, and its bundle file), D-Bus, dbus-glib, expat, libxml2, GLib, libgcrypt, libgpg-error, libnl, libjpeg-turbo (with its tools), libpng |
+| Libraries | libiconv, GNU gettext (`BR2_SYSTEM_ENABLE_NLS=y`, for `libintl.so.8`), ncurses, zlib, OpenSSL (with the `openssl` program), libcurl, ca-certificates (the image keeps its hash links in `/etc/ssl/certs`, each as a file, and its bundle file), D-Bus, dbus-glib, expat, libxml2, GLib, libgcrypt, libgpg-error, libnl, libjpeg-turbo (with its tools), libpng, Eclipse Paho's MQTT C client (for lapinou-mqtt: its asynchronous library `libpaho-mqtt3a`, without TLS: `system/external/external.mk` turns TLS off, which Buildroot turns on with OpenSSL) |
 | Audio and video | FLAC, libogg, libvorbis, Tremor, libtheora, Speex, SpeexDSP, libmad, madplay, libid3tag, libmms, FFmpeg (a selected set of audio decoders, demuxers, parsers and protocols, `pcm_s16le` and `wav` out, and no devices) |
 | LapinLibre's own packages | See the next table |
 
@@ -573,6 +573,7 @@ A larger image stops the build. The gzip time stamps are `SOURCE_DATE_EPOCH`, or
 | `install.conf` | `BUILD_ID`, `BUILD_VERSION`, `KERNEL_MD5`, `ROOTFS_MD5`, `USR_MD5`, `INSTALL_TOOLS_MD5`, one `NAME=value` line each. `autorun` reads it. |
 | `build_id` | The build id. |
 | `autorun`, `install-lib.sh`, `applysettings.sh`, `lapinlibre.txt` | Copied from `image/usbkey`. A file with CRLF stops the build. `autorun` and the `.sh` files get mode 0755. |
+| `lapinou-conf.sh` | LapiNou's settings library, copied from `image/core/usr/share/lapinou/conf.sh`; `applysettings.sh` sources it, because the rabbit being installed may not have it yet. |
 | `autorun.sig` | Copied from `image/usbkey` without change. Its MD5 must agree with `config.toml` `[key.md5]`, because the rabbit's factory system runs a key's `autorun` only when `gpg --verify autorun.sig` passes. |
 | `install-tools.tar` | From `out/install-tools/`. |
 | `sound/key-found.mp3`, `sound/install-busy.mp3`, `sound/error.mp3` | Tones (`INSTALL_SOUNDS`; `error.mp3` is the same as `/usr`'s), encoded to MP3. |

@@ -1,0 +1,42 @@
+== registered: True
+fake audio server ready: True
+multimedia-daemon registered: True
+== 1. play p1
+play('string:p1', 'string:song.mp3', 'int32:0'): boolean true
+marks: ['mark(p1, start=True)']
+== 2. play p2 while p1 plays, p2 starting late
+play('string:p2', 'string:slow.mp3', 'int32:0'): boolean true
+marks: ['mark(p1, start=True)', 'mark(p1, start=False)']
+p2 not started yet after 0.6 s: True
+marks: ['mark(p1, start=True)', 'mark(p1, start=False)', 'mark(p2, start=True)']
+p2's start came after the player's start-up delay (at least 1.2 s after the play): True
+== 3. pause and resume
+pause('string:p2', 'int32:0'): boolean true
+marks: ['mark(p1, start=True)', 'mark(p1, start=False)', 'mark(p2, start=True)', 'mark(p2, start=False)']
+resume('string:p2', 'int32:0'): boolean true
+marks: ['mark(p1, start=True)', 'mark(p1, start=False)', 'mark(p2, start=True)', 'mark(p2, start=False)', 'mark(p2, start=True)']
+== 4. play p3 at once, replacing p2
+play('string:p3', 'string:song.mp3', 'int32:0'): boolean true
+marks: ['mark(p2, start=False)', 'mark(p3, start=True)']
+== 5. play p4, whose player first reports a line too long to be an event
+play('string:p4', 'string:junk.mp3', 'int32:0'): boolean true
+marks: ['mark(p3, start=False)', 'mark(p4, start=True)']
+== 6. stop
+stop('string:p4', 'int32:0'): boolean true
+marks: ['mark(p1, start=True)', 'mark(p1, start=False)', 'mark(p2, start=True)', 'mark(p2, start=False)', 'mark(p2, start=True)', 'mark(p2, start=False)', 'mark(p3, start=True)', 'mark(p3, start=False)', 'mark(p4, start=True)', 'mark(p4, start=False)']
+== warnings the other daemons logged beyond the expected ones
+voice-daemon: []
+multimedia-daemon: []
+== signals
+com.mindscape.karotz.KarotzInterface.multi_playfinished(string "p2", int32 4)
+com.mindscape.karotz.KarotzInterface.multi_playfinished(string "p4", int32 4)
+== device I/O
+open /dev/audio
+ioctl /dev/audio 0x5000
+ioctl /dev/audio 0xc0045005
+ioctl /dev/audio 0xc0045003
+ioctl /dev/audio 0xc0045002
+read /dev/audio 2048
+ioctl /dev/audio 0x8010500d
+read /dev/audio 2048
+== daemon still running: True

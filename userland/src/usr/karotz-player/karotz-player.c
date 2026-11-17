@@ -21,6 +21,11 @@
  * Tremor, in fixed point, rather than by FFmpeg's floating-point decoder. While paused nothing is written; a network stream goes on being read (and dropped) so the
  * server keeps the connection, a file just waits. Without idle the player exits when the last
  * item has played, and SIGTERM ends it at once.
+ *
+ * Opt-in report of the output's timing: when $LAPINOU_PLAYER_EVENTS_FD names a descriptor, the
+ * player writes one line to it for each sound ("start" just before the first samples are written to
+ * the device, "end" when the sound is over or replaced, "pause" and "resume" when pause toggles
+ * a sound that has started). multimedia-daemon uses it for lapinou-mic's playback marks.
  */
 #define _GNU_SOURCE  /* strcasestr, strndup */
 #include <ctype.h>
@@ -62,6 +67,16 @@ static int asked_rate, asked_channels;  /* what it was opened for */
 static int paused;
 static int abort_item;  /* a command replaced what is playing (or stopped it) */
 static int quit_code = -1;
+static int events_fd = -1;     /* $LAPINOU_PLAYER_EVENTS_FD, -1 for none */
+static int item_started;       /* the item's first samples have been written */
+
+static void report(const char *what)
+{
+    if (events_fd >= 0) {
+        ssize_t w = write(events_fd, what, strlen(what));
+        (void)w;  /* nobody reading is no reason to stop playing */
+    }
+}
 
 /* ---- the item list ------------------------------------------------------- */
 
@@ -193,6 +208,8 @@ static void command(char *line)
     if (strcmp(word, "pause") == 0) {
         paused = !paused;
         printf(paused ? "  =====  PAUSE  =====\n" : "  =====  RESUME  =====\n");
+        if (item_started)
+            report(paused ? "pause\n" : "resume\n");
     } else if (strcmp(word, "loadfile") == 0 || strcmp(word, "loadlist") == 0) {
         int list = word[4] == 'l';
         char *what = argument(rest, &rest);
@@ -299,6 +316,10 @@ static int open_dsp(int rate, int channels)
 
 static void write_dsp(const uint8_t *data, size_t len)
 {
+    if (!item_started) {
+        item_started = 1;
+        report("start\n");
+    }
     while (len > 0 && !abort_item) {
         ssize_t w = write(dsp_fd, data, len);
         if (w < 0) {
@@ -506,6 +527,7 @@ static void play(const char *url)
     int vorbis = 0, stream;
 
     memset(&tremor, 0, sizeof tremor);
+    item_started = 0;
 
     if (fmt == NULL || pkt == NULL || frame == NULL)
         goto done;
@@ -580,6 +602,10 @@ static void play(const char *url)
         }
     }
 done:
+    if (item_started) {
+        report("end\n");
+        item_started = 0;
+    }
     av_dict_free(&opts);
     output_free(&out);
     if (vorbis)
@@ -665,6 +691,11 @@ int main(int argc, char **argv)
     const char *target = NULL;
 
     signal(SIGPIPE, SIG_IGN);
+    const char *events = getenv("LAPINOU_PLAYER_EVENTS_FD");
+    if (events != NULL && atoi(events) > 2) {
+        events_fd = atoi(events);
+        fcntl(events_fd, F_SETFL, fcntl(events_fd, F_GETFL) | O_NONBLOCK);
+    }
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (a[0] != '-' || a[1] == '\0') {

@@ -395,8 +395,13 @@ usr:karotz/bin/button-daemon f 0755 0:0 own
 usr:karotz/bin/controller f 0755 0:0 own
 usr:karotz/bin/ears-daemon f 0755 0:0 own
 usr:karotz/bin/immortaldog f 0755 0:0 own
+usr:karotz/bin/lapinou-webroot f 4750 0:80 own  # LapiNou: the web page's way to root (setuid, group web only): runs share/lapinou/webroot.sh
 usr:karotz/bin/k2k-daemon f 0755 0:0 own
 usr:karotz/bin/karotzVM f 0755 0:0 own
+usr:karotz/bin/lapinou-mic f 0755 0:0 own  # LapiNou: the microphone to the server and to mic.sock
+usr:karotz/bin/lapinou-mqtt f 0755 0:0 own  # LapiNou: the rabbit in Home Assistant (MQTT)
+usr:karotz/bin/lapinou-cloud f 0755 0:0 own  # LapiNou: the mode without a server (speech to text, a language model, text to speech in the cloud)
+usr:karotz/bin/lapinou-ota f 0755 0:0 generated  # LapiNou: signed updates (userland/src/usr/lapinou-ota/lapinou-ota.sh, a shell script)
 usr:karotz/bin/led-daemon f 0755 0:0 own
 usr:karotz/bin/multimedia-daemon f 0755 0:0 own
 usr:karotz/bin/rfid-daemon f 0755 0:0 own
@@ -531,6 +536,9 @@ usr:lib/libosip2.so.6.2.0 f 0755 0:0 target
 usr:lib/libosipparser2.so l libosipparser2.so.6.2.0
 usr:lib/libosipparser2.so.6 l libosipparser2.so.6.2.0
 usr:lib/libosipparser2.so.6.2.0 f 0755 0:0 target
+usr:lib/libpaho-mqtt3a.so l libpaho-mqtt3a.so.1.3.15  # LapiNou: Paho's asynchronous MQTT client, without TLS, for lapinou-mqtt
+usr:lib/libpaho-mqtt3a.so.1 l libpaho-mqtt3a.so.1.3.15
+usr:lib/libpaho-mqtt3a.so.1.3.15 f 0755 0:0 target
 usr:lib/libpcre2-8.so l libpcre2-8.so.0.15.0
 usr:lib/libpcre2-8.so.0 l libpcre2-8.so.0.15.0
 usr:lib/libpcre2-8.so.0.15.0 f 0755 0:0 target
@@ -1302,6 +1310,8 @@ rootfs:karotz/scripts/udhcpc_script.sh f 0755 0:0 target:usr/share/udhcpc/defaul
 rootfs:karotz/scripts/sshd.sh f 0755 0:0 core
 rootfs:karotz/scripts/inetd.sh f 0755 0:0 core
 rootfs:karotz/scripts/web-files.sh f 0755 0:0 core  # the web user's folders and locks, for inetd.sh and S40lapinlibre
+rootfs:karotz/scripts/install-lib.sh f 0644 0:0 generated  # LapiNou: the USB key's install helpers (image/usbkey/install-lib.sh), for lapinou-ota and ota-resume.sh
+rootfs:karotz/scripts/ota-resume.sh f 0755 0:0 core  # LapiNou: linuxrc's resume of a /usr that lapinou-ota's install left unfinished
 rootfs:lib/firmware/rt73.bin f 0644 0:0 generated  # the Wi-Fi's firmware, linux-firmware 20260916
 rootfs:lib/firmware/LICENCE.ralink-firmware.txt f 0644 0:0 generated  # its licence, which must travel with it
 
@@ -1314,9 +1324,16 @@ usr:scripts/dbus_watcher f 0755 0:0 core  # the head button's tones and its /etc
 usr:scripts/tag_listener f 0755 0:0 core  # the web API's tag listener: tag learning and the tags' stored actions, under immortaldog
 usr:etc/button.d d 0755 0:0
 usr:www d 0755 0:0
-usr:www/index.html f 0644 0:0 core  # the web page httpd serves, with its script and style
+usr:www/index.html f 0644 0:0 core  # LapiNou's home page (status, quick controls, settings, updates), with lapinou/
+usr:www/avance.html f 0644 0:0 core  # LapinLibre's page, the "Avancé" tab, with its script and style
 usr:www/app.js f 0644 0:0 core
 usr:www/style.css f 0644 0:0 core
+usr:www/lapinou d 0755 0:0
+usr:www/lapinou/app.js f 0644 0:0 core
+usr:www/lapinou/style.css f 0644 0:0 core
+usr:www/lapinou/tokens.css f 0644 0:0 core  # LapiNou's design tokens, shared with the server's pages (docs/lapinou/design.md)
+usr:www/lapinou/lapin.svg f 0644 0:0 core  # the drawn rabbit, put inline by app.js
+usr:www/lapinou/fr.json f 0644 0:0 core  # the page's French texts
 usr:www/cgi-bin d 0755 0:0  # the web API: each program sources /usr/share/lapinlibre/web.sh
 usr:www/cgi-bin/status f 0755 0:0 core
 usr:www/cgi-bin/get_version f 0755 0:0 core
@@ -1370,6 +1387,16 @@ usr:www/cgi-bin/lapinlibre/logs f 0755 0:0 core
 usr:www/cgi-bin/lapinlibre/ssh f 0755 0:0 core
 usr:www/cgi-bin/lapinlibre/tag_action f 0755 0:0 core
 usr:www/cgi-bin/lapinlibre/snapshot_delete f 0755 0:0 core
+usr:www/cgi-bin/lapinou d 0755 0:0  # LapiNou's page: settings and secrets through lapinou-webroot (docs/lapinou/page-web.md)
+usr:www/cgi-bin/lapinou/status f 0755 0:0 core
+usr:www/cgi-bin/lapinou/conf_get f 0755 0:0 core
+usr:www/cgi-bin/lapinou/conf_set f 0755 0:0 core
+usr:www/cgi-bin/lapinou/secret_set f 0755 0:0 core
+usr:www/cgi-bin/lapinou/test f 0755 0:0 core
+usr:www/cgi-bin/lapinou/ota f 0755 0:0 core
+usr:www/cgi-bin/lapinou/restart f 0755 0:0 core
+usr:www/cgi-bin/lapinou/volume f 0755 0:0 core
+usr:www/cgi-bin/lapinou/press f 0755 0:0 core  # the first web password: a press on the head (R46)
 usr:share/lapinlibre d 0755 0:0
 usr:share/lapinlibre/web.sh f 0644 0:0 core  # the web API's request checks, parameters and replies; outside the web root, so never run by httpd
 usr:share/lapinlibre/web-extra.sh f 0644 0:0 core  # the web API's less common helpers (encoded parameters, JSON escaping, URL checks), read by web.sh when needed
@@ -1377,6 +1404,12 @@ usr:share/lapinlibre/web-info.sh f 0644 0:0 core  # the web API's status readers
 usr:share/lapinlibre/web-media.sh f 0644 0:0 core  # the web API's sounds, voices and stick lists, read by web.sh when needed
 usr:share/lapinlibre/web-hw.sh f 0644 0:0 core  # the web API's signal watches, ears and camera, read by web.sh when needed
 usr:share/lapinlibre/web-tags.sh f 0644 0:0 core  # the web API's URL actions and RFID tag store, read by web.sh when needed
+usr:share/lapinou d 0755 0:0
+usr:share/lapinou/persona_fr_court.txt f 0644 0:0 core  # LapiNou: lapinou-cloud's system prompt for the language model
+usr:share/lapinou/conf.sh f 0644 0:0 core  # LapiNou's settings (lapinou.conf, lapinou.secrets) for shell programs: lapinou_get, lapinou_set, lapinou_secret_get, lapinou_secret_set
+usr:share/lapinou/web-lapinou.sh f 0644 0:0 core  # the LapiNou page's programs' shared part
+usr:share/lapinou/webroot.sh f 0644 0:0 core  # what the page does as root, run by lapinou-webroot only
+usr:share/lapinou/ota-pubkey.pub f 0644 0:0 core  # LapiNou: the public key lapinou-ota checks updates with (a placeholder until the owner's real key, R42)
 usr:sbin/mdnsd f 0755 0:0 target  # mDNS: <host name>.local, and SSH advertised
 usr:lib/libmdnsd.so.1 l libmdnsd.so.1.0.0
 usr:lib/libmdnsd.so.1.0.0 f 0755 0:0 target
@@ -1410,6 +1443,7 @@ usr:karotz/sounds/de_tag_unknown.mp3 f 0644 0:0 core
 usr:karotz/sounds/de_speech_not_understood.mp3 f 0644 0:0 core
 usr:karotz/sounds/es_tag_unknown.mp3 f 0644 0:0 core
 usr:karotz/sounds/es_speech_not_understood.mp3 f 0644 0:0 core
+usr:karotz/sounds/lapinou-no-server.mp3 f 0644 0:0 core  # LapiNou's long press without a server (image/tools/piper_sounds.py, CC BY 4.0)
 usr:karotz/.ssh d 0700 0:0
 usr:karotz/.ssh/authorized_keys l /usr/etc/conf/authorized_keys  # the install writes the key from lapinlibre.txt into /usr/etc/conf, which installs keep
 usr:karotz/sounds d 0755 0:0

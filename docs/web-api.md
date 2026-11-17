@@ -288,7 +288,7 @@ The API keeps a small state. Most of it is in RAM, so a restart clears it.
 
 ### The web page
 
-`index.html`, `app.js` and `style.css` make the page. The page uses no external file, so it works on a network without Internet. `app.js` calls the API under `cgi-bin/` with the same origin and the browser's login. It sends reads as `GET` and actions as `POST`. It puts every value into the page as text, never as HTML.
+LapiNou's page is the rabbit's home page (`index.html` and `lapinou/`, docs/lapinou/page-web.md); LapinLibre's page is `avance.html` (its "Avancé" link). `avance.html`, `app.js` and `style.css` make that page. The page uses no external file, so it works on a network without Internet. `app.js` calls the API under `cgi-bin/` with the same origin and the browser's login. It sends reads as `GET` and actions as `POST`. It puts every value into the page as text, never as HTML.
 
 The page loads `status` first, and again every 30 s while the page is visible, and 10 s after an action. Each section loads its own list when it comes into view.
 
