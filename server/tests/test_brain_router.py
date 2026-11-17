@@ -576,12 +576,14 @@ def test_dedupe_key_uses_provider_not_kind():
 
 def test_openai_paid_counts_the_environment_key(monkeypatch):
     s = Settings()
+    s.brain.providers["openai"] = ProviderConfig(kind="openai")  # l'adresse d'OpenAI
     s.brain.providers["distant"] = ProviderConfig(kind="openai", base_url="http://x.local/v1")
-    s.brain.fallback_chain = ["distant:modele-x"]
+    s.brain.fallback_chain = ["openai:modele-x", "distant:modele-x"]
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    assert BrainRouter.from_settings(s).fallbacks[0].paid is False
+    assert [b.paid for b in BrainRouter.from_settings(s).fallbacks] == [False, False]
     monkeypatch.setenv("OPENAI_API_KEY", "cle-de-test-env")
-    assert BrainRouter.from_settings(s).fallbacks[0].paid is True
+    # La clé de l'environnement ne vaut que pour OpenAI lui-même, jamais pour une autre adresse.
+    assert [b.paid for b in BrainRouter.from_settings(s).fallbacks] == [True, False]
 
 
 async def test_anthropic_usage_iterations():

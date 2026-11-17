@@ -91,6 +91,8 @@ def _dump(block: Any) -> dict[str, Any]:
 class AnthropicBrain:
     kind = "anthropic"
     paid = True
+    reports_partial = True  # respond(..., partial=[...]) : l'usage connu d'un flux coupé
+
     def __init__(
         self,
         model: str,
@@ -101,6 +103,7 @@ class AnthropicBrain:
         effort: str = "medium",
         max_tokens: int = 1024,
         persona: str | None = None,
+        base_url: str = "",
         client: Any = None,
         clock: Callable[[], dt.datetime] = dt.datetime.now,
     ) -> None:
@@ -112,8 +115,9 @@ class AnthropicBrain:
         self.persona = persona if persona is not None else load_persona()
         self.provider = provider  # nom du fournisseur dans les réglages (dédoublonnage)
         self.server_fallback = supports_server_fallback(model)
-        # Clé vide : le SDK lit ANTHROPIC_API_KEY.
-        self._client = client or anthropic.AsyncAnthropic(api_key=api_key or None, max_retries=1)
+        # Clé vide : le SDK lit ANTHROPIC_API_KEY. `base_url` : un mandataire (proxy) éventuel.
+        self._client = client or anthropic.AsyncAnthropic(
+            api_key=api_key or None, base_url=base_url or None, max_retries=1)
         self._clock = clock
 
     def _request(self, conv: Conversation, tools: list[ToolSpec]) -> dict[str, Any]:
@@ -142,8 +146,10 @@ class AnthropicBrain:
         return req
 
     async def respond(
-        self, conv: Conversation, tools: list[ToolSpec]
+        self, conv: Conversation, tools: list[ToolSpec], partial: list[Usage] | None = None
     ) -> AsyncIterator[BrainEvent]:
+        """`partial` : si la réponse s'arrête sans `Done` (flux coupé, panne, appelant qui
+        abandonne), l'usage déjà connu y est ajouté, pour être compté au budget (R50)."""
         specs = {t.name: t for t in tools}
         usage = Usage(provider="anthropic", model=self.model, requested_model=self.model)
         # Contenu du tour assistant, tel que rendu ; après un `pause_turn`, la reprise continue
@@ -155,10 +161,14 @@ class AnthropicBrain:
                 req["messages"] = req["messages"] + [{"role": "assistant", "content": content}]
             try:
                 async with self._client.beta.messages.stream(**req) as stream:
-                    async for text in stream.text_stream:
-                        if text:
-                            yield TextDelta(text)
-                    message = await stream.get_final_message()
+                    try:
+                        async for text in stream.text_stream:
+                            if text:
+                                yield TextDelta(text)
+                        message = await stream.get_final_message()
+                    except BaseException:
+                        self._keep_partial(partial, usage, stream)
+                        raise
             except anthropic.BadRequestError as e:
                 # Requête refusée telle quelle (historique ou outils invalides) : visible.
                 log.error("%s : requête refusée (400) : %s", self.model, e)
@@ -170,6 +180,11 @@ class AnthropicBrain:
                 anthropic.APIConnectionError,
             ) as e:
                 raise BrainError(f"{self.model} : {e}") from e
+            except TypeError as e:
+                # Le SDK sans clé (ni ANTHROPIC_API_KEY) lève TypeError avant tout envoi.
+                raise BrainError(f"{self.model} : clé API absente ou invalide ({e})") from e
+            except anthropic.AnthropicError as e:
+                raise BrainError(f"{self.model} : {type(e).__name__}") from e
             usage = self._add_usage(usage, message)
             if message.stop_reason == "refusal":
                 details = getattr(message, "stop_details", None)
@@ -202,6 +217,20 @@ class AnthropicBrain:
         for call in calls:
             yield call
         yield Done(usage)
+
+    def _keep_partial(self, partial: list[Usage] | None, usage: Usage, stream: Any) -> None:
+        """L'usage connu d'une réponse interrompue : les reprises déjà finies, plus ce que
+        l'instantané du message en cours dit (jetons d'entrée, sortie déjà produite)."""
+        if partial is None:
+            return
+        try:
+            snapshot = stream.current_message_snapshot
+        except Exception:  # noqa: BLE001 - pas encore d'instantané
+            snapshot = None
+        if snapshot is not None and getattr(snapshot, "usage", None) is not None:
+            partial.append(self._add_usage(usage, snapshot))
+        elif usage.input_tokens or usage.output_tokens:
+            partial.append(usage)
 
     def _add_usage(self, total: Usage, message: Any) -> Usage:
         # Avec le repli côté serveur, `message.model` est le modèle qui a vraiment répondu, et

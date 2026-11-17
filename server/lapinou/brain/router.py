@@ -2,7 +2,9 @@
 """Choix du cerveau pour chaque tour, secours en cas de panne, budget et refus doux.
 
 - commande maison courte → modèle rapide ; sinon → modèle principal ;
-- budget ≥ `warn_pct` → rapide ; ≥ `stop_pct` → Assist seul (rien de payant) ;
+- budget ≥ `warn_pct` → rapide ; ≥ `stop_pct` → Assist seul (rien de payant) ; atteint au
+  milieu d'une boucle d'outils → une phrase douce, sans rejouer la demande chez Assist (R50) ;
+- une réponse interrompue (panne, appelant qui abandonne) compte son usage partiel connu ;
 - panne (BrainError) avant toute réponse → cerveau suivant : (rapide → principal si le budget
   le permet), puis `fallback_chain` (sans les payants au-delà du seuil d'alerte), puis Assist,
   puis un cerveau qui s'excuse ; une requête refusée (400) remet l'historique à zéro une fois ;
@@ -11,8 +13,8 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
-import os
 import re
 from collections.abc import AsyncIterator
 
@@ -38,6 +40,7 @@ from .base import (
 )
 from .budget import Budget
 from .openai_brain import OpenAIBrain
+from .openai_brain import env_key as openai_env_key
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +51,8 @@ REFUSAL_FR = (
 SENSITIVE_FR = "Ça, je ne peux pas le faire tout seul. Il faut demander à un grand."
 DOWN_FR = "Oh, ma tête de lapin est toute embrouillée. Tu peux redemander dans un petit moment ?"
 OOPS_FR = " Oups, je me suis perdu. On réessaie ?"
+BUDGET_FR = ("J'ai atteint mon budget du mois, je ne peux pas aller plus loin cette fois-ci. "
+             "Demande à un grand de regarder les réglages.")
 
 # Fin de la première phrase : le texte retenu jusque-là part d'un coup.
 SENTENCE_END = (".", "!", "?", "…")
@@ -88,6 +93,22 @@ class ExcuseBrain:
         yield Done(Usage(provider="", model=self.model))
 
 
+class BudgetStopBrain(ExcuseBrain):
+    """Plafond atteint au milieu d'une boucle d'outils (R50) : une phrase douce clôt le tour ;
+    la demande n'est jamais rejouée chez Assist."""
+
+    name = "budget"
+    kind = "budget"
+    model = "budget"
+
+    async def respond(
+        self, conv: Conversation, tools: list[ToolSpec]
+    ) -> AsyncIterator[BrainEvent]:
+        add_assistant_text(conv, BUDGET_FR)
+        yield TextDelta(BUDGET_FR)
+        yield Done(Usage(provider="", model=self.model))
+
+
 def _key(brain: Brain) -> tuple[str, str]:
     """Deux cerveaux sont le même s'ils ont le même fournisseur (nom ou adresse) et modèle."""
     route = getattr(brain, "provider", "") or getattr(brain, "kind", type(brain).__name__)
@@ -107,6 +128,7 @@ class BrainRouter:
         self.fallbacks = fallbacks
         self.assist = assist
         self.excuse = ExcuseBrain()
+        self.budget_stop = BudgetStopBrain()
         # Dernier cerveau ayant répondu par lapin : une suite de tour d'outils reste chez lui.
         self._last: dict[str, Brain] = {}
 
@@ -124,6 +146,10 @@ class BrainRouter:
 
     def _candidates(self, conv: Conversation, budget: Budget) -> list[Brain]:
         warn, stop = self._levels(budget)
+        if stop and awaiting_tool_results(conv):
+            # Plafond atteint pendant les outils : ni payant, ni Assist (qui rejouerait la
+            # demande de l'enfant), seulement la phrase du budget.
+            return [self.budget_stop]
         if stop:
             order: list[Brain] = []
         elif warn:
@@ -165,38 +191,46 @@ class BrainRouter:
             held = ""  # texte pas encore émis
             spoken = False  # du texte de ce cerveau est parti
             emitted = False  # quelque chose de ce cerveau est parti (texte, outil)
+            # Usage d'une réponse coupée (panne, appelant qui abandonne) : compté quand même.
+            partial: list[Usage] = []
+            billed = False
+            events = (brain.respond(conv, tools, partial=partial)
+                      if getattr(brain, "reports_partial", False) else brain.respond(conv, tools))
             try:
-                async for event in brain.respond(conv, tools):
-                    if isinstance(event, TextDelta):
-                        if spoken:
-                            yield event
+                async with contextlib.aclosing(events):
+                    async for event in events:
+                        if isinstance(event, TextDelta):
+                            if spoken:
+                                yield event
+                                continue
+                            held += event.text
+                            if any(mark in held for mark in SENTENCE_END):
+                                yield TextDelta(held)
+                                held, spoken, emitted = "", True, True
                             continue
-                        held += event.text
-                        if any(mark in held for mark in SENTENCE_END):
+                        if isinstance(event, Refused):
+                            log.info("%s refuse (%s)", brain.name, event.category)
+                            if event.usage is not None:
+                                budget.record(event.usage)
+                            billed = True
+                            if spoken:
+                                yield Retract()
+                            phrase = SENSITIVE_FR if event.category == "sensitive" else REFUSAL_FR
+                            add_assistant_text(conv, phrase)
+                            yield TextDelta(phrase)
+                            yield Done(event.usage or Usage(provider="", model=brain.name))
+                            self._last[conv.rabbit_id] = brain
+                            return
+                        if held:
                             yield TextDelta(held)
-                            held, spoken, emitted = "", True, True
-                        continue
-                    if isinstance(event, Refused):
-                        log.info("%s refuse (%s)", brain.name, event.category)
-                        if event.usage is not None:
-                            budget.record(event.usage)
-                        if spoken:
-                            yield Retract()
-                        phrase = SENSITIVE_FR if event.category == "sensitive" else REFUSAL_FR
-                        add_assistant_text(conv, phrase)
-                        yield TextDelta(phrase)
-                        yield Done(event.usage or Usage(provider="", model=brain.name))
-                        self._last[conv.rabbit_id] = brain
-                        return
-                    if held:
-                        yield TextDelta(held)
-                        held, spoken = "", True
-                    if isinstance(event, Done):
-                        if event.usage.provider:
-                            budget.record(event.usage)
-                        self._last[conv.rabbit_id] = brain
-                    emitted = True
-                    yield event
+                            held, spoken = "", True
+                        if isinstance(event, Done):
+                            if event.usage.provider:
+                                budget.record(event.usage)
+                            billed = True
+                            self._last[conv.rabbit_id] = brain
+                        emitted = True
+                        yield event
                 if held:
                     yield TextDelta(held)
                 return
@@ -221,6 +255,9 @@ class BrainRouter:
                     continue
                 log.warning("%s en panne, cerveau suivant : %s", brain.name, e)
                 index += 1
+            finally:
+                if not billed and partial and partial[-1].provider:
+                    budget.record(partial[-1])  # réponse interrompue : l'usage connu (R50)
 
     # --- Construction depuis les réglages -----------------------------------------------------
 
@@ -243,13 +280,13 @@ class BrainRouter:
                 return built[(name, model)]
             if prov.kind == "openai":
                 # Payant s'il faut une clé (réglages ou OPENAI_API_KEY) ou s'il a un prix.
-                key = prov.api_key or os.environ.get("OPENAI_API_KEY", "")
+                key = prov.api_key or openai_env_key(prov.base_url)
                 paid = bool(key) or model in settings.budget.prices
                 brain: Brain = OpenAIBrain(prov.base_url, model, prov.api_key, paid=paid,
                                            provider=name, persona=persona)
             elif prov.kind == "anthropic":
                 brain = AnthropicBrain(model, prov.api_key, web_search, provider=name,
-                                       effort=effort, persona=persona)
+                                       effort=effort, persona=persona, base_url=prov.base_url)
             else:
                 raise ValueError(f"fournisseur inconnu : {ref}")
             built[(name, model)] = brain

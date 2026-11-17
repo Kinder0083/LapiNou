@@ -31,6 +31,16 @@ from .base import (
 
 log = logging.getLogger(__name__)
 
+OPENAI_DEFAULT_URL = "https://api.openai.com/v1"
+
+
+def env_key(base_url: str) -> str:
+    """OPENAI_API_KEY, seulement pour l'adresse d'OpenAI (vide ou par défaut) : la clé ne part
+    jamais vers une autre adresse (serveur local, mandataire inconnu)."""
+    if base_url.strip().rstrip("/") not in ("", OPENAI_DEFAULT_URL):
+        return ""
+    return os.environ.get("OPENAI_API_KEY", "")
+
 
 def _tool_content(content: Any) -> str:
     if isinstance(content, str):
@@ -100,11 +110,12 @@ class OpenAIBrain:
         self.model = model
         self.max_tokens = max_tokens
         self.provider = provider or base_url  # dédoublonnage : fournisseur, puis adresse
-        api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        api_key = api_key or env_key(base_url)
         # Payant (sauté au-delà du seuil d'alerte) : par défaut, s'il faut une clé.
         self.paid = bool(api_key) if paid is None else paid
         self.persona = persona if persona is not None else load_persona()
-        # Clé vide : OPENAI_API_KEY ; un serveur local n'en exige pas, mais le SDK en veut une.
+        # Clé vide : OPENAI_API_KEY (adresse d'OpenAI seulement) ; un serveur local n'en exige
+        # pas, mais le SDK en veut une (jamais lue de l'environnement : elle est donnée ici).
         self._client = client or openai.AsyncOpenAI(
             base_url=base_url or None,
             api_key=api_key or "sans-clé",
