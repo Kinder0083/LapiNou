@@ -162,6 +162,7 @@ static struct {
     char *host, *user, *password, *prefix, *discovery, *uri, *language;
     int port;
     gboolean serverless;
+    gboolean server_mode;  /* [server] enabled=1 and a host: the server holds interactive mode */
     const char *uuid_file, *web_run, *web_data, *web_cgi, *wireless_file, *conf_sh, *sys_version_file, *available_file;
 
     /* the broker */
@@ -853,10 +854,12 @@ static void cloud_said(DBusGProxy *proxy, DBusGProxyCall *call, gpointer data)
     }
 }
 
-/* Why the rabbit can't be driven now (NULL when it can), as the web API's web_hardware decides. */
+/* Why the rabbit can't be driven now (NULL when it can), as the web API's web_hardware decides:
+ * in LapiNou's server mode the interactive application is the server itself, which holds that
+ * mode for good, so it doesn't stop Home Assistant. */
 static const char *busy(void)
 {
-    if (app.controller_state == 21 || app.controller_state == 22)
+    if ((app.controller_state == 21 || app.controller_state == 22) && !app.server_mode)
         return "an application is running on the rabbit";
     if (app.web_asleep || app.controller_state == CONTROLLER_ASLEEP)
         return "the rabbit is asleep";
@@ -1604,6 +1607,7 @@ static void settings_read(void)
     char *port = lapinou_conf_get("mqtt", "port", "1883");
     char *server = lapinou_conf_get("server", "enabled", NULL);
     char *cloud = lapinou_conf_get("cloud", "enabled", NULL);
+    char *server_host = lapinou_conf_get("server", "host", NULL);
     char *end = NULL;
     long p;
 
@@ -1614,6 +1618,8 @@ static void settings_read(void)
     app.discovery = lapinou_conf_get("mqtt", "discovery_prefix", "homeassistant");
     app.language = lapinou_conf_get("assistant", "language", "fr");
     app.serverless = cloud && !strcmp(cloud, "1") && !(server && !strcmp(server, "1"));
+    app.server_mode = server && !strcmp(server, "1") && server_host && *server_host;
+    g_free(server_host);
     p = strtol(port, &end, 10);
     app.port = *end == '\0' && p >= 1 && p <= 65535 ? (int)p : 1883;
     if (app.port != p)
