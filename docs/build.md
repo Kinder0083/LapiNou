@@ -180,7 +180,7 @@ ssh root@<rabbit> sh -s -- /dev/shm/web/www /dev/shm/web/share/lapinlibre/web.sh
 
 ### Make a release
 
-Use this procedure to publish a USB key on the repository's releases page. The `release` workflow (`.github/workflows/release.yml`) builds the key from the tag. It does not run the tests, so you run them first.
+Use this procedure to publish a USB key on the repository's releases page. The `release` workflow (`.github/workflows/release.yml`) builds the key from the tag. It runs the server and installer tests, not the firmware tests, so you run those first.
 
 1. Commit all the changes. `git status` must show no changed files.
 2. Run `./build.sh`. All the stages and the tests must pass.
@@ -188,7 +188,7 @@ Use this procedure to publish a USB key on the repository's releases page. The `
 4. Make the tag: `git tag v0.1.0`.
 5. Push the branch and the tag: `git push origin main v0.1.0`.
 6. On GitHub, open Actions, then the `release` run of the tag. The run takes about 40 minutes with the published toolchain (v0.1.0: 36.5 minutes).
-7. When the run is done, open Releases. The release `v0.1.0` has `LapinLibre-v0.1.0.zip` and `LapinLibre-v0.1.0.zip.sha256`. The notes give the build id.
+7. When the run is done, open Releases. The release `v0.1.0` has the signed manifest (`manifest.json`, `manifest.json.sig`), the OTA images, `lapinou-key-v0.1.0.zip` and `lapinou-server-v0.1.0.tar.gz`. The notes give the build id. The signing key and the details are in [docs/lapinou/release.md](lapinou/release.md).
 
 To build the zip without a release, open Actions, then `release`, then "Run workflow", and choose a branch. The zip is kept with the run for 7 days.
 
@@ -610,12 +610,13 @@ This section tells what `system/check-image.sh` tests.
 
 ### GitHub workflows
 
-This section tells what the workflows in `.github/workflows` do. They use only GitHub's own actions (`actions/checkout`, `actions/cache`, `actions/upload-artifact`), pinned by commit, and the `gh` command of the runner.
+This section tells what the workflows in `.github/workflows` do. They use GitHub's own actions (`actions/checkout`, `actions/cache`, `actions/upload-artifact`, `actions/download-artifact`) and, in `server`, `astral-sh/setup-uv`, all pinned by commit, and the `gh` command of the runner.
 
 | Workflow | When | What it does |
 |---|---|---|
 | `check` | Each push to a branch, and each pull request | Runs `scripts/check-repo.py` and `tests/image/test_fstree.py`. These need no build, and take less than a minute. |
-| `release` | A pushed tag `v*` | Builds the stages `check fetch toolchain system v8 kernel userland image` on `ubuntu-24.04` from the tagged commit, zips `out/usbkey`, and makes the release with the tag's name and the files `LapinLibre-VERSION.zip` and `LapinLibre-VERSION.zip.sha256`. |
+| `server` | Each push to a branch, each pull request, and the `release` workflow | LapiNou's server tests (`uv run pytest` in `server/`) and installer tests (`installer/tests/run.sh`, `shellcheck`). They need no build. |
+| `release` | A pushed tag `v*` | Builds the stages `check fetch toolchain system v8 kernel userland image` on `ubuntu-24.04` from the tagged commit, zips `out/usbkey` as `lapinou-key-VERSION.zip`, and, after the server tests (`server`) and a check of the secret `OTA_SIGNING_KEY`, makes the release with the tag's name, the OTA images, the key, the server archive and the signed manifest ([docs/lapinou/release.md](lapinou/release.md)). |
 | `toolchain` | "Run workflow" on GitHub | Builds the toolchain from source (`LAPIN_TOOLCHAIN=build ./build.sh check fetch toolchain`) and makes the release `toolchain.name` with `NAME.tar.gz` and its SHA-256, not marked as the latest release. It stops if that release exists. See [Publish a new toolchain](#publish-a-new-toolchain). |
 | `release` | "Run workflow" on GitHub | The same build and zip from the chosen branch. The zip is kept with the run for 7 days. Nothing is published. |
 | `downloads` | A push to `main` that changes `config.toml`, and "Run workflow" on GitHub | Fetches every pinned download (`./build.sh fetch`) into the cache the `release` and `toolchain` workflows restore, saved under `main`. A cache belongs to the branch or tag of the run that saved it, and a run can only restore its own and `main`'s, so a cache saved by one release tag's run is never seen by the next tag's. With the key already cached it stops after the restore. |

@@ -1,9 +1,17 @@
 # SPDX-License-Identifier: MIT
-# Build the USB key and publish it. A pushed v* tag builds the key from the tagged commit and makes
-# a release named after the tag, with the key as LapinLibre-<version>.zip and its SHA-256. Running
-# the workflow by hand builds the same zip from the chosen branch and keeps it as a workflow
-# artifact for 7 days; it publishes nothing. The tests are not run here: they run on the build host
-# before the tag is pushed (docs/build.md, "Make a release").
+# Build and publish a LapiNou release (docs/lapinou/release.md). A pushed v* tag (vX.Y.Z) runs:
+# - preflight: the tag is vX.Y.Z and the secret OTA_SIGNING_KEY is an Ed25519 key that matches the
+#   committed public keys; else the run stops here, before the long build, and nothing is
+#   published (never an unsigned release);
+# - server: the server and installer tests (server.yml);
+# - key: the firmware build (Buildroot, about 40 minutes with the published toolchain and the
+#   download cache), zipped as lapinou-key-<tag>.zip;
+# - publish: scripts/lapinou-release.sh assembles the OTA files, the key, the server archive and
+#   the signed manifest (manifest.json + manifest.json.sig, docs/lapinou/ota.md) and checks them
+#   with tools/sign-ota.py --verify; then the release named after the tag gets them as assets.
+# Running the workflow by hand builds the same files from the chosen branch and keeps them as a
+# workflow artifact for 7 days; it signs and publishes nothing. The firmware tests are not run
+# here: they run on the build host before the tag is pushed (docs/build.md, "Make a release").
 name: release
 
 on:
@@ -18,9 +26,41 @@ concurrency:
   group: release-${{ github.ref }}
 
 jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      # The key goes to a 0600 file for openssl, never to the log or a command line, and is
+      # shredded at the end of the step.
+      - name: Signing key (tag)
+        if: github.ref_type == 'tag'
+        env:
+          OTA_SIGNING_KEY: ${{ secrets.OTA_SIGNING_KEY }}
+        run: |
+          if ! [[ $GITHUB_REF_NAME =~ ^v[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}$ ]]; then
+              echo "::error::the tag $GITHUB_REF_NAME isn't a release tag vX.Y.Z"
+              exit 1
+          fi
+          if [ -z "${OTA_SIGNING_KEY:-}" ]; then
+              echo "::error::the repository secret OTA_SIGNING_KEY is missing: no release is published unsigned (docs/lapinou/release.md)"
+              exit 1
+          fi
+          key=$(mktemp --suffix=.key "$RUNNER_TEMP/ota-signing.XXXXXX")
+          trap 'shred -u "$key"' EXIT
+          (umask 077 && printf '%s\n' "$OTA_SIGNING_KEY" > "$key")
+          bash scripts/lapinou-release.sh check-key --signing-key "$key"
+
+  server:
+    uses: ./.github/workflows/server.yml
+
   key:
+    needs: preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 350
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       # The whole history and the tags, for the version (git describe).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -29,6 +69,7 @@ jobs:
           fetch-tags: true
 
       - name: Version
+        id: version
         run: |
           version=$(git describe --tags --match 'v[0-9]*' --dirty --always --abbrev=12)
           case $version in *-dirty) echo "the checkout has changes: $version" >&2; exit 1 ;; esac
@@ -37,6 +78,7 @@ jobs:
               exit 1
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "LAPINLIBRE_WORK=$RUNNER_TEMP/lapinlibre" >> "$GITHUB_ENV"
           echo "version $version"
 
@@ -79,35 +121,74 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+      # dist/: the zipped key and, for the OTA, its images and install.conf (RELEASE_VERSION).
       - name: Zip the key
         run: |
           key=$LAPINLIBRE_WORK/out/usbkey
           built=$(sed -n 's/^BUILD_VERSION=//p' "$key/install.conf")
           [ "$built" = "$VERSION" ] || { echo "the key is $built, not $VERSION" >&2; exit 1; }
-          echo "BUILD_ID=$(cat "$key/build_id")" >> "$GITHUB_ENV"
+          echo "build $(cat "$key/build_id"), $(grep '^RELEASE_VERSION=' "$key/install.conf")"
           mkdir -p dist
-          zip="LapinLibre-$VERSION.zip"
+          zip="lapinou-key-$VERSION.zip"
           (cd "$key" && zip -q -r -X -9 "$GITHUB_WORKSPACE/dist/$zip" .)
-          (cd dist && sha256sum "$zip" > "$zip.sha256" && cat "$zip.sha256")
+          cp "$key/zImage" "$key/rootfs.img.gz" "$key/usr.tar.gz" "$key/install.conf" dist/
           ls -l dist
 
-      - name: Keep the zip (run by hand)
-        if: github.ref_type != 'tag'
+      # For the publish job (tag), or kept 7 days (run by hand).
+      - name: Keep the files
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          name: LapinLibre-${{ env.VERSION }}
+          name: lapinou-${{ env.VERSION }}
           path: dist/
+          if-no-files-found: error
           retention-days: 7
 
-      - name: Release (tag)
-        if: github.ref_type == 'tag'
+  publish:
+    if: github.ref_type == 'tag'
+    needs: [preflight, server, key]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # The tagged commit: the server archive is made from it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: lapinou-${{ needs.key.outputs.version }}
+          path: firmware
+
+      # Every asset is listed with its size and SHA-256 in manifest.json, signed with
+      # OTA_SIGNING_KEY (R41, R42), then checked with the committed public keys. The key goes to
+      # a 0600 file, never to the log or a command line, and is shredded at the end of the step.
+      - name: Assemble and sign
+        env:
+          OTA_SIGNING_KEY: ${{ secrets.OTA_SIGNING_KEY }}
+          VERSION: ${{ needs.key.outputs.version }}
+        run: |
+          [ "$VERSION" = "$GITHUB_REF_NAME" ] || { echo "::error::built $VERSION, not the tag $GITHUB_REF_NAME"; exit 1; }
+          if [ -z "${OTA_SIGNING_KEY:-}" ]; then
+              echo "::error::the repository secret OTA_SIGNING_KEY is missing: no release is published unsigned"
+              exit 1
+          fi
+          key=$(mktemp --suffix=.key "$RUNNER_TEMP/ota-signing.XXXXXX")
+          trap 'shred -u "$key"' EXIT
+          (umask 077 && printf '%s\n' "$OTA_SIGNING_KEY" > "$key")
+          bash scripts/lapinou-release.sh assemble --version "$VERSION" --firmware firmware \
+              --signing-key "$key" --out release
+          cat release/manifest.json
+
+      - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.key.outputs.version }}
         run: |
+          build=$(sed -n 's/^BUILD_ID=//p' firmware/install.conf)
           {
-              echo "LapinLibre $VERSION, build $BUILD_ID."
+              echo "LapiNou $VERSION, construction $build."
               echo
-              echo "Unzip LapinLibre-$VERSION.zip onto the root of an empty FAT32 USB key, then follow [the install](https://github.com/$GITHUB_REPOSITORY/blob/$VERSION/docs/install.md)."
-          } > dist/notes.md
-          gh release create "$VERSION" "dist/LapinLibre-$VERSION.zip" "dist/LapinLibre-$VERSION.zip.sha256" \
-              --verify-tag --title "LapinLibre $VERSION" --notes-file dist/notes.md
+              echo "- Lapin, par clé USB : décompresser lapinou-key-$VERSION.zip à la racine d'une clé USB FAT32 vide, puis suivre [l'installation](https://github.com/$GITHUB_REPOSITORY/blob/$VERSION/docs/install.md)."
+              echo "- Lapin, sans clé : la page web du lapin (Mises à jour) ou le serveur LapiNou trouvent cette version et vérifient sa signature (manifest.json.sig)."
+              echo "- Serveur : lapinou-server-$VERSION.tar.gz, ou le bouton « Mettre à jour » de sa page de réglages (docs/lapinou/installation.md)."
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$VERSION" release/* --verify-tag --title "LapiNou $VERSION" \
+              --notes-file "$RUNNER_TEMP/notes.md"
