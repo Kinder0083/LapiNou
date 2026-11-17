@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import ipaddress
+import secrets
 import shutil
 import socket
 import tempfile
@@ -524,8 +525,26 @@ async def restart(request: Request) -> dict[str, bool]:
     return {"ok": True}
 
 
+# Clés USB fabriquées, en attente de téléchargement : jeton -> (fin de validité, dossier, nom).
+# Le navigateur les récupère par un lien ordinaire (GET), un vrai téléchargement : certains
+# navigateurs perdent un fichier de 24 Mo reçu par fetch() puis enregistré depuis la page.
+_KEY_TTL_S = 600.0
+_keys: dict[str, tuple[float, Path, str]] = {}
+
+
+def _drop_key(token: str) -> None:
+    entry = _keys.pop(token, None)
+    if entry is not None:
+        shutil.rmtree(entry[1], ignore_errors=True)
+
+
+def _expire_keys(now: float) -> None:
+    for token in [t for t, (end, _, _) in _keys.items() if end <= now]:
+        _drop_key(token)
+
+
 @router.post("/usbkey")
-async def usb_key(body: UsbKeyBody, request: Request) -> FileResponse:
+async def usb_key(body: UsbKeyBody, request: Request) -> dict[str, str]:
     from ..usbkey import UsbKeyError, WifiInput, build_usb_key
 
     from ..ota import OtaError
@@ -541,16 +560,31 @@ async def usb_key(body: UsbKeyBody, request: Request) -> FileResponse:
     version = ctx.ota.status().version or "version"
     tmp = Path(tempfile.mkdtemp(prefix="lapinou-key-"))
     try:
-        out = await asyncio.to_thread(build_usb_key, release, ctx.store.get(),
-                                      WifiInput(**body.model_dump()), tmp / "key.zip")
+        await asyncio.to_thread(build_usb_key, release, ctx.store.get(),
+                                WifiInput(**body.model_dump()), tmp / "key.zip")
     except UsbKeyError as e:
         shutil.rmtree(tmp, ignore_errors=True)
         raise HTTPException(422, str(e)) from None
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
-    return FileResponse(out, media_type="application/zip",
-                        filename=f"lapinou-cle-{version}.zip",
+    now = time.monotonic()
+    _expire_keys(now)
+    token = secrets.token_urlsafe(24)
+    _keys[token] = (now + _KEY_TTL_S, tmp, f"lapinou-cle-{version}.zip")
+    return {"url": f"/api/usbkey/{token}"}
+
+
+@router.get("/usbkey/{token}")
+async def usb_key_download(token: str) -> FileResponse:
+    """Un seul téléchargement par clé fabriquée (elle contient des mots de passe), dans les
+    10 minutes ; ensuite le fichier est effacé."""
+    _expire_keys(time.monotonic())
+    entry = _keys.pop(token, None)
+    if entry is None:
+        raise HTTPException(404, "clé USB expirée ou déjà téléchargée : fabriquez-la de nouveau")
+    _, tmp, name = entry
+    return FileResponse(tmp / "key.zip", media_type="application/zip", filename=name,
                         background=BackgroundTask(shutil.rmtree, tmp, True))
 
 

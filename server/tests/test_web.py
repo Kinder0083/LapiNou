@@ -6,6 +6,7 @@ import json
 import re
 import stat
 import threading
+import time
 import zipfile
 from pathlib import Path
 
@@ -771,6 +772,10 @@ def test_usb_key(env):
     ctx.ota = FakeOta(key)
     r = client.post("/api/usbkey", headers=H, json=form)
     assert r.status_code == 200, r.text
+    url = r.json()["url"]
+    assert url.startswith("/api/usbkey/") and len(url) > len("/api/usbkey/") + 20
+    r = client.get(url)
+    assert r.status_code == 200, r.text
     assert r.headers["content-type"] == "application/zip"
     assert "lapinou-cle-v1.2.3.zip" in r.headers["content-disposition"]
     assert r.headers["cache-control"] == "no-store"
@@ -782,6 +787,28 @@ def test_usb_key(env):
     assert 'MQTT_PASSWORD="mqtt-SECRET"' not in text  # pas de broker réglé : pas de MQTT
     r = client.post("/api/usbkey", headers=H, json={**form, "password": 'a"b"c"d"e'})
     assert r.status_code == 422 and "Wi-Fi" in r.json()["detail"]
+    assert client.get(url).status_code == 404  # un seul téléchargement
+    assert client.get("/api/usbkey/inconnu").status_code == 404
+
+
+def test_usb_key_download_needs_login_and_expires(env, monkeypatch):
+    import lapinou.web.routes as routes
+    client, ctx, tmp_path = env
+    _login(client)
+    key = tmp_path / "LapinLibre-v1.2.3.zip"
+    with zipfile.ZipFile(key, "w") as zf:
+        zf.write(Path(__file__).parent / "data/usbkey/lapinlibre.txt", "lapinlibre.txt")
+    ctx.ota = FakeOta(key)
+    form = {"ssid": "Maison", "password": "motdepasse"}
+    url = client.post("/api/usbkey", headers=H, json=form).json()["url"]
+    folder = routes._keys[url.rsplit("/", 1)[1]][1]
+    client.cookies.clear()
+    assert client.get(url).status_code == 401  # le jeton seul ne suffit pas
+    assert client.post("/api/login", json={"password": PASSWORD}, headers=H).status_code == 200
+    now = time.monotonic()
+    monkeypatch.setattr(routes.time, "monotonic", lambda: now + routes._KEY_TTL_S + 1)
+    assert client.get(url).status_code == 404
+    assert not folder.exists()  # la clé expirée (mots de passe) est effacée
 
 
 def test_api_responses_are_not_cached(env):

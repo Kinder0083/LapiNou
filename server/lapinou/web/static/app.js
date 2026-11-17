@@ -685,13 +685,12 @@
         body.web_password = inputs.web_password.value;
         toast(t("usbkey.building"));
         const r = await api("POST", "/api/usbkey", body);
-        const blob = await r.blob();
-        const disposition = r.headers.get("content-disposition") || "";
-        const m = /filename="?([^";]+)"?/.exec(disposition);
-        const a = el("a", { href: URL.createObjectURL(blob), download: m ? m[1] : "lapinou-cle.zip" });
+        const { url } = await r.json();
+        // Un lien ordinaire : le navigateur télécharge lui-même le fichier (fiable partout).
+        const a = el("a", { href: url, download: "" });
         document.body.append(a);
         a.click();
-        setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+        setTimeout(() => a.remove(), 2000);
         toast(t("usbkey.done"));
       }));
       root.append(card(intro("usbkey"), portWarning(), form));
