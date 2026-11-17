@@ -77,6 +77,7 @@ CODE_MARK = "[code]"
 MAX_TOOL_ROUNDS = 5  # tours d'outils par phrase de l'enfant
 PLAY_MARGIN_S = 5.0  # fin de lecture attendue au plus durée + marge
 REFERENCES_KEPT = 16  # PCM des dernières phrases, pour l'annuleur d'écho
+MIC_REPORT_S = 60  # bilan du micro dans le journal (durée, niveau max, état), sans contenu
 WAKE_QUEUE_MAX = 300  # blocs en attente du détecteur (~40 s) ; au-delà, le plus ancien part
 _SENTENCE_DONE = re.compile(r"[.!?…]+[»”\"')\]]*\s*$")
 CLICKS = ("simple", "click")  # appui bref (ButtonCallback.SIMPLE)
@@ -322,6 +323,9 @@ class RabbitSession:
         self._closing = False
         self._aec_failed = False
         self._local_muted = False  # détecteur suspendu par une lecture locale
+        self._mic_n = 0  # échantillons reçus depuis le dernier bilan
+        self._mic_peak = 0  # crête depuis le dernier bilan (int16)
+        self._mic_heard = 0  # échantillons passés au détecteur depuis le dernier bilan
 
     @property
     def is_idle(self) -> bool:
@@ -368,6 +372,7 @@ class RabbitSession:
 
     def on_button(self, kind: str) -> None:
         """Bouton de la tête, depuis le registre (types du contrôleur en minuscules)."""
+        log.info("lapin %s : bouton %s (état %s)", self.id, kind, self.state)
         interrupt = kind in CLICKS + LONG_PRESSES and self.state == State.SPEAKING
         listen = kind in LONG_PRESSES and self._task is None
         if interrupt or listen:
@@ -417,22 +422,40 @@ class RabbitSession:
                         self._aec_failed = True
             if not len(pcm):
                 continue
+            self._mic_report(pcm)
             if self._listen_q is not None:
                 self._listen_q.put_nowait(pcm)
             elif self._detector is not None and (
                 self.state in (State.IDLE, State.SPEAKING) or self._grow is not None
             ):
                 if self._local_playback(chunk.first_sample, len(pcm)):
+                    if not self._local_muted:
+                        log.info("lapin %s : « Lapinou » suspendu (le lapin joue un son)", self.id)
                     self._local_muted = True  # le lapin parle tout seul : pas de réveil
                     continue
                 if self._local_muted:
+                    log.info("lapin %s : « Lapinou » de nouveau écouté", self.id)
                     self._local_muted = False
                     self._wake_reset()  # la parole entendue pendant la lecture est oubliée
+                self._mic_heard += len(pcm)
                 if self._wake_q.qsize() >= WAKE_QUEUE_MAX:
                     self._wake_q.get_nowait()
                 self._wake_q.put_nowait(pcm)
         log.info("lapin %s : flux micro fermé", self.id)
         await self._abandon(offline=True)
+
+    def _mic_report(self, pcm: np.ndarray) -> None:
+        """Toutes les MIC_REPORT_S secondes : durée reçue, crête et part examinée (dépannage,
+        sans contenu)."""
+        self._mic_n += len(pcm)
+        self._mic_peak = max(self._mic_peak, int(np.abs(pcm.astype(np.int32)).max()))
+        if self._mic_n < MIC_REPORT_S * 16000:
+            return
+        peak = 20 * np.log10(max(self._mic_peak, 1) / 32768)
+        log.info("lapin %s : micro %.0f s reçues, crête %.0f dBFS, %.0f s examinées pour "
+                 "« Lapinou », état %s", self.id, self._mic_n / 16000, peak,
+                 self._mic_heard / 16000, self.state)
+        self._mic_n = self._mic_peak = self._mic_heard = 0
 
     def _local_playback(self, first: int, count: int) -> bool:
         """Le bloc [first, first + count) tombe-t-il pendant une lecture locale (ou juste
@@ -509,6 +532,8 @@ class RabbitSession:
     def _trigger(self, first: str | None) -> None:
         if self._closing:
             return
+        log.info("lapin %s : %s", self.id,
+                 "conversation demandée" if self._task is None else "interruption demandée")
         if self._task is None:
             self._begin(self._run(first))
         else:
