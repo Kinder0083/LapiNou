@@ -32,6 +32,9 @@
     "secret_reenter": "C'est enregistré, mais l'adresse a changé : par sécurité, la clé correspondante a été effacée. Saisissez-la de nouveau : ",
     "port_warning": "Attention : les lapins cherchent leurs applications sur le port 8080 de ce serveur (url_app), quel que soit le port de cette adresse. Gardez le port 8080 ouvert vers LapiNou."
   },
+  "wake": {
+    "asr_only": "Lapinou entend « Lapinou » par la reconnaissance vocale. Un petit détecteur peut s'y ajouter (méthode « both ») : il se règle dans config.toml (voice.wake_model), puis apparaît ici."
+  },
   "login": {
     "title": "Coucou ! Connectez-vous",
     "intro": "Cette page garde des clés et des mots de passe : elle est protégée.",
@@ -64,8 +67,8 @@
     "usbkey": "Clé USB"
   },
   "intro": {
-    "brain": "Le cerveau comprend les demandes et choisit quoi faire. Claude est utilisé par défaut ; si un service ne répond pas, Lapinou essaie les suivants de la liste de secours.",
-    "budget": "Un plafond mensuel pour les services payants. À l'alerte, Lapinou passe au modèle rapide (moins cher) ; au plafond, il n'utilise plus que Home Assistant. Pensez aussi à fixer une limite dans la console du fournisseur.",
+    "brain": "Le cerveau comprend les demandes et choisit quoi faire. Claude est utilisé par défaut ; si un service ne répond pas, Lapinou essaie les suivants de la liste de secours.",
+    "budget": "Un plafond mensuel pour les services payants. À l'alerte, Lapinou passe au modèle rapide (moins cher) ; au plafond, il n'utilise plus que Home Assistant. Pensez aussi à fixer une limite dans la console du fournisseur.",
     "voice": "La voix de Lapinou est fabriquée ici, sur le serveur : rien ne part sur internet.",
     "persona": "Lapinou reste gentil, joueur et adapté aux enfants : ces règles ne se changent pas. Vous pouvez lui apprendre des choses sur la famille et la maison.",
     "wake": "Lapinou écoute quand on dit « Lapinou ». Après sa réponse, on peut enchaîner quelques secondes sans le redire.",
@@ -97,8 +100,8 @@
     "voice.voice": ["Voix", "Par exemple fr_FR-siwis-medium (Piper) ou ff_siwis (Kokoro)."],
     "voice.preview": ["Écouter", ""],
     "voice.preview_text": ["Phrase d'essai", ""],
-    "voice.wake_method": ["Méthode", "« asr » : la reconnaissance vocale entend « Lapinou » ; « both » : un petit détecteur la réveille d'abord."],
-    "voice.wake_threshold": ["Seuil du détecteur", "Entre 0 et 1 ; plus haut, moins de fausses alertes (méthode « both »)."],
+    "voice.wake_method": ["Méthode", "« asr » : la reconnaissance vocale entend « Lapinou » ; « both » : un petit détecteur la réveille d'abord."],
+    "voice.wake_threshold": ["Seuil du détecteur", "Entre 0 et 1 ; plus haut, moins de fausses alertes (méthode « both »)."],
     "voice.followup_s": ["Temps pour enchaîner (secondes)", ""],
     "voice.vad_silence_ms": ["Silence de fin de phrase (millisecondes)", ""],
     "safety.allowed_domains": ["Domaines pilotables", "Un par ligne, par exemple light, switch, media_player."],
@@ -118,7 +121,7 @@
     "ha.token": ["Home Assistant : jeton longue durée", ""],
     "lms.host": ["Lyrion (musique) : adresse", ""],
     "lms.port": ["Lyrion : port", ""],
-    "lms.allowed_url_hosts": ["Sites de radio permis", "Un par ligne ; vide : seulement les favoris de Lyrion."],
+    "lms.allowed_url_hosts": ["Sites de radio permis", "Un par ligne ; vide : seulement les favoris de Lyrion."],
     "mqtt.host": ["MQTT : adresse du broker", ""],
     "mqtt.port": ["MQTT : port", ""],
     "mqtt.username": ["MQTT : identifiant", ""],

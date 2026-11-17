@@ -34,6 +34,7 @@ import datetime as dt
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -182,11 +183,19 @@ class OtaRelay:
         return d if (d / MANIFEST).is_file() and (d / SIGNATURE).is_file() else None
 
     def _retired_at(self, d: Path) -> float | None:
-        """L'instant où la version de `d` a été remplacée (fichier .retired), ou None."""
+        """L'instant où la version de `d` a été remplacée (fichier .retired), ou None s'il
+        manque ou est illisible (nan, inf compris : jamais servie pour toujours)."""
         try:
-            return float((d / RETIRED).read_text(encoding="ascii").strip())
+            value = float((d / RETIRED).read_text(encoding="ascii").strip())
         except (OSError, ValueError):
             return None
+        return value if math.isfinite(value) else None
+
+    def _in_grace(self, d: Path) -> bool:
+        """Remplacée il y a 0 à GRACE_S secondes. Une date à venir (horloge reculée, fichier
+        trafiqué) ne prolonge rien : la version n'est plus servie."""
+        retired = self._retired_at(d)
+        return retired is not None and 0 <= self._clock() - retired <= GRACE_S
 
     def _release(self, version: str) -> Path | None:
         """Le dossier d'une version **servie maintenant** : la courante, ou une version
@@ -196,8 +205,7 @@ class OtaRelay:
             return None
         if version == self._current():
             return d
-        retired = self._retired_at(d)
-        return d if retired is not None and self._clock() - retired <= GRACE_S else None
+        return d if self._in_grace(d) else None
 
     def _current(self) -> str | None:
         try:
@@ -388,7 +396,10 @@ class OtaRelay:
         tmp.write_text(version + "\n", encoding="utf-8")
         os.replace(tmp, self.dir / "current")
         if previous is not None:  # remplacée maintenant : servie encore GRACE_S
-            (releases / previous / RETIRED).write_text(f"{self._clock()}\n", encoding="ascii")
+            marker = releases / previous / RETIRED
+            fresh = marker.with_name(RETIRED + ".new")
+            fresh.write_text(f"{self._clock()}\n", encoding="ascii")
+            os.replace(fresh, marker)  # jamais un marqueur à moitié écrit
         self._prune()
         self._status.version = version
         self._status.key_zip = self._key_name(version)
@@ -401,12 +412,11 @@ class OtaRelay:
         releases = self.dir / "releases"
         if not releases.is_dir():
             return
-        current, now = self._current(), self._clock()
+        current = self._current()
         for old in releases.iterdir():
             if old.name == current:
                 continue
-            retired = self._retired_at(old)
-            if retired is None or now - retired > GRACE_S:
+            if not self._in_grace(old):
                 shutil.rmtree(old, ignore_errors=True)
 
     # --- Vérification périodique --------------------------------------------------------

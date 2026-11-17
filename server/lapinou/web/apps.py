@@ -28,6 +28,7 @@ import re
 import tempfile
 import threading
 import time
+import unicodedata
 import urllib.parse
 from pathlib import Path
 
@@ -45,14 +46,30 @@ MAX_LOG_LINE = 1024  # ce qui en est gardé (AppReports : 1000 lignes, donc ~1 M
 DEFAULT_LANG = "fr-FR"
 
 _SAFE = re.compile(r"[^A-Za-z0-9_.-]")
-_PART = ".part-"  # envoi en cours d'écriture (ignoré par le ménage)
+_PART = ".part-"  # envoi en cours d'écriture (ignoré par le ménage tant qu'il est récent)
+PART_MAX_AGE_S = 3600  # un .part plus vieux est un reste (serveur arrêté pendant un envoi)
 TEXT = "text/plain; charset=UTF-8"
 
 
+_ESCAPES = {"\\": "\\\\", "\r": "\\r", "\n": "\\n"}
+
+
+def _escape(char: str) -> str:
+    """Un caractère de contrôle (Cc) ou un séparateur de ligne ou de paragraphe (Zl, Zp) en
+    \\xNN ou \\uNNNN : rien de ce qu'envoie une application ne coupe ni ne déguise une ligne
+    du journal."""
+    if char in _ESCAPES:
+        return _ESCAPES[char]
+    if unicodedata.category(char) in ("Cc", "Zl", "Zp"):
+        code = ord(char)
+        return f"\\x{code:02x}" if code < 0x100 else f"\\u{code:04x}"
+    return char
+
+
 def one_line(text: str) -> str:
-    """Un compte rendu sur une ligne (CR, LF échappés), coupé à MAX_LOG_LINE."""
-    text = text.replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n")
-    return text[:MAX_LOG_LINE]
+    """Un compte rendu sur une ligne (contrôles et séparateurs échappés), coupé à
+    MAX_LOG_LINE."""
+    return "".join(_escape(c) for c in text)[:MAX_LOG_LINE]
 
 
 class AppHost:
@@ -134,7 +151,8 @@ class AppHost:
                         b"Content-Type: " + ctype.encode("latin-1", "replace") + b"\r\n\r\n"
                         + part.read_bytes(), policy=email.policy.HTTP)
                     for piece in msg.iter_parts() if msg.is_multipart() else ():
-                        field = piece.get_param("name", header="content-disposition") or "field"
+                        field = one_line(str(piece.get_param("name", header="content-disposition")
+                                             or "field"))[:100]
                         data = piece.get_payload(decode=True) or b""
                         if piece.get_filename():
                             safe = _SAFE.sub("_", piece.get_filename())[-100:]
@@ -166,8 +184,17 @@ class AppHost:
     def _prune(self) -> None:
         """Garde les KEEP_UPLOADS envois les plus récents, KEEP_BYTES au plus en tout."""
         assert self.uploads is not None
-        files = [(p, p.stat()) for p in self.uploads.iterdir()
-                 if p.is_file() and not p.name.startswith(_PART)]
+        now = time.time()
+        files = []
+        for p in self.uploads.iterdir():
+            if not p.is_file():
+                continue
+            st = p.stat()
+            if p.name.startswith(_PART):
+                if now - st.st_mtime > PART_MAX_AGE_S:
+                    p.unlink(missing_ok=True)  # reste d'un envoi interrompu
+                continue
+            files.append((p, st))
         files.sort(key=lambda f: (f[1].st_mtime_ns, f[0].name), reverse=True)
         total = 0
         for i, (path, st) in enumerate(files):
@@ -199,7 +226,7 @@ def app_zip(key: str, version: str, request: Request) -> Response:
     if data is None:
         app_server.log(f"http: /file/{one_line(key)}/{one_line(version)}/get: not found")
         raise HTTPException(404)
-    app_server.log(f"http: sending {key} ({len(data)} bytes)")
+    app_server.log(f"http: sending {one_line(key)} ({len(data)} bytes)")
     return Response(data, media_type="application/zip")
 
 

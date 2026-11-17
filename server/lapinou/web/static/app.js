@@ -45,13 +45,25 @@
   // un document SVG puis importé, jamais posé en HTML. Sans lui, la page garde le petit logo.
 
   let rabbitSvg = null;
+  // Ce qui ne doit jamais entrer dans la page, même venu de /static : code, contenu HTML
+  // étranger, liens (le dessin n'en a pas besoin).
+  function cleanSvg(svg) {
+    for (const node of svg.querySelectorAll("script, foreignObject, title")) node.remove();  // title : décoratif ici
+    for (const node of [svg, ...svg.querySelectorAll("*")]) {
+      for (const attr of [...node.attributes]) {
+        const name = attr.name.toLowerCase();
+        if (name.startsWith("on") || name === "href" || name.endsWith(":href")) node.removeAttribute(attr.name);
+      }
+    }
+  }
   async function loadRabbit() {
     try {
       const res = await fetch("/static/lapin.svg");
+      if (!res.ok) return;
       const doc = new DOMParser().parseFromString(await res.text(), "image/svg+xml");
       const svg = doc.documentElement;
-      if (svg.nodeName !== "svg") return;
-      for (const node of svg.querySelectorAll("title")) node.remove();  // décoratif ici
+      if (svg.nodeName !== "svg" || doc.getElementsByTagName("parsererror").length) return;
+      cleanSvg(svg);
       svg.removeAttribute("role");
       svg.removeAttribute("aria-labelledby");
       svg.setAttribute("focusable", "false");
@@ -72,8 +84,13 @@
     void box.offsetWidth;  // relance l'animation
     box.classList.add("hello-wiggle");
   }
+  let baseNose = "var(--ln-mint)";  // la couleur de repos : menthe, citron sur la connexion
   function nose(colour) {  // le nez du lapin : menthe, citron (connexion), framboise (erreur)
     document.documentElement.style.setProperty("--ln-led", colour);  // CSSOM : permis par la CSP
+  }
+  function restNose(colour) {
+    baseNose = colour;
+    nose(colour);
   }
 
   let toastTimer = null;
@@ -84,7 +101,7 @@
     box.hidden = false;
     nose(isError ? "var(--ln-raspberry)" : "var(--ln-mint)");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { box.hidden = true; nose("var(--ln-mint)"); }, isError ? 8000 : 4500);
+    toastTimer = setTimeout(() => { box.hidden = true; nose(baseNose); }, isError ? 8000 : 4500);
   }
 
   class ApiError extends Error {
@@ -412,10 +429,14 @@
 
     wake(root) {
       const f = new Form();
+      // « both » et son seuil n'ont de sens qu'avec un classifieur (voice.wake_model, réglé
+      // dans config.toml seulement) : sans lui, ils ne sont pas proposés.
+      const detector = state.choices.wake_method.includes("both");
       root.append(card(intro("wake"),
-        f.select("voice.wake_method", state.choices.wake_method),
+        detector ? f.select("voice.wake_method", state.choices.wake_method)
+          : el("p", { class: "help", text: t("wake.asr_only") }),
         el("div", { class: "grid2" },
-          f.number("voice.wake_threshold", undefined, { min: 0, max: 1, step: "0.01" }),
+          detector ? f.number("voice.wake_threshold", undefined, { min: 0, max: 1, step: "0.01" }) : null,
           f.number("voice.followup_s", undefined, { min: 0, max: 30 }),
           f.number("voice.vad_silence_ms", undefined, { min: 200, max: 3000, step: 50 })),
         f.saveButton()));
@@ -713,7 +734,7 @@
 
   function loginScreen(passwordSet, setupFile) {
     nav.hidden = menuButton.hidden = logoutButton.hidden = true;
-    nose("var(--ln-lemon)");
+    restNose("var(--ln-lemon)");  // en attente du mot de passe : citron, même après un message
     const pw = el("input", { id: "login-pw", type: "password", required: true, minlength: passwordSet ? null : 8,
       autocomplete: passwordSet ? "current-password" : "new-password" });
     const pw2 = el("input", { id: "login-pw2", type: "password", required: true, minlength: 8, autocomplete: "new-password" });
@@ -735,6 +756,7 @@
         return;
       }
       submit.disabled = true;
+      nose(baseNose);
       try {
         await api("POST", passwordSet ? "/api/login" : "/api/setup",
           passwordSet ? { password: pw.value } : { password: pw.value, token: code.value.trim() });
@@ -742,6 +764,7 @@
       } catch (e) {
         message.textContent = e.status === 401 ? t("login.wrong") : e.status === 429 ? e.message || t("login.locked") : e.message;
         message.hidden = false;
+        nose("var(--ln-raspberry)");
       } finally {
         submit.disabled = false;
       }
@@ -768,7 +791,7 @@
     }
     const data = await api("GET", "/api/settings");
     Object.assign(state, data);
-    nose("var(--ln-mint)");
+    restNose("var(--ln-mint)");
     buildNav();
     show(location.hash.slice(1));
   }

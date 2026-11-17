@@ -118,7 +118,10 @@ def public_view(s: Settings) -> dict[str, Any]:
         "settings": public,
         "base_url": base_url(s),  # l'adresse effective donnée aux lapins
         "secrets": secrets_status(s),
-        "choices": {"wake_method": ["asr", "both"], "tts_engine": ["kokoro", "piper"],
+        # « both » (et son seuil) seulement avec un classifieur réglé (voice.wake_model, dans
+        # config.toml) : sans lui, la page ne propose que la transcription.
+        "choices": {"wake_method": ["asr", "both"] if s.voice.wake_model else ["asr"],
+                    "tts_engine": ["kokoro", "piper"],
                     "provider_kind": ["anthropic", "openai"]},
     }
 

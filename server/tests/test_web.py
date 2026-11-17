@@ -154,8 +154,8 @@ RABBIT_WWW = Path(__file__).resolve().parents[2] / "image" / "core" / "usr" / "w
 @pytest.mark.parametrize("name", ["tokens.css", "lapin.svg"])
 def test_design_tokens_are_the_rabbit_copy(name):
     """R45 : jetons et lapin partagés avec la page du lapin ; la copie du serveur doit suivre."""
-    if not (RABBIT_WWW / name).exists():
-        pytest.skip("page du lapin absente de cette copie du dépôt")
+    # Le firmware est fusionné dans ce dépôt : une page du lapin absente est une erreur.
+    assert (RABBIT_WWW / name).exists(), f"page du lapin absente : {RABBIT_WWW / name}"
     assert (STATIC / name).read_bytes() == (RABBIT_WWW / name).read_bytes(), f"{name} : copie à suivre"
 
 
@@ -795,7 +795,7 @@ def test_settings_json_is_valid_for_the_page(env):
     _login(client)
     body = client.get("/api/settings").json()
     json.dumps(body)
-    assert body["choices"]["wake_method"] == ["asr", "both"]
+    assert body["choices"]["wake_method"] == ["asr"]  # « both » : seulement avec wake_model
     assert body["choices"]["tts_engine"] == ["kokoro", "piper"]
 
 
