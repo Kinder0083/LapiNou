@@ -40,14 +40,51 @@
     return node;
   }
 
+  // --- Le lapin (R45) : lapin.svg, partagé avec la page du lapin, mis dans la page ---------
+  // Le fichier vient de /static (même origine, pas du serveur de réglages) : il est lu comme
+  // un document SVG puis importé, jamais posé en HTML. Sans lui, la page garde le petit logo.
+
+  let rabbitSvg = null;
+  async function loadRabbit() {
+    try {
+      const res = await fetch("/static/lapin.svg");
+      const doc = new DOMParser().parseFromString(await res.text(), "image/svg+xml");
+      const svg = doc.documentElement;
+      if (svg.nodeName !== "svg") return;
+      for (const node of svg.querySelectorAll("title")) node.remove();  // décoratif ici
+      svg.removeAttribute("role");
+      svg.removeAttribute("aria-labelledby");
+      svg.setAttribute("focusable", "false");
+      rabbitSvg = svg;
+      document.getElementById("mascot").replaceChildren(document.importNode(svg, true));
+      wiggle(document.getElementById("mascot"));
+      const hero = document.getElementById("hero-rabbit");
+      if (hero) { hero.replaceChildren(document.importNode(svg, true)); wiggle(hero); }
+    } catch (e) { /* la page marche sans son dessin */ }
+  }
+  function rabbit(id) {
+    const box = el("div", { id, class: "rabbit", "aria-hidden": "true" });
+    if (rabbitSvg) { box.append(document.importNode(rabbitSvg, true)); wiggle(box); }
+    return box;
+  }
+  function wiggle(box) {  // les oreilles remuent (coupé par prefers-reduced-motion)
+    box.classList.remove("hello-wiggle");
+    void box.offsetWidth;  // relance l'animation
+    box.classList.add("hello-wiggle");
+  }
+  function nose(colour) {  // le nez du lapin : menthe, citron (connexion), framboise (erreur)
+    document.documentElement.style.setProperty("--ln-led", colour);  // CSSOM : permis par la CSP
+  }
+
   let toastTimer = null;
   function toast(message, isError = false) {
     const box = document.getElementById("toast");
     box.textContent = message;
     box.className = "toast" + (isError ? " error" : "");
     box.hidden = false;
+    nose(isError ? "var(--ln-raspberry)" : "var(--ln-mint)");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { box.hidden = true; }, isError ? 8000 : 4500);
+    toastTimer = setTimeout(() => { box.hidden = true; nose("var(--ln-mint)"); }, isError ? 8000 : 4500);
   }
 
   class ApiError extends Error {
@@ -662,7 +699,8 @@
     menuButton.setAttribute("aria-expanded", "false");
     document.title = `LapiNou : ${t("pages." + page)}`;
     const root = el("div");
-    main.replaceChildren(el("h2", { text: t("pages." + page) }), root);
+    main.replaceChildren(el("h2", { class: "page-title", text: t("pages." + page) }), root);
+    wiggle(document.getElementById("mascot"));
     try {
       await pages[page](root);
     } catch (e) {
@@ -675,6 +713,7 @@
 
   function loginScreen(passwordSet, setupFile) {
     nav.hidden = menuButton.hidden = logoutButton.hidden = true;
+    nose("var(--ln-lemon)");
     const pw = el("input", { id: "login-pw", type: "password", required: true, minlength: passwordSet ? null : 8,
       autocomplete: passwordSet ? "current-password" : "new-password" });
     const pw2 = el("input", { id: "login-pw2", type: "password", required: true, minlength: 8, autocomplete: "new-password" });
@@ -707,7 +746,7 @@
         submit.disabled = false;
       }
     });
-    main.replaceChildren(el("section", { class: "card login" },
+    main.replaceChildren(rabbit("hero-rabbit"), el("section", { class: "card login" },
       el("h2", { text: t(passwordSet ? "login.title" : "login.setup_title") }),
       el("p", { class: "intro", text: t(passwordSet ? "login.intro" : "login.setup_intro") }), form));
     (passwordSet ? pw : code).focus();
@@ -729,6 +768,7 @@
     }
     const data = await api("GET", "/api/settings");
     Object.assign(state, data);
+    nose("var(--ln-mint)");
     buildNav();
     show(location.hash.slice(1));
   }
@@ -744,5 +784,6 @@
     start();
   }
   logoutButton.addEventListener("click", logout);
+  loadRabbit();
   start();
 })();

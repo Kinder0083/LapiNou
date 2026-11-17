@@ -6,22 +6,26 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>LapiNou : réglages</title>
+  <link rel="stylesheet" href="/static/tokens.css">
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/app.js" defer></script>
 </head>
 <body>
   <header class="top">
     <div class="brand">
-      <svg class="logo" viewBox="0 0 64 64" aria-hidden="true">
-        <ellipse cx="22" cy="18" rx="7" ry="16" class="ear"/>
-        <ellipse cx="42" cy="18" rx="7" ry="16" class="ear"/>
-        <ellipse cx="22" cy="18" rx="3" ry="11" class="ear-in"/>
-        <ellipse cx="42" cy="18" rx="3" ry="11" class="ear-in"/>
-        <circle cx="32" cy="42" r="18" class="head"/>
-        <circle cx="25" cy="40" r="2.5" class="eye"/>
-        <circle cx="39" cy="40" r="2.5" class="eye"/>
-        <ellipse cx="32" cy="47" rx="3" ry="2" class="nose"/>
-      </svg>
+      <!-- Le lapin dessiné (lapin.svg) remplace ce petit logo dès que la page l'a chargé. -->
+      <div id="mascot" class="mascot rabbit" aria-hidden="true">
+        <svg class="logo" viewBox="0 0 64 64">
+          <ellipse cx="22" cy="18" rx="7" ry="16" class="ear"/>
+          <ellipse cx="42" cy="18" rx="7" ry="16" class="ear"/>
+          <ellipse cx="22" cy="18" rx="3" ry="11" class="ear-in"/>
+          <ellipse cx="42" cy="18" rx="3" ry="11" class="ear-in"/>
+          <circle cx="32" cy="42" r="18" class="head"/>
+          <circle cx="25" cy="40" r="2.5" class="eye"/>
+          <circle cx="39" cy="40" r="2.5" class="eye"/>
+          <ellipse cx="32" cy="47" rx="3" ry="2" class="nose"/>
+        </svg>
+      </div>
       <div>
         <h1>LapiNou</h1>
         <p class="subtitle" id="subtitle">Réglages du serveur</p>

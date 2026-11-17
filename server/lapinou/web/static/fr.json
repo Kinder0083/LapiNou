@@ -2,7 +2,7 @@
   "_licence": "SPDX-License-Identifier: MIT",
   "app": {
     "title": "LapiNou",
-    "subtitle": "Réglages du serveur",
+    "subtitle": "Le terrier de vos lapins : réglages du serveur",
     "menu": "Menu",
     "save": "Enregistrer",
     "saved": "C'est enregistré. Certains réglages ne servent qu'au prochain redémarrage du service.",
@@ -33,7 +33,7 @@
     "port_warning": "Attention : les lapins cherchent leurs applications sur le port 8080 de ce serveur (url_app), quel que soit le port de cette adresse. Gardez le port 8080 ouvert vers LapiNou."
   },
   "login": {
-    "title": "Connexion",
+    "title": "Coucou ! Connectez-vous",
     "intro": "Cette page garde des clés et des mots de passe : elle est protégée.",
     "password": "Mot de passe administrateur",
     "submit": "Se connecter",

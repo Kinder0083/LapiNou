@@ -3,6 +3,7 @@
 
 import datetime as dt
 import json
+import re
 import stat
 import threading
 import zipfile
@@ -144,6 +145,38 @@ def test_pages_are_public_and_french(env):
     r = client.get("/static/app.js")
     assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
     assert client.get("/static/style.css").status_code == 200
+
+
+STATIC = Path(__file__).resolve().parents[1] / "lapinou" / "web" / "static"
+RABBIT_WWW = Path(__file__).resolve().parents[2] / "image" / "core" / "usr" / "www" / "lapinou"
+
+
+@pytest.mark.parametrize("name", ["tokens.css", "lapin.svg"])
+def test_design_tokens_are_the_rabbit_copy(name):
+    """R45 : jetons et lapin partagés avec la page du lapin ; la copie du serveur doit suivre."""
+    if not (RABBIT_WWW / name).exists():
+        pytest.skip("page du lapin absente de cette copie du dépôt")
+    assert (STATIC / name).read_bytes() == (RABBIT_WWW / name).read_bytes(), f"{name} : copie à suivre"
+
+
+def test_page_uses_the_tokens_without_inline_code(env):
+    client, _, _ = env
+    html = client.get("/").text
+    assert html.index("/static/tokens.css") < html.index("/static/style.css")
+    # La CSP (default-src 'self') interdit le code en ligne : rien de tel dans la page.
+    assert "<style" not in html
+    assert not re.search(r"\s(style|on[a-z]+)\s*=", html)
+    scripts = re.findall(r"<script([^>]*)>(.*?)</script>", html, re.S)
+    assert scripts and all("src=" in attrs and not body.strip() for attrs, body in scripts)
+    r = client.get("/static/tokens.css")
+    assert r.status_code == 200 and "--ln-ink" in r.text and "prefers-color-scheme: dark" in r.text
+    r = client.get("/static/lapin.svg")
+    assert r.status_code == 200 and "image/svg+xml" in r.headers["content-type"]
+    css = client.get("/static/style.css").text
+    assert "var(--ln-" in css and "prefers-reduced-motion" in css
+    js = client.get("/static/app.js").text
+    for banned in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval("):
+        assert banned not in js, banned
 
 
 def test_setup_then_login(env):
