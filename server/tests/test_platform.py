@@ -338,6 +338,28 @@ async def test_bad_interactive_id_reenters_and_retries_once(platform):
     assert "left: 7" in again
 
 
+async def test_controller_reset_resyncs_and_retries_once(platform):
+    """Vu sur le vrai lapin : « Karotz stop interactive mode, resetting », puis chaque commande
+    refusée (ERROR) sans fin. Le serveur renvoie sa configuration, reprend la main et renvoie la
+    commande ; une deuxième erreur aussitôt après ne relance pas tout (au plus une fois par
+    RESYNC_MIN_S)."""
+    c = await platform.connect("lapin-1")
+    await c.until(r"^config \{")  # celui de la connexion
+    await platform.get("lapin-1").ears(3, 4)
+    ears = await c.until(r"^ears \{")
+    eid = re.search(r'^id: "([^"]*)"', ears, re.M).group(1)
+    await c.send(f'id: "e1" correlationId: "{eid}" response {{ code: ERROR }}')
+    await c.until(r"^config \{")
+    await c.until(r"^interactiveMode \{")
+    again = await c.until(r"^ears \{")
+    assert "left: 3" in again
+    aid = re.search(r'^id: "([^"]*)"', again, re.M).group(1)
+    await c.send(f'id: "e2" correlationId: "{aid}" response {{ code: ERROR }}')
+    await platform.get("lapin-1").ears(5, 6)
+    nxt = await c.until(r"^(ears|config|interactiveMode) \{")
+    assert re.search(r"^ears \{", nxt, re.M) and "left: 5" in nxt
+
+
 async def test_events_keep_order_per_rabbit_with_slow_handler(platform):
     seen = []
 

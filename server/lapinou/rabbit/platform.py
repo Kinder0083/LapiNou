@@ -38,6 +38,10 @@ RENEW_FRACTION = 0.8
 INTERACTIVE_RETRY_S = 2.0  # premier nouvel essai après un refus, doublé ensuite
 INTERACTIVE_RETRY_MAX_S = 60.0
 READY_TIMEOUT_S = 10
+# Une commande refusée (ERROR) alors que l'on se croit en mode interactif : le contrôleur l'a
+# quitté (vu sur le vrai lapin : « Karotz stop interactive mode, resetting » après une action de
+# la page LapinLibre). On refait la poignée de main, au plus une fois par RESYNC_MIN_S.
+RESYNC_MIN_S = 15.0
 
 quote = app_server.quote
 
@@ -98,6 +102,7 @@ class Rabbit:
         self._ready = asyncio.Event()
         self._playback_id: str | None = None
         self._stale_stops = 0  # STOP attendus pour des lectures déjà remplacées
+        self._last_resync = float("-inf")  # horloge de la boucle au dernier _resync
         self._play_req: str | None = None
         self._events: asyncio.Queue | None = None  # file des événements (créée par le registre)
 
@@ -295,23 +300,44 @@ class Rabbit:
         if code == "OK":
             self._sent.pop(corr, None)
             return
-        log.warning("lapin %s : commande refusée (%s)", self.id, code)
         body = self._sent.pop(corr, None)
+        log.warning("lapin %s : commande refusée (%s)%s", self.id, code,
+                    f" : {body.split(None, 1)[0]}" if body else "")
         if code == "BAD_INTERACTIVEID" and body is not None and self._link is not None:
             self._registry._spawn(self._reenter_and_retry(body, corr, corr == self._play_req))
+        elif code == "ERROR" and body is not None and self._link is not None and self._resync_due():
+            # Le contrôleur a quitté le mode interactif (remis à zéro) : config, puis la main.
+            self._registry._spawn(self._reenter_and_retry(body, corr, corr == self._play_req,
+                                                          resync=True))
         elif corr == self._play_req and self._playback_id is not None:
             pid, self._playback_id = self._playback_id, None
             self._registry._emit("playback", self, pid, "error")
 
-    async def _reenter_and_retry(self, body: str, req_id: str, is_play: bool = False) -> None:
+    def _resync_due(self) -> bool:
+        now = asyncio.get_running_loop().time()
+        if now - self._last_resync < RESYNC_MIN_S:
+            return False
+        self._last_resync = now
+        return True
+
+    async def _reenter_and_retry(self, body: str, req_id: str, is_play: bool = False,
+                                 resync: bool = False) -> None:
         """Le contrôleur ne reconnaît plus notre prise de main : la reprendre, renvoyer une fois.
-        Un `play` renvoyé garde son id (le playback_id des marques d'écho)."""
+        Un `play` renvoyé garde son id (le playback_id des marques d'écho). `resync` : il a été
+        remis à zéro ; on lui renvoie d'abord sa configuration, comme à la connexion."""
         link = self._link
         if link is None:
             return
         self._ready.clear()
         self.state = "connected"
+        self._interactive_id = None
         try:
+            if resync:
+                log.warning("lapin %s : mode interactif perdu, reprise de la main", self.id)
+                await link.send(self._registry.config_text())
+                await link.send(self._registry.schedule_text())
+                await link.send("pendingmessage: false")
+                self._interactive_tries = 0
             await self._start_interactive(link)
             req = await self._command(body, msg_id=req_id if is_play else None)
             if is_play:
