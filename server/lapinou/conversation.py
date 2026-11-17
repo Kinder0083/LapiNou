@@ -18,7 +18,10 @@
   pendant la lecture) ; `Retract` (portée : l'appel `respond()` en cours) arrête la lecture et
   oublie les phrases en file de cet appel.
 - Actions sensibles : la question officielle (`PendingAction.phrase`) est dite telle quelle,
-  et la phrase suivante de l'enfant va à `confirm()` sans passer par le cerveau.
+  et la phrase suivante de l'enfant va à `confirm()` sans passer par le cerveau ; ni
+  l'historique ni `turns` ne la gardent en clair (« [confirmation] » ou « [code] », R48).
+- Identité (R47) : un flux micro sans plateforme et une plateforme sans flux en même temps
+  (login de account.conf différent de uuid.conf) sont signalés par un avertissement clair.
 - Pannes : Home Assistant injoignable → « Je n'arrive pas à joindre la maison. » et retour au
   repos ; lapin perdu (flux ou plateforme) → conversation abandonnée sans rien dire ; toute
   autre panne → LED orange, une phrase, retour au repos. La session survit.
@@ -67,6 +70,9 @@ LOST_FR = "Oups, je me suis perdu. On réessaie ?"
 CONFIRMED_FR = "C'est fait."
 CANCELLED_FR = "D'accord, je ne fais rien."
 FAILED_FR = "Je n'ai pas réussi à le faire."
+# Ce que l'historique et le journal gardent d'une réponse à une confirmation (R48).
+CONFIRM_MARK = "[confirmation]"
+CODE_MARK = "[code]"
 
 MAX_TOOL_ROUNDS = 5  # tours d'outils par phrase de l'enfant
 PLAY_MARGIN_S = 5.0  # fin de lecture attendue au plus durée + marge
@@ -289,7 +295,12 @@ class RabbitSession:
         self._aec = None
         if deps.make_aec is not None and stream is not None:
             self._aec = deps.make_aec(self._reference, stream.playback_marks)
-        self._detector = deps.make_detector() if deps.make_detector is not None else None
+        self._detector = None
+        if deps.make_detector is not None:
+            try:
+                self._detector = deps.make_detector()
+            except Exception:  # la session existe quand même (bouton, annonces)
+                log.exception("lapin %s : détecteur du mot d'activation impossible", self.id)
         self._wake_q: asyncio.Queue = asyncio.Queue()
         self._listen_q: asyncio.Queue | None = None
         self._seen: deque[int] = deque(maxlen=32)
@@ -617,12 +628,18 @@ class RabbitSession:
         conv = self._conv
         assert conv is not None
         self._set_state(State.THINKING)
-        self._log_turn("user", text)
         ha = self.deps.ha
-        if ha is not None and ha.pending(self.id) is not None:
+        pending = ha.pending(self.id) if ha is not None else None
+        if pending is not None:
+            # R48 : la réponse (« oui », le code) ne va ni au cerveau, ni au journal, ni dans
+            # `turns` : seul un repère y figure.
+            marker = CODE_MARK if pending.needs_pin else CONFIRM_MARK
+            self._log_turn("user", marker)
             result = await ha.confirm(self.id, text)
-            if result is not None:
-                return await self._confirmed(text, result)
+            if result is None:  # expirée à l'instant : rien n'est fait
+                result = ToolResult("Action annulée : la confirmation a expiré.")
+            return await self._confirmed(marker, result)
+        self._log_turn("user", text)
         mark = len(conv.messages)
         if self.deps.memory is not None:
             conv.memories = list(self.deps.memory.relevant(text))
@@ -836,12 +853,15 @@ class Orchestrator:
         self.deps = deps
         self.sessions: dict[str, RabbitSession] = {}
         self._registry = None
+        self._gateway = None
+        self._mismatch_seen: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
 
     def attach(self, registry, gateway) -> None:
-        """Branche les événements du registre (boutons, lectures) et les nouveaux flux."""
-        self._registry = registry
+        """Branche les événements du registre (boutons, lectures, connexions) et les flux."""
+        self._registry, self._gateway = registry, gateway
         registry.on_button = self._on_button
         registry.on_playback = self._on_playback
+        registry.on_connect = self._on_connect
         gateway.on_stream = self._on_stream
         for stream in list(gateway.streams.values()):
             self._on_stream(stream)
@@ -853,6 +873,35 @@ class Orchestrator:
         session = RabbitSession(rabbit, stream, self.deps)
         self.sessions[stream.rabbit_id] = session
         session.start()
+        self.check_identity(stream.rabbit_id)
+
+    def _on_connect(self, rabbit) -> None:
+        self.check_identity()
+
+    def check_identity(self, new_stream: str | None = None) -> None:
+        """R47 : un lapin a un seul identifiant (uuid.conf), login plateforme et flux micro
+        compris. Un flux sans plateforme et une plateforme sans flux en même temps : le login
+        de account.conf ne vaut pas l'uuid ; c'est dit clairement (une fois par cas), sinon la
+        session resterait muette sans explication."""
+        rabbits = getattr(self._registry, "all", None)
+        if rabbits is None or self._gateway is None:
+            return
+        logins = {r.id for r in rabbits() if r.connected}
+        streams = {rid for rid, s in self._gateway.streams.items()
+                   if s.connected or rid == new_stream}
+        alone_streams = tuple(sorted(streams - logins))
+        alone_logins = tuple(sorted(logins - streams))
+        if not alone_streams or not alone_logins:
+            return
+        key = (alone_streams, alone_logins)
+        if key in self._mismatch_seen:
+            return
+        self._mismatch_seen.add(key)
+        log.warning(
+            "identité incohérente : flux micro de %s sans plateforme, plateforme de %s sans "
+            "flux micro ; le login (account.conf [account] id) doit valoir l'uuid du lapin "
+            "(uuid.conf) : relancer le lapin (S40 le corrige) ou réinstaller",
+            ", ".join(alone_streams), ", ".join(alone_logins))
 
     def _on_button(self, rabbit, kind: str) -> None:
         session = self.sessions.get(rabbit.id)

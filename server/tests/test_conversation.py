@@ -513,7 +513,8 @@ async def test_sensitive_action_is_confirmed_by_the_next_utterance(world):
     ]
     assert len(brain.calls) == 2  # « oui » ne passe pas par le cerveau
     assert ha.pending(RID) is None
-    assert ("user", "oui") in world.turns()
+    assert ("user", "[confirmation]") in world.turns()  # R48 : jamais la réponse en clair
+    assert ("user", "oui") not in world.turns()
 
 
 async def test_sensitive_action_with_wrong_pin_is_not_done(world):

@@ -37,12 +37,14 @@ class RabbitRegistry:
         on_button: Callable[..., Any] | None = None,
         on_rfid: Callable[..., Any] | None = None,
         on_playback: Callable[..., Any] | None = None,
+        on_connect: Callable[..., Any] | None = None,
         interactive_ttl: int = 86400,
     ):
         self.codec = codec or build_codec()
         self.timezone = timezone
         self.interactive_ttl = interactive_ttl
         self.on_button, self.on_rfid, self.on_playback = on_button, on_rfid, on_playback
+        self.on_connect = on_connect  # on_connect(rabbit) : un contrôleur vient de se connecter
         self._rabbits: dict[str, Rabbit] = {}
         self._server: asyncio.Server | None = None
         self._tasks: set[asyncio.Task] = set()
@@ -140,6 +142,11 @@ class RabbitRegistry:
                         rabbit = self.get(login.group(1))
                         log.info("lapin %s connecté", rabbit.id)
                         await rabbit._attach(link)
+                        if self.on_connect is not None:
+                            try:
+                                self.on_connect(rabbit)
+                            except Exception:
+                                log.exception("on_connect en échec pour %s", rabbit.id)
                     continue
                 await rabbit._handle(link, text)
         except (OSError, ValueError, asyncio.IncompleteReadError) as e:
