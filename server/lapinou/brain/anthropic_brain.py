@@ -88,6 +88,15 @@ def _dump(block: Any) -> dict[str, Any]:
     return block.model_dump(mode="json", by_alias=True, exclude_none=True)
 
 
+ANTHROPIC_DEFAULT_URL = "https://api.anthropic.com"
+
+
+def is_anthropic_url(base_url: str) -> bool:
+    """Vrai pour l'adresse d'Anthropic (vide ou par défaut) : la seule où l'on peut envoyer
+    la clé de l'environnement."""
+    return base_url.strip().rstrip("/") in ("", ANTHROPIC_DEFAULT_URL, ANTHROPIC_DEFAULT_URL + "/v1")
+
+
 class AnthropicBrain:
     kind = "anthropic"
     paid = True
@@ -115,9 +124,12 @@ class AnthropicBrain:
         self.persona = persona if persona is not None else load_persona()
         self.provider = provider  # nom du fournisseur dans les réglages (dédoublonnage)
         self.server_fallback = supports_server_fallback(model)
-        # Clé vide : le SDK lit ANTHROPIC_API_KEY. `base_url` : un mandataire (proxy) éventuel.
+        # `base_url` : un mandataire (proxy) éventuel. Clé vide : le SDK lit ANTHROPIC_API_KEY
+        # (ou ses autres identifiants) seulement pour l'adresse d'Anthropic ; vers toute autre
+        # adresse, une chaîne vide l'en empêche, la clé de l'environnement ne part jamais ailleurs.
         self._client = client or anthropic.AsyncAnthropic(
-            api_key=api_key or None, base_url=base_url or None, max_retries=1)
+            api_key=api_key or (None if is_anthropic_url(base_url) else ""),
+            base_url=base_url or None, max_retries=1)
         self._clock = clock
 
     def _request(self, conv: Conversation, tools: list[ToolSpec]) -> dict[str, Any]:
@@ -181,8 +193,9 @@ class AnthropicBrain:
             ) as e:
                 raise BrainError(f"{self.model} : {e}") from e
             except TypeError as e:
-                # Le SDK sans clé (ni ANTHROPIC_API_KEY) lève TypeError avant tout envoi.
-                raise BrainError(f"{self.model} : clé API absente ou invalide ({e})") from e
+                # Le SDK sans clé (ni ANTHROPIC_API_KEY) lève TypeError avant tout envoi ; une autre
+                # TypeError reste possible, d'où un message prudent.
+                raise BrainError(f"{self.model} : clé API absente ou erreur interne ({e})") from e
             except anthropic.AnthropicError as e:
                 raise BrainError(f"{self.model} : {type(e).__name__}") from e
             usage = self._add_usage(usage, message)

@@ -330,6 +330,10 @@ async def test_3_interrupted_answer_counts_its_partial_usage(db, fail):
 async def test_4_missing_anthropic_key_is_a_brain_error_with_the_real_sdk(monkeypatch):
     for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
         monkeypatch.delenv(name, raising=False)
+    # Adresse locale fermée (jamais d'appel réel), traitée comme celle d'Anthropic pour que
+    # le SDK cherche la clé de l'environnement, absente ici.
+    import lapinou.brain.anthropic_brain as ab
+    monkeypatch.setattr(ab, "is_anthropic_url", lambda url: True)
     brain = AnthropicBrain("claude-haiku-5-5", "", False, base_url="http://127.0.0.1:9")
     conv = Conversation("r1")
     add_user_text(conv, "Bonjour")
@@ -381,6 +385,19 @@ def test_6_anthropic_honours_base_url():
     router = BrainRouter.from_settings(s)
     assert str(router.primary._client.base_url).rstrip("/") == "http://mandataire.test:8080"
 
+
+
+def test_6_anthropic_env_key_never_sent_to_a_proxy(monkeypatch):
+    from lapinou.brain.anthropic_brain import AnthropicBrain
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "cle-env-anthropic")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "jeton-env-anthropic")
+    proxy = AnthropicBrain("m", "", False, base_url="http://mandataire.test:8080")
+    headers = str(proxy._client.auth_headers) + str(proxy._client.api_key) + str(proxy._client.auth_token)
+    assert "cle-env-anthropic" not in headers and "jeton-env-anthropic" not in headers
+    for url in ("", "https://api.anthropic.com", "https://api.anthropic.com/"):
+        assert AnthropicBrain("m", "", False, base_url=url)._client.api_key == "cle-env-anthropic", url
+    # Une clé explicite part toujours avec son mandataire.
+    assert AnthropicBrain("m", "k", False, base_url="http://mandataire.test:8080")._client.api_key == "k"
 
 def test_6_openai_env_key_only_for_openai_itself(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "cle-env-openai")
