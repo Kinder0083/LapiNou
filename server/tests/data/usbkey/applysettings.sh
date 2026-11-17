@@ -170,11 +170,12 @@ if [ -n "${SERVER}" ]; then
     set_ini "${CONF}/karotz.conf" karotz port_server 9123
     set_ini "${CONF}/karotz.conf" karotz url_app "http://${SERVER}:8080"
     set_ini "${CONF}/karotz.conf" karotz domain_app "${SERVER}"
-    # The controller reboots the rabbit when the update server offers newer versions: a closed
-    # port on the rabbit itself makes that check fail at once.
-    set_ini "${CONF}/karotz.conf" karotz url_update "http://127.0.0.1:1"
     LOG "Settings: app server ${SERVER}"
 fi
+# The controller reboots the rabbit when the update server offers newer versions: a closed port on
+# the rabbit itself makes that check fail at once, server or not. LapiNou's updates are
+# lapinou-ota's (signed, from the LapiNou server or GitHub).
+set_ini "${CONF}/karotz.conf" karotz url_update "http://127.0.0.1:1"
 # The controller's platform account, whatever the app server: any values, but both set.
 [ -s "${CONF}/account.conf" ] || printf '[account]\nid=lapinlibre\npwd=lapinlibre\n' > "${CONF}/account.conf"
 TTS_URL=${TTS_SERVER:-${SERVER:+http://${SERVER}:8081}}

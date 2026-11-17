@@ -16,7 +16,9 @@
 # as \r and = as \=; reading undoes that. Nothing is ever evaluated, so quotes, $, ;, backticks
 # and accents are only text. Writes go to a temporary file that replaces the old one in one step.
 # A section or key is letters, digits, _, - and . only; anything else fails (status 2) and writes
-# nothing. A trailing line feed in a value does not survive command substitution.
+# nothing. A trailing line feed in a value does not survive command substitution. Each write holds
+# lapinou.lock (beside the settings, flock) while it reads and replaces a file, so two programs
+# writing at once (the web page, lapinou-mqtt's volume) never lose each other's change.
 # The same format is read in C by libkarotz-common's lapinou_conf.c.
 #
 # Runs in BusyBox ash and in bash: POSIX shell and awk only. Sourcing defines functions only.
@@ -57,6 +59,17 @@ _lapinou_read() {
 # _lapinou_write FILE MODE SECTION KEY VALUE: replace the key's line (and drop repeats), or add it
 # (and the section), through a temporary file in the same directory.
 _lapinou_write() {
+    if command -v flock > /dev/null 2>&1; then
+        (
+            flock -x 8 || exit 1
+            _lapinou_write_now "$@"
+        ) 8>> "${1%/*}/lapinou.lock"
+    else
+        _lapinou_write_now "$@"
+    fi
+}
+
+_lapinou_write_now() {
     local file="$1" mode="$2" tmp
     tmp="${file}.$$.new"
     [ -f "${file}" ] || { (umask 077; : > "${file}") || return 1; }
