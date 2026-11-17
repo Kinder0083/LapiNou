@@ -35,6 +35,8 @@ log = logging.getLogger(__name__)
 PROTO = REPO / "userland" / "proto" / "platform-message.proto"
 # Le mode interactif est renouvelé à cette fraction de sa durée.
 RENEW_FRACTION = 0.8
+INTERACTIVE_RETRY_S = 2.0  # premier nouvel essai après un refus, doublé ensuite
+INTERACTIVE_RETRY_MAX_S = 60.0
 READY_TIMEOUT_S = 10
 
 quote = app_server.quote
@@ -90,6 +92,7 @@ class Rabbit:
         self._link: _Link | None = None
         self._interactive_id: str | None = None
         self._pending_interactive: dict[str, str] = {}  # id de requête -> interactiveId demandé
+        self._interactive_tries = 0  # refus de suite (délai du prochain essai)
         self._sent: dict[str, str] = {}  # id de commande -> corps (pour un renvoi)
         self._renew_task: asyncio.Task | None = None
         self._ready = asyncio.Event()
@@ -116,7 +119,14 @@ class Rabbit:
         self._playback_id, self._stale_stops = None, 0
         self._interactive_id = None
         self._pending_interactive.clear()
+        # Comme le serveur d'applications de LapinLibre : `config` d'abord. Sans lui, le
+        # contrôleur reste CONNECTING et refuse le mode interactif ; il passe par
+        # UPDATING_CONF puis AVAILABLE. Puis l'horloge (scheduleConfig) et le drapeau des
+        # messages (nez vert seul).
+        await link.send(self._registry.config_text())
         await link.send(self._registry.schedule_text())
+        await link.send("pendingmessage: false")
+        self._interactive_tries = 0
         await self._start_interactive(link)
         if self._renew_task is not None:
             self._renew_task.cancel()
@@ -130,6 +140,14 @@ class Rabbit:
             f"ttl: {self._registry.interactive_ttl} }}"
         )
         self._pending_interactive[req] = new_id
+
+    async def _retry_interactive(self, link: _Link, delay: float) -> None:
+        await asyncio.sleep(delay)
+        if self._link is link and self._interactive_id is None:
+            try:
+                await self._start_interactive(link)
+            except OSError:
+                pass
 
     async def _renew_loop(self, link: _Link) -> None:
         while True:
@@ -264,7 +282,15 @@ class Rabbit:
                 self.state = "ready"
                 self._ready.set()
             else:
-                log.warning("lapin %s : mode interactif refusé (%s)", self.id, code)
+                # Refusé tant que le contrôleur n'est pas AVAILABLE (configuration en cours,
+                # lapin endormi) : nouvel essai bientôt, pas au prochain renouvellement.
+                self._interactive_tries += 1
+                delay = min(INTERACTIVE_RETRY_MAX_S, INTERACTIVE_RETRY_S * 2 ** min(self._interactive_tries - 1, 6))
+                log.warning("lapin %s : mode interactif refusé (%s), nouvel essai dans %.0f s",
+                            self.id, code, delay)
+                link = self._link
+                if link is not None:
+                    self._registry._spawn(self._retry_interactive(link, delay))
             return
         if code == "OK":
             self._sent.pop(corr, None)

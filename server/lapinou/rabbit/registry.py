@@ -60,6 +60,11 @@ class RabbitRegistry:
     def all(self) -> list[Rabbit]:
         return list(self._rabbits.values())
 
+    def config_text(self) -> str:
+        """config : la configuration (aucune application LapinLibre, R43 ; sons du lapin
+        gardés). Le contrôleur l'attend après la connexion pour devenir AVAILABLE."""
+        return "config { playsounds: true }"
+
     def schedule_text(self) -> str:
         """scheduleConfig : règle l'horloge et le fuseau du lapin."""
         return f"scheduleConfig {{ time: {int(time.time() * 1000)} gmt: {quote(self.timezone)} }}"

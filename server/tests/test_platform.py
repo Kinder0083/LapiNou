@@ -112,6 +112,42 @@ async def test_schedule_config_sent_with_timezone(platform):
     assert rabbit.connected and rabbit.state == "ready"
 
 
+
+async def test_refused_interactive_mode_is_retried_soon(monkeypatch):
+    """Le contrôleur refuse tant qu'il n'est pas AVAILABLE : le serveur réessaie vite, pas
+    au renouvellement (des heures plus tard)."""
+    import lapinou.rabbit.platform as platform_mod
+
+    monkeypatch.setattr(platform_mod, "INTERACTIVE_RETRY_S", 0.05)
+    codec = build_codec()
+    registry = RabbitRegistry(codec=codec)
+    await registry.start("127.0.0.1", 0)
+    c = FakeController(codec, "lapin-r")
+    try:
+        await c.connect(registry.port)
+        seen = []
+        refusals = 2
+
+        async def loop():
+            nonlocal refusals
+            while True:
+                text = await c.recv()
+                seen.append(text.split(" ", 3)[:3])
+                if re.search(r"^interactiveMode \{", text, re.M):
+                    mid = re.search(r'^id: "([^"]*)"', text, re.M).group(1)
+                    code = "ERROR" if refusals > 0 else "OK"
+                    refusals -= 1
+                    await c.send(f'id: "c-{mid}" correlationId: "{mid}" response {{ code: {code} }}')
+                    if code == "OK":
+                        return
+
+        await asyncio.wait_for(loop(), 10)
+        await asyncio.wait_for(registry.get("lapin-r").wait_ready(), 10)
+        assert registry.get("lapin-r").state == "ready"
+    finally:
+        await c.close()
+        await registry.close()
+
 async def test_two_rabbits_get_their_own_commands(platform):
     a = await platform.connect("lapin-a")
     b = await platform.connect("lapin-b")
@@ -209,10 +245,13 @@ async def test_ping_answered_and_reconnect_keeps_rabbit(platform):
     assert "left: 5" in await c2.until(r"^ears \{")
 
 
-async def test_no_config_pushed_at_connection(platform):
+async def test_config_without_apps_pushed_at_connection(platform):
+    """Le vrai contrôleur attend `config` pour passer de CONNECTING à AVAILABLE (sans lui,
+    il refuse le mode interactif) ; aucune application n'y est annoncée (R43)."""
     c = await platform.connect("lapin-1")
-    await asyncio.sleep(0.1)
-    assert not any(re.search(r"^config \{", t, re.M) for t in c.inbox)
+    config = await c.until(r"^config \{")
+    assert "playsounds: true" in config and "configapp" not in config.lower()
+    await c.until(r"^pendingmessage: false")
 
 
 async def test_slow_handler_does_not_block_controller(platform):
