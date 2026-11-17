@@ -103,6 +103,8 @@ class TimerTools:
         self._task: asyncio.Task | None = None
         self._inflight: dict[int, asyncio.Task] = {}
         self._retry_at: dict[int, float] = {}  # id → loop.time() de la prochaine tentative
+        # Annoncés mais pas encore rangés (base en échec) : id → due_at, jamais redits.
+        self._said: dict[int, str] = {}
 
     def _spoken_time(self, when: dt.datetime) -> str:
         local = when.astimezone(self.tz)
@@ -158,6 +160,9 @@ class TimerTools:
         for timer in self._rows("SELECT * FROM timers"):
             if timer.id in self._inflight:
                 continue  # sa fin réveillera le planificateur
+            if timer.id in self._said:
+                wait = min(wait, self.retry_s)  # rangement à retenter
+                continue
             delay = (timer.due_at - now).total_seconds()
             if delay <= 0:
                 delay = self._retry_at.get(timer.id, mono) - mono
@@ -171,6 +176,9 @@ class TimerTools:
         for timer in self._rows("SELECT * FROM timers WHERE due_at <= ? ORDER BY due_at",
                                 (_store(now),)):
             if timer.id in self._inflight:
+                continue
+            if self._said.get(timer.id) == _store(timer.due_at):
+                self._settle(timer)  # déjà dit : seulement le ranger
                 continue
             if now - timer.due_at > MISSED_GRACE:
                 self._give_up(timer, now, "annonce impossible")
@@ -192,10 +200,22 @@ class TimerTools:
                 self._retry_at[timer.id] = asyncio.get_running_loop().time() + self.retry_s
                 return
             self._retry_at.pop(timer.id, None)
-            self._done(timer)
+            self._said[timer.id] = _store(timer.due_at)
+            self._settle(timer)
         finally:
             self._inflight.pop(timer.id, None)
             self.poke()
+
+    def _settle(self, timer: Timer) -> None:
+        """Range un minuteur annoncé ; si la base échoue, il est gardé comme « dit » (jamais
+        annoncé une deuxième fois) et le rangement est retenté."""
+        try:
+            self._done(timer)
+        except Exception:  # noqa: BLE001 - base indisponible : on retentera
+            log.exception("minuteur %d annoncé mais pas encore rangé (il ne sera pas redit)",
+                          timer.id)
+            return
+        self._said.pop(timer.id, None)
 
     def _still_there(self, timer: Timer) -> bool:
         row = self.db.conn.execute("SELECT due_at FROM timers WHERE id = ?",
@@ -279,11 +299,11 @@ class TimerTools:
             at = at.replace(tzinfo=self.tz)
         stored = f"{recurrence}@{local.hour:02d}:{local.minute:02d}" if recurrence else None
         due = at.astimezone(dt.UTC)
-        if due <= now:
-            if stored is None:
-                raise ValueError("cette heure est déjà passée")
-            while due <= now:
-                due = next_occurrence(due, stored, self.tz)
+        if due <= now and stored is None:
+            raise ValueError("cette heure est déjà passée")
+        # « En semaine » demandé un samedi ou un dimanche : pas ce jour-là, le lundi suivant.
+        while due <= now or (recurrence == "weekdays" and due.astimezone(self.tz).weekday() >= 5):
+            due = next_occurrence(due, stored, self.tz)
         if due - now > MAX_REMINDER_AHEAD:
             raise ValueError("un rappel se règle au plus un an à l'avance")
         if self._count(rabbit_id) >= MAX_PER_RABBIT:

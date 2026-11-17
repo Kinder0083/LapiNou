@@ -113,6 +113,9 @@ SCRIPTS: dict[str, dict[str, Any]] = {
     "bain_tiede": {"sequence": [{"action": "climate.set_temperature",
                                  "target": {"entity_id": "climate.salon"},
                                  "data": {"temperature": 20, "hvac_mode": "heat"}}]},
+    "tiede_seul": {"sequence": [{"action": "climate.set_temperature",
+                                 "target": {"entity_id": "climate.salon"},
+                                 "data": {"temperature": 20}}]},
     "cles_data": ("sequence:\n  - action: light.turn_on\n    target:\n"
                   "      entity_id: light.salon\n    data:\n      1: x\n      foo: y\n"),
     "cles_racine": ("1: a\nzz: b\nsequence:\n  - action: light.turn_on\n"
@@ -149,6 +152,7 @@ SCENES: dict[str, dict[str, Any]] = {
     "bain_texte": {"entities": {"climate.salon": {"state": "heat", "temperature": "35"}}},
     "bain_tiede": {"entities": {"climate.salon": {"state": "heat", "temperature": 20,
                                                   "target_temp_low": None}}},
+    "tiede_seul": {"entities": {"climate.salon": {"temperature": 20, "target_temp_low": None}}},
     "boucle": {"entities": {"scene.boucle": {"state": "on"}}},
     "ping": {"entities": {"script.pong": {"state": "on"}}},
 }

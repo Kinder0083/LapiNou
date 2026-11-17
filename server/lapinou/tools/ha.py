@@ -518,6 +518,8 @@ class HomeAssistantTools:
             if not services:
                 raise Sensitive(f"{ent} : domaine non permis")
             data = state if isinstance(state, dict) else None
+            if domain == "climate" and data is None and state is not None:
+                data = {"state": state}  # « climate.x: heat » : le mode du chauffage
             await self._require_allowed(domain, sorted(services)[0], str(ent), data, depth)
 
     async def _check_steps(self, steps: Any, depth: int, require: bool = False) -> None:

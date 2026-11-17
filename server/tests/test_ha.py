@@ -442,13 +442,22 @@ async def test_string_temperature_odd_keys_and_foreign_data_are_refused(ha, enti
 
 
 @pytest.mark.parametrize("entity", [
-    "script.bain_tiede", "scene.bain_tiede", "script.lumiere_couleur", "script.volet_moitie",
+    "script.tiede_seul", "scene.tiede_seul", "script.lumiere_couleur", "script.volet_moitie",
 ])
 async def test_numeric_temperature_and_domain_data_still_allowed(ha, entity):
     tools, log, _ = ha
     result = await call(tools, entity.split(".")[0], "turn_on", entity)
     assert not result.is_error, result.content
     assert [c["entity_id"] for c in service_calls(log)] == [entity]
+
+
+@pytest.mark.parametrize("entity", ["script.bain_tiede", "scene.bain_tiede"])
+async def test_heating_mode_change_makes_a_script_or_scene_sensitive(ha, entity):
+    """hvac_mode, ou l'état « heat » d'une scène : le mode du chauffage change (sensible)."""
+    tools, log, _ = ha
+    result = await call(tools, entity.split(".")[0], "turn_on", entity)
+    assert result.is_error and "chauffage" in result.content
+    assert service_calls(log) == []
 
 
 async def test_direct_call_with_string_temperature_is_refused(ha):

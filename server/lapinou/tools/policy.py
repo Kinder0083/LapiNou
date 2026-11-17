@@ -6,7 +6,8 @@ aussi un script : `script.ouvrir_garage` ne doit pas passer pour `script.bonne_n
 
 Sensibles : `lock.*`, `alarm_control_panel.*`, `cover` de classe garage, portail ou porte (ou
 de classe inconnue), les entités marquées sensibles, `climate` réglé hors de la plage permise
-(ou par une valeur qui n'est pas un nombre, « 35 » compris),
+(ou par une valeur qui n'est pas un nombre, « 35 » compris) ou dont le mode change (`hvac_mode`,
+`preset_mode`, l'état d'une scène),
 toute entité dont l'identifiant ou le nom contient un radical ou un mot sensible (R33 : verrou,
 garage, chauffage, porte, four…), et les scripts ou scènes dont le contenu touche à l'un de ces
 domaines ou n'a pas pu être lu. Une action sensible est refusée, sauf si son entité figure dans
@@ -42,6 +43,9 @@ UNREAD = "contenu du script ou de la scène illisible"
 
 _ENTITY = re.compile(r"^([a-z0-9_]+)\.[a-z0-9_]+$")
 _CLIMATE_KEYS = ("temperature", "target_temp_low", "target_temp_high")
+# Changer le mode du chauffage (chauffe, boost, absent…) est sensible : une scène ou un script
+# peut le faire sans aucune température (l'état d'une entité climate est son hvac_mode).
+_CLIMATE_MODES = ("hvac_mode", "preset_mode", "state")
 _YES = {"oui", "ouais", "ok", "okay", "daccord", "confirme", "confirmer", "vas y", "vasy",
         "bien sur", "exactement", "yes"}
 _NO = {"non", "pas", "annule", "annuler", "stop", "arrete", "surtout pas", "jamais"}
@@ -119,6 +123,9 @@ class Policy:
             if device_class in s.sensitive_cover_classes:
                 return f"une porte de type {device_class} est sensible"
         if domain == "climate" and data:
+            for key in _CLIMATE_MODES:
+                if data.get(key) is not None:
+                    return f"changer le mode du chauffage ({key}) est sensible"
             low, high = s.climate_range
             for key in _CLIMATE_KEYS:
                 value = data.get(key)
