@@ -90,6 +90,10 @@
 #define STABLE_US      (10 * G_USEC_PER_SEC) /* a connection that held this long resets the retries */
 #define SEND_BUFFER    8192              /* SO_SNDBUF; Linux doubles it: 16 KB, about 1 s */
 #define AUDIO_RETRY_MS 1000
+/* Only exact digital silence (mu-law 0xFF / 0x7F, both zero) for this many samples: the codec has
+ * stopped capturing (seen on a real rabbit when the multimedia player ends a sound: zeros until the
+ * device is opened again). A real microphone, with its gain, is never exactly zero that long. */
+#define SILENCE_REOPEN (2 * SAMPLE_RATE)
 #define GAIN_DEFAULT   "12"
 #define GAIN_MIN_DB    (-20.0)
 #define GAIN_MAX_DB    30.0
@@ -127,6 +131,7 @@ typedef struct {
     int audio_fd;
     guint audio_watch, audio_retry;
     guint64 samples;         /* samples captured so far */
+    guint silent;            /* consecutive samples of exact digital silence */
 
     gboolean streaming;
     guint32 next_seq;
@@ -833,6 +838,8 @@ static void audio_block(LapinouMicObject *self, guint8 *data, gsize len)
 {
     gsize i;
 
+    for (i = 0; i < len; i++)
+        self->silent = (data[i] == 0xFF || data[i] == 0x7F) ? self->silent + 1 : 0;
     if (self->gain_on)
         for (i = 0; i < len; i++)
             data[i] = self->gain[data[i]];
@@ -873,6 +880,11 @@ static gboolean audio_read(LapinouMicObject *self)
 
     if (n > 0) {
         audio_block(self, buf, n);
+        if (self->silent >= SILENCE_REOPEN) {
+            self->silent = 0;
+            audio_reopen_later(self, "nothing but digital silence for 2 s");
+            return FALSE;
+        }
         return TRUE;
     }
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))

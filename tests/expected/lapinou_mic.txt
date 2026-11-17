@@ -43,6 +43,9 @@ reconnected: True
 the new connection's first frame carries the Hello: True
 == 7. the local socket
 mode: 0o666
+== 8. nothing but digital silence: the device is opened again
+the daemon closed the silent device: True
+and opened it again: True
 == signals
 com.mindscape.karotz.LapinouMic.stream_state(string "connected")
 com.mindscape.karotz.LapinouMic.stream_state(string "disconnected")
@@ -59,5 +62,11 @@ ioctl /dev/audio 0xc0045003
 ioctl /dev/audio 0xc0045002
 read /dev/audio 2048
 ioctl /dev/audio 0x8010500d
+read /dev/audio 2048
+open /dev/audio
+ioctl /dev/audio 0x5000
+ioctl /dev/audio 0xc0045005
+ioctl /dev/audio 0xc0045003
+ioctl /dev/audio 0xc0045002
 read /dev/audio 2048
 == daemon still running: True

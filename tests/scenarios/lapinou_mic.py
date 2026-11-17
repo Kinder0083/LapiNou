@@ -354,6 +354,23 @@ def drive(d, bus):
 
         record.append("== 7. the local socket")
         record.append(f"mode: {oct(path.stat().st_mode & 0o777)}")
+
+        record.append("== 8. nothing but digital silence: the device is opened again")
+        # Seen on a real rabbit: when the player ends a sound, the codec gives only zeros
+        # (mu-law 0xFF) until /dev/audio is opened again.
+        silence = bytes([0xFF])
+        reopened = False
+        deadline = time.time() + 15
+        while not reopened and time.time() < deadline:
+            try:
+                mic.write(silence * 1600)  # once the daemon closed its end: EPIPE
+            except BrokenPipeError:
+                reopened = True
+            time.sleep(0.1)
+        record.append(f"the daemon closed the silent device: {reopened}")
+        mic.close()
+        mic = Microphone(d.fifos["audio"])
+        record.append(f"and opened it again: {mic.fd is not None}")
     finally:
         for c in clients:
             c.close()
