@@ -2,11 +2,21 @@
 # SPDX-License-Identifier: MIT
 # lapinou/press (POST only): the first web password's proof of presence (R46). While the page has
 # no password, creating one needs a press on the rabbit's head: start makes the LED blink and waits
-# 60 s for it; status says whether it came (then secret_set name=web_password is taken, once).
+# 60 s for it, and gives a token to this browser only; status says whether it came (then
+# secret_set name=web_password with the token is taken, once).
 #   action  start or status
+#   token   status: start's token
 . /usr/share/lapinlibre/web.sh
 web_begin change
 . /usr/share/lapinou/web-lapinou.sh
 lapinou_post
 param_choice action status start status
-lapinou_reply press "$PV" < /dev/null
+if [ "$PV" = start ]; then
+    lapinou_reply press start < /dev/null
+fi
+# status: only for the browser that started the wait (its token, from start's reply).
+param token
+[ $? = 2 ] && web_fail "Le jeton ne peut pas contenir de caractère de contrôle."
+lapinou_reply press status << EOF
+$PV
+EOF

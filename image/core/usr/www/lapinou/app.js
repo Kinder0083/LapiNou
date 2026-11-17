@@ -422,8 +422,8 @@
       el("dl", { class: "facts" }, ...rows.filter((r) => r[1]).map((r) => el("div", null, el("dt", null, t(r[0])), el("dd", null, r[1])))));
   }
 
-  // waitForPress(result): the LED blinks; resolves once the rabbit's head is pressed, else throws
-  // after the wait.
+  // waitForPress(result): the LED blinks; resolves with the press's token once the rabbit's head
+  // is pressed, else throws after the wait.
   async function waitForPress(result) {
     const start = await call("lapinou/press", { action: "start" });
     const wait = Number(start.wait) || 60;
@@ -433,8 +433,8 @@
       for (let left = wait; left > 0; left--) {
         say(result, t("securite.press", { s: left }), true);
         await new Promise((r) => setTimeout(r, 1000));
-        const st = await call("lapinou/press", { action: "status" });
-        if (st.pressed) return;
+        const st = await call("lapinou/press", { action: "status", token: start.token });
+        if (st.pressed) return start.token;
         if (!st.waiting && left < wait - 2) break;
       }
       throw new Error(t("securite.press_late"));
@@ -461,8 +461,8 @@
       run(save, result, async () => {
         if (a.value !== b.value) throw new Error(t("securite.mismatch"));
         // The first password: a press on the rabbit's head within 60 s (R46).
-        if (s.password !== "1") await waitForPress(result);
-        await call("lapinou/secret_set", { name: "web_password", value: a.value });
+        const token = s.password !== "1" ? await waitForPress(result) : "";
+        await call("lapinou/secret_set", { name: "web_password", value: a.value, token: token });
         a.value = b.value = "";
         banner("");
         if (state.status) { state.status.password = "1"; state.status.password_needed = "0"; }

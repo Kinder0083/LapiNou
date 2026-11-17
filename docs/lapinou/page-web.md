@@ -51,9 +51,11 @@ qu'une nouvelle adresse garde la clé saisie avec elle (ci-dessous).
   dit (`"cleared":["cloud_llm_key"]`) et la page demande de le saisir à nouveau.
 - Un service qui a une clé ne peut pas avoir d'adresse `http://` hors du réseau local (127/8,
   10/8, 172.16/12, 192.168/16, 169.254/16, `localhost`, `*.local`) : la clé passerait en clair.
-  « Tester » ne l'envoie pas non plus vers une telle adresse.
+  « Tester » ne l'envoie pas non plus vers une telle adresse. L'hôte jugé est celui que curl
+  contacte : la partie entre `//` et le premier `/`, `?` ou `#` ; une adresse avec un identifiant
+  (`@` dans cette partie) est refusée.
 - Les fichiers que fait `webroot.sh` naissent en 0600 (umask 077) et ne prennent leur mode qu'une
-  fois écrits ; il ne lit que 8192 octets de son entrée standard.
+  fois écrits ; une demande de plus de 8192 octets sur son entrée standard est refusée entière.
 
 Réponses JSON comme l'API LapinLibre (`"return":"0"` ou `"1"` avec `msg`, en français).
 
@@ -65,7 +67,13 @@ programmes sauf `status`, `press` et la création du mot de passe (`secret_set n
 répondent 401, et la page propose d'en créer un. Le premier mot de passe (aucun n'existe encore)
 n'est accepté qu'après un appui sur la tête du lapin dans les 60 s (`lapinou/press`, R46) : le nez
 clignote pendant l'attente (led-daemon), l'appui est le signal `click` de button-daemon (celui que
-suit aussi `dbus_watcher`), valable 120 s et consommé par la création. Changer un mot de passe
+suit aussi `dbus_watcher`), filtré par son nom de bus et son chemin
+(`sender='com.mindscape.karotz.Button'`, `path='/com/mindscape/karotz/Button'` ; `karotz.conf` ne
+laisse que root posséder un nom `com.mindscape.karotz.*`). `press start` donne un jeton aléatoire
+(`/dev/urandom`) au seul navigateur qui l'a demandé ; `press status` et la création du mot de passe
+l'exigent. L'appui vaut 60 s et n'est consommé qu'une fois (déplacé sous verrou, puis vérifié). Une
+attente ou un appui non utilisé d'un autre navigateur n'est jamais effacé : `press start` répond
+« attente en cours » jusqu'à son expiration. Changer un mot de passe
 existant passe par la connexion de httpd, sans appui. Le nouveau mot de passe est écrit dans
 `/usr/etc/conf/web_password`, puis `inetd.sh conf` le hache et refait la configuration de httpd
 (lue à chaque requête). Règles : 8 à 64 caractères ASCII, sans espace, `"`, `\` ni `:`.

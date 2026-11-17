@@ -159,7 +159,7 @@
   "securite.save": "Enregistrer le mot de passe",
   "securite.press": "Pour prouver que vous êtes près du lapin, appuyez une fois sur sa tête : son nez clignote. Encore {s} s.",
   "securite.press_late": "La tête du lapin n'a pas été appuyée à temps : recommencez.",
-  "securite.saved":"Mot de passe enregistré : le navigateur va vous le demander (identifiant admin).",
+  "securite.saved": "Mot de passe enregistré : le navigateur va vous le demander (identifiant admin).",
   "maj.intro": "Les mises à jour sont signées : le lapin vérifie chacune avant de l'installer.",
   "maj.installed": "Version installée",
   "maj.available": "Dernière version",

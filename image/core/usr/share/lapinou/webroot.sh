@@ -64,8 +64,10 @@ SECRET_NAMES="mqtt_password cloud_stt_key cloud_llm_key cloud_tts_key ota_token"
 # The first password's proof of presence: the press's time, and the lock its watch holds.
 PRESS_OK=/var/run/lapinou-press.ok
 PRESS_LOCK=/var/run/lapinou-press.lock
+PRESS_PENDING=/var/run/lapinou-press.pending
+PRESS_USE_LOCK=/var/run/lapinou-press.use.lock
 PRESS_WAIT=60
-PRESS_KEEP=120
+PRESS_KEEP=60
 WEB_LED=/var/run/lapinlibre-web/led
 NL='
 '
@@ -107,9 +109,18 @@ is_int_range() { # value min max
     case ${1#-} in *[!0-9]*) return 1 ;; esac
     [ ${#1} -le 4 ] && [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]
 }
+# url_authority URL: the part between "//" and the first of / ? # (as curl reads it), in UA.
+url_authority() {
+    UA=${1#*://}
+    UA=${UA%%[/?#]*}
+}
+# is_url URL: http:// or https://, no space, quote or backslash, and an authority with a host and
+# no user (no @ before the path: the host judged is the host curl talks to).
 is_url() {
     case $1 in http://?* | https://?*) ;; *) return 1 ;; esac
     case $1 in *[[:space:][:cntrl:]\"\\]*) return 1 ;; esac
+    url_authority "$1"
+    case $UA in '' | *@* | :*) return 1 ;; esac
     [ ${#1} -le 256 ]
 }
 is_name() { # a model, a voice: letters, digits and . _ : / -
@@ -149,7 +160,7 @@ check() {
     mqtt.user) printable "$_v" || WHY="ne peut pas contenir de caractère de contrôle (256 caractères au plus)" ;;
     mqtt.prefix | mqtt.discovery_prefix) [ -z "$_v" ] || is_topic "$_v" || WHY="ne peut avoir que des lettres, chiffres, _, - et /" ;;
     cloud.stt_url | cloud.llm_url | cloud.tts_url | ota.url)
-        [ -z "$_v" ] || is_url "$_v" || WHY="doit être une adresse http:// ou https:// sans espace" ;;
+        [ -z "$_v" ] || is_url "$_v" || WHY="doit être une adresse http:// ou https:// sans espace ni identifiant (@)" ;;
     cloud.stt_model | cloud.llm_model | cloud.tts_model | cloud.tts_voice)
         [ -z "$_v" ] || is_name "$_v" || WHY="ne peut avoir que des lettres, chiffres et . _ : / -" ;;
     cloud.llm_kind) case $_v in '' | anthropic | openai) ;; *) WHY="doit valoir anthropic ou openai" ;; esac ;;
@@ -254,10 +265,8 @@ lan_host() {
 
 # url_host URL: the URL's host (no user, port or path), in UH.
 url_host() {
-    UH=${1#*://}
-    UH=${UH%%/*}
-    UH=${UH%%\?*}
-    UH=${UH##*@}
+    url_authority "$1"
+    UH=$UA
     case $UH in
     \[*\]*) UH=${UH#\[}; UH=${UH%%\]*} ;;
     *) UH=${UH%:*} ;;
@@ -269,6 +278,7 @@ url_host() {
 key_url_ok() {
     case $1 in http://*) ;; *) return 0 ;; esac
     url_host "$1"
+    case $UA in *@*) return 1 ;; esac
     lan_host "$UH"
 }
 
@@ -283,9 +293,17 @@ service_secret() {
     esac
 }
 
-# read_stdin: at most STDIN_MAX bytes of the standard input, in IN.
+# read_stdin: the standard input, in IN; more than STDIN_MAX bytes is refused (one byte more is read
+# to know), never cut short. The copy is in /var/run, root's alone (not /tmp, where anyone could
+# put a link first).
 read_stdin() {
-    IN=$(head -c "$STDIN_MAX")
+    _in=/var/run/lapinou-webroot.$$.in
+    rm -f "$_in"
+    head -c $((STDIN_MAX + 1)) > "$_in" || fail "Le lapin n'a pas pu lire la demande."
+    _n=$(wc -c < "$_in")
+    IN=$(cat "$_in")
+    rm -f "$_in"
+    [ "$_n" -le "$STDIN_MAX" ] || fail "La demande est trop longue ($STDIN_MAX octets au plus)."
 }
 
 # --- get ---
@@ -460,6 +478,12 @@ cmd_set() {
         key_url_ok "$url" ||
             fail "L'adresse de ${rest#*:} doit commencer par https:// : en http://, sa clé passerait en clair hors du réseau local."
     done
+    # The keys go first: a new address is never stored while the old key is still beside it.
+    cleared_json=""
+    for s in $CLEARED; do
+        lapinou_secret_set "$s" "" || fail "Le secret $s n'a pas pu être effacé."
+        cleared_json="$cleared_json${cleared_json:+,}\"$s\""
+    done
     IFS=$NL
     for line in $LINES; do
         IFS=$_ifs
@@ -468,17 +492,21 @@ cmd_set() {
         k=${rest%%"$TAB"*}
         v=${rest#*"$TAB"}
         case $s in
-        network) continue ;;
-        secret) lapinou_secret_set "$k" "$v" || fail "Le secret $k n'a pas pu être enregistré." ;;
+        network | secret) continue ;;
         *) lapinou_set "$s" "$k" "$v" || fail "Le réglage $s.$k n'a pas pu être enregistré." ;;
         esac
     done
     IFS=$_ifs
-    cleared_json=""
-    for s in $CLEARED; do
-        lapinou_secret_set "$s" "" || fail "Le secret $s n'a pas pu être effacé."
-        cleared_json="$cleared_json${cleared_json:+,}\"$s\""
+    # Then the keys given, once their addresses are in place.
+    IFS=$NL
+    for line in $LINES; do
+        IFS=$_ifs
+        case $line in "secret$TAB"*) ;; *) continue ;; esac
+        rest=${line#*"$TAB"}
+        k=${rest%%"$TAB"*}
+        lapinou_secret_set "$k" "${rest#*"$TAB"}" || fail "Le secret $k n'a pas pu être enregistré."
     done
+    IFS=$_ifs
     with_lock write_network || fail "Les réglages du réseau n'ont pas pu être enregistrés."
     # conf.sh's writes take the lock themselves.
     if [ -n "$server_host" ]; then
@@ -495,15 +523,19 @@ cmd_secret() {
     value=$IN
     case $name in
     web_password)
+        # Two lines: the press's token (empty once the page has a password), then the password.
+        token=""
+        case $IN in *"$NL"*) token=${IN%%"$NL"*} value=${IN#*"$NL"} ;; esac
         [ ${#value} -ge 8 ] && [ ${#value} -le 64 ] ||
             fail "Le mot de passe doit avoir de 8 à 64 caractères."
         case $value in *[!!-~]* | *\"* | *\\* | *:*)
             fail "Le mot de passe ne peut avoir que des lettres, chiffres et signes, sans espace, guillemet (\"), barre oblique inverse (\\) ni deux-points (:)." ;;
         esac
-        # R46: the first password only after a press on the rabbit's head, which is used up.
+        # R46: the first password only after a press on the rabbit's head asked for by this
+        # browser (its token), which is used up.
         if [ ! -s "$CONF/web_password.hash" ]; then
-            press_fresh || fail "Appuyez d'abord une fois sur la tête du lapin (bouton « Créer le mot de passe »)."
-            rm -f "$PRESS_OK"
+            press_take "$token" ||
+                fail "Appuyez d'abord une fois sur la tête du lapin (bouton « Créer le mot de passe »)."
         fi
         printf '%s\n' "$value" | replace "$CONF/web_password" 600 || fail "Le mot de passe n'a pas pu être enregistré."
         "$INETD" conf > /dev/null 2>&1
@@ -542,14 +574,42 @@ cmd_secret() {
 
 # --- the first password's proof of presence (R46) ---
 
-# press_fresh: true when the head was pressed, through press start, less than PRESS_KEEP s ago.
-press_fresh() {
-    [ -f "$PRESS_OK" ] || return 1
-    _pt=""
-    read -r _pt < "$PRESS_OK"
-    case $_pt in '' | *[!0-9]*) return 1 ;; esac
-    _age=$(($(date +%s) - _pt))
-    [ "$_age" -ge 0 ] && [ "$_age" -le "$PRESS_KEEP" ]
+# A press belongs to the browser that asked for it: press start makes a random token, kept with
+# the wait (PRESS_PENDING: token and start time) and with the press (PRESS_OK: token and press
+# time), and given only in start's reply. status and the password need it (on stdin).
+
+# is_token VALUE: 32 hexadecimal digits.
+is_token() {
+    case $1 in *[!0-9a-f]* | '') return 1 ;; esac
+    [ ${#1} -eq 32 ]
+}
+
+# marker_fresh FILE SECONDS [TOKEN]: FILE holds "TOKEN TIME" with TIME less than SECONDS ago (and
+# TOKEN when given).
+marker_fresh() {
+    [ -f "$1" ] || return 1
+    _mt="" _mtime=""
+    read -r _mt _mtime < "$1"
+    case $_mtime in '' | *[!0-9]*) return 1 ;; esac
+    [ -z "${3:-}" ] || [ "$_mt" = "$3" ] || return 1
+    _age=$(($(date +%s) - _mtime))
+    [ "$_age" -ge 0 ] && [ "$_age" -le "$2" ]
+}
+
+# press_take TOKEN: uses the press up, once: under the lock, the marker is moved away (one taker
+# only), then checked; a press that isn't TOKEN's goes back.
+press_take() {
+    is_token "$1" || return 1
+    (
+        flock -x 6 || exit 1
+        mv -f "$PRESS_OK" "$PRESS_OK.$$" 2> /dev/null || exit 1
+        if marker_fresh "$PRESS_OK.$$" "$PRESS_KEEP" "$1"; then
+            rm -f "$PRESS_OK.$$" "$PRESS_PENDING"
+            exit 0
+        fi
+        mv -f "$PRESS_OK.$$" "$PRESS_OK"
+        exit 1
+    ) 6>> "$PRESS_USE_LOCK"
 }
 
 # press_waiting: true while a watch holds the press lock.
@@ -566,9 +626,11 @@ led_call() {
         /com/mindscape/karotz/Led "com.mindscape.karotz.KarotzInterface.$_m" string:webroot:press "$@" > /dev/null 2>&1
 }
 
-# press_watch: the LED blinks while a click from the head's button (button-daemon's signal, which
-# the button watcher also follows) is waited for, PRESS_WAIT s at most; a click writes PRESS_OK.
-# Then the LED goes back to the web API's colour.
+# press_watch TOKEN: the LED blinks while a click from the head's button is waited for, PRESS_WAIT s
+# at most; a click writes PRESS_OK for TOKEN. Then the LED goes back to the web API's colour. The
+# click is button-daemon's signal (the one the button watcher follows): the match names its bus
+# name and path, so a signal sent by anyone else on the bus doesn't count (karotz.conf lets only
+# root own a com.mindscape.karotz name).
 press_watch() {
     exec 7>> "$PRESS_LOCK"
     flock -n 7 || exit 0
@@ -576,12 +638,13 @@ press_watch() {
     _out=$PRESS_LOCK.out
     rm -f "$_out"
     timeout "$PRESS_WAIT" dbus-monitor --system \
-        "type='signal',interface='com.mindscape.karotz.KarotzInterface',member='click'" > "$_out" 2> /dev/null &
+        "type='signal',sender='com.mindscape.karotz.Button',path='/com/mindscape/karotz/Button',interface='com.mindscape.karotz.KarotzInterface',member='click'" \
+        > "$_out" 2> /dev/null &
     _mon=$!
     _i=0
     while [ $_i -lt $((PRESS_WAIT * 5)) ] && kill -0 "$_mon" 2> /dev/null; do
-        if grep -q "member=click" "$_out" 2> /dev/null; then
-            (umask 077 && date +%s > "$PRESS_OK.new") && mv -f "$PRESS_OK.new" "$PRESS_OK"
+        if grep -q "path=/com/mindscape/karotz/Button; interface=com.mindscape.karotz.KarotzInterface; member=click$" "$_out" 2> /dev/null; then
+            (umask 077 && printf '%s %s\n' "$1" "$(date +%s)" > "$PRESS_OK.new") && mv -f "$PRESS_OK.new" "$PRESS_OK"
             break
         fi
         usleep 200000
@@ -599,15 +662,34 @@ cmd_press() {
     case $1 in
     start)
         [ -s "$CONF/web_password.hash" ] && fail "La page a déjà un mot de passe."
-        rm -f "$PRESS_OK"
-        if ! press_waiting; then
-            (press_watch) < /dev/null > /dev/null 2>&1 &
-        fi
-        ok "\"wait\":$PRESS_WAIT"
+        # Another browser's wait, or its press not used yet, is never wiped: it runs out first.
+        start_press() {
+            if press_waiting || marker_fresh "$PRESS_PENDING" "$PRESS_WAIT" || marker_fresh "$PRESS_OK" "$PRESS_KEEP"; then
+                echo busy
+                return 0
+            fi
+            _tok=$(od -An -N16 -tx1 /dev/urandom 2> /dev/null | tr -cd 0-9a-f)
+            is_token "$_tok" || return 1
+            rm -f "$PRESS_OK"
+            (umask 077 && printf '%s %s\n' "$_tok" "$(date +%s)" > "$PRESS_PENDING.new") &&
+                mv -f "$PRESS_PENDING.new" "$PRESS_PENDING" || return 1
+            (press_watch "$_tok") < /dev/null > /dev/null 2>&1 6>&- &
+            echo "$_tok"
+        }
+        tok=$( (flock -x 6 || exit 1; start_press) 6>> "$PRESS_USE_LOCK")
+        [ "$tok" = busy ] && fail "Une attente est en cours (une autre page attend l'appui) : réessayez dans une minute."
+        is_token "$tok" || fail "L'attente de l'appui n'a pas pu commencer."
+        ok "\"wait\":$PRESS_WAIT,\"token\":\"$tok\""
         ;;
     status)
-        if press_fresh; then p=true; else p=false; fi
-        if press_waiting; then w=true; else w=false; fi
+        read_stdin
+        tok=$IN
+        p=false
+        w=false
+        if is_token "$tok"; then
+            marker_fresh "$PRESS_OK" "$PRESS_KEEP" "$tok" && p=true
+            press_waiting && marker_fresh "$PRESS_PENDING" "$PRESS_WAIT" "$tok" && w=true
+        fi
         ok "\"pressed\":$p,\"waiting\":$w"
         ;;
     *) fail "Commande inconnue." ;;
