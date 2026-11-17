@@ -31,7 +31,9 @@ namespace: started by sandbox_setup before the daemon, the broker later again th
   6. cmd/sound through the web API's sound: a sound's name, a URL with characters to escape, a
      URL the web API refuses (its "::" rule), a name it doesn't know.
   7. cmd/volume: with a volume control, the mixer (and [audio] volume kept); without one, MPD's
-     setvol; MPD refusing: the state published again with the volume as it was.
+     setvol; MPD refusing: the state published again with the volume as it was. The web page's
+     set_volume on the bus: the same path; out of range: FALSE. The update entity: the daily
+     check's version (LAPINOU_OTA_AVAILABLE) published as latest_version at the next tick.
   8. cmd/snapshot through the web API's snapshot: the picture it stored is published; refused while
      an application owns the rabbit (the controller's state 21).
   9. cmd/sleep on: the web API's sleep (the LED off, the ears at 4, its sleep flag); the LED
@@ -92,6 +94,7 @@ def sandbox_setup(workdir, sysroot):
     (conf / "lapinou.secrets").write_text(f"[secrets]\nmqtt_password={conf_value(PASSWORD)}\n", encoding="utf-8")
     (conf / "lapinou.secrets").chmod(0o600)
     (w / "uuid.conf").write_text(UUID + "\n")
+    (w / "sys_version").write_text("v1.0.0\n")
     (w / "ioctl-data").write_text(MIXER_WITH_VOLUME)
     WEB = test_web_api.Sandbox(None)
     PICTURE = test_web_api.JPEG
@@ -104,7 +107,8 @@ def sandbox_setup(workdir, sysroot):
     sb = WEB.sb
     return (f"export LAPINOU_CONF_DIR={conf} LAPINOU_UUID_FILE={w}/uuid.conf "
             f"LAPINOU_WEB_RUN={sb}/var/run/lapinlibre-web LAPINOU_WEB_DATA={sb}/usr/etc/conf/web "
-            f"LAPINOU_WEB_CGI={sb}/usr/www/cgi-bin LAPINOU_WIRELESS={w}/wireless LAPINOU_CONF_SH={CONF_SH}; "
+            f"LAPINOU_WEB_CGI={sb}/usr/www/cgi-bin LAPINOU_WIRELESS={w}/wireless LAPINOU_CONF_SH={CONF_SH} "
+            f"LAPINOU_SYS_VERSION={w}/sys_version LAPINOU_OTA_AVAILABLE={w}/ota-available; "
             f"{sys.executable} -I {BROKER} {broker} {PORT} > /dev/null 2> {broker}/err & "
             f"{sys.executable} -I {MPD} {broker} 6600 > /dev/null 2> {broker}/mpd-err & "
             f"i=0; while {{ [ ! -e {broker}/ready ] || [ ! -e {broker}/mpd-ready ]; }} && [ $i -lt 200 ]; do "
@@ -411,6 +415,20 @@ def drive(d, bus):
              lambda: len(published(broker.pending(), f"{BASE}/state")) >= 1)
         record.append(f"lapinou.conf [audio]: {kept()}")
         (work / "broker" / "mpd-refuse").unlink()
+        (work / "ioctl-data").write_text(MIXER_WITH_VOLUME)
+        out = bus.send(f"--dest={SERVICE}", PATH, f"{IFACE}.set_volume", "int32:25")
+        step("set_volume 25 (the web page)", state_has('"volume":25'))
+        record.append(f"set_volume 25: {out.splitlines()[-1].strip()}")
+        wait_until(lambda: kept() == ["volume=25"], 10)
+        record.append(f"lapinou.conf [audio]: {kept()}")
+        out = bus.send(f"--dest={SERVICE}", PATH, f"{IFACE}.set_volume", "int32:101")
+        record.append(f"set_volume 101: {out.splitlines()[-1].strip()}")
+
+        # The update entity: the daily check's version, published at the next tick
+        (work / "ota-available").write_text("v1.1.0\n")
+        step("the update check found v1.1.0", lambda: any(
+            "latest_version" in base64.b64decode(e["payload_b64"]).decode(errors="replace")
+            for e in published(broker.pending(), f"{BASE}/update")), timeout=45)
 
         # 8. The camera, through the web API's snapshot
         cmd("snapshot", "PRESS")

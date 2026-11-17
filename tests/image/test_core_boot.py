@@ -118,7 +118,7 @@ class InetdTest(unittest.TestCase):
             d.chmod(0o755)
         self.tmp.cleanup()
 
-    def run_inetd(self, inetd_conf, telnet=None):
+    def run_inetd(self, inetd_conf, telnet=None, args=()):
         sb = self.sb
         script = (ROOT / "image/core/rootfs/karotz/scripts/inetd.sh").read_text(encoding="utf-8")
         (sb / "etc/inetd.conf").write_text(inetd_conf, newline="\n")
@@ -127,8 +127,19 @@ class InetdTest(unittest.TestCase):
         for path in INETD_PATHS:
             script = script.replace(path, f"{sb}{path}")
         script = script.replace("exec sleep 2147483647", "echo waits; exit 0")
-        return subprocess.run(["sh", "-c", script], env={"PATH": f"{sb}/bin:/usr/bin:/bin"},
+        return subprocess.run(["sh", "-c", script, "inetd.sh", *args], env={"PATH": f"{sb}/bin:/usr/bin:/bin"},
                               capture_output=True, text=True, timeout=120).stdout
+
+    def test_conf_only(self):
+        # The web page's new password (lapinou-webroot password): the hash and httpd's configuration
+        # are made again, and inetd isn't started.
+        (self.conf / "web_password").write_text("newpass123\n", newline="\n")
+        out = self.run_inetd("80 stream tcp nowait root /bin/busybox httpd -i\n", args=("conf",))
+        self.assertNotIn("inetd", out)
+        self.assertNotIn("waits", out)
+        self.assertFalse((self.conf / "web_password").exists())
+        self.assertTrue((self.conf / "web_password.hash").read_text().startswith("$6$"))
+        self.assertTrue([r for r in self.rules() if r.startswith("/:admin:$6$")], self.rules())
 
     def syslog(self):
         path = self.sb / "syslog.log"
@@ -750,7 +761,8 @@ class S40Test(unittest.TestCase):
             stub(sb / "usr/scripts" / name, "exit 0")
         script = S40.read_text(encoding="utf-8")
         for path in ("/usr/karotz/uuid.conf", "/usr/etc/conf/playsounds", "/usr/karotz/bin", "/var/run/karotz",
-                     "/usr/sbin/mdnsd", "/var/run/mdnsd.pid", "/usr/scripts/", "/karotz/scripts/web-files.sh"):
+                     "/usr/sbin/mdnsd", "/var/run/mdnsd.pid", "/usr/scripts/", "/karotz/scripts/web-files.sh",
+                     "/usr/spool/cron/crontabs"):
             script = script.replace(path, f"{sb}{path}")
         self.script = sb / "S40lapinlibre"
         self.script.write_text(script, newline="\n")
@@ -826,6 +838,23 @@ class S40Test(unittest.TestCase):
         self.assertIn(f"immortaldog lapinou-cloud {self.sb}/usr/karotz/bin/lapinou-cloud", self.log.read_text().splitlines())
         self.assertTrue((self.sb / "var/run/karotz/lapinou-cloud.pid").is_file())
         self.run_s40("stop")
+
+    def test_daily_update_check_added_once(self):
+        # LapiNou's update check (check only) once a day in root's cron table, kept with the user's lines.
+        tabs = self.sb / "usr/spool/cron/crontabs"
+        tabs.mkdir(parents=True)
+        (tabs / "root").write_text("0 1 * * * echo mine\n", newline="\n")
+        self.run_s40("start")
+        self.run_s40("stop")
+        self.run_s40("start")
+        self.run_s40("stop")
+        lines = (tabs / "root").read_text().splitlines()
+        self.assertEqual(lines[0], "0 1 * * * echo mine")
+        checks = [line for line in lines if "webroot.sh ota" in line]
+        self.assertEqual(len(checks), 1, lines)
+        self.assertRegex(checks[0], r"^([0-9]|[1-5][0-9]) [345] \* \* \* /bin/sh /usr/share/lapinou/webroot.sh ota check > /dev/null 2>&1$")
+        self.assertNotIn("install", checks[0])
+        self.assertEqual((tabs / "cron.update").read_text(), "root\n")
 
     def test_stop_ends_the_listener(self):
         self.run_s40("start")

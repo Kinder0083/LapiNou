@@ -29,7 +29,7 @@ APPLYSETTINGS = ROOT / "image/usbkey/applysettings.sh"
 INSTALL_LIB = ROOT / "image/usbkey/install-lib.sh"
 C_DIR = ROOT / "userland/src/usr/libkarotz-common"
 APPLETS = ["sh", "awk", "sed", "grep", "cat", "tr", "date", "mv", "rm", "mkdir", "chmod", "printf", "env",
-           "sleep", "touch", "ls", "cp", "head", "tail", "cut", "md5sum", "sync", "kill", "wc"]
+           "sleep", "touch", "ls", "cp", "head", "tail", "cut", "md5sum", "sync", "kill", "wc", "flock"]
 # Values a settings page or the USB key could carry: each must come back exactly as given.
 NASTY = ['a b"c$d;e`f é', "it's", "back\\slash and \\n and \\\\ and \\=", "a=b=c", "# not a comment", "[mqtt]",
          "line one\nline two", " leading and trailing ", "$(touch {m})", "`touch {m}`", "${HOME}", "tab\there",
@@ -150,6 +150,19 @@ class ConfShellTest(unittest.TestCase):
         self.assertIn("mqtt_password=", (self.conf / "lapinou.secrets").read_text())
         r = self.run_in(shell, "lapinou_secret_get cloud_llm_key; lapinou_get mqtt mqtt_password")
         self.assertEqual(r.stdout.decode(), "\n\n")
+
+    @per_shell
+    def test_writes_at_the_same_time_all_land(self, shell):
+        # Each write holds the settings' lock (lapinou.lock beside them), so none is lost.
+        r = self.run_in(shell, 'for i in 1 2 3 4 5 6 7 8 9 10 11 12; do lapinou_set mqtt "k$i" "v$i" & '
+                               'lapinou_secret_set "s$i" "x$i" & done; wait')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        conf = (self.conf / "lapinou.conf").read_text()
+        secrets = (self.conf / "lapinou.secrets").read_text()
+        for i in range(1, 13):
+            self.assertIn(f"\nk{i}=v{i}\n", conf)
+            self.assertIn(f"\ns{i}=x{i}\n", secrets)
+        self.assertEqual(list(self.conf.glob("*.new")), [])
 
     @per_shell
     def test_failed_write_keeps_the_old_file(self, shell):
