@@ -59,4 +59,8 @@ jobs:
           set -o pipefail
           test -x "$LAPINOU_TEST_PYTHON"
           bash installer/tests/run.sh | tee "$RUNNER_TEMP/installer.log"
-          ! grep -q "réglages réels ignorés" "$RUNNER_TEMP/installer.log"
+          # A negated command never stops a bash -e step: an explicit failure instead.
+          if grep -q "réglages réels ignorés" "$RUNNER_TEMP/installer.log"; then
+            echo "::error::the installer's real-settings case was skipped (server/.venv missing?)"
+            exit 1
+          fi

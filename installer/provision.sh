@@ -158,11 +158,18 @@ clone_repo() {
         # Dépôt et branche : ceux d'install.conf (ou retapés sur l'hôte), pas ceux du clone.
         msg "Dépôt déjà présent : mise à jour depuis ${A[GH_REPO]} (branche ${A[GH_BRANCH]})..."
         as_lapinou git -C "$OPT" remote set-url origin "https://github.com/${A[GH_REPO]}.git"
-        as_lapinou git -C "$OPT" fetch -q origin "${A[GH_BRANCH]}" || err "git fetch a échoué dans /opt/lapinou"
+        # La branche distante est notée (origin/<branche>) et suivie : le bouton « Mettre à jour »
+        # (git pull --ff-only) la retrouve, même après un changement de branche.
+        as_lapinou git -C "$OPT" fetch -q origin \
+            "+refs/heads/${A[GH_BRANCH]}:refs/remotes/origin/${A[GH_BRANCH]}" \
+            || err "git fetch a échoué dans /opt/lapinou"
         if [ "$(as_lapinou git -C "$OPT" rev-parse --abbrev-ref HEAD)" = "${A[GH_BRANCH]}" ]; then
-            as_lapinou git -C "$OPT" merge -q --ff-only FETCH_HEAD || err "git pull a échoué dans /opt/lapinou"
+            as_lapinou git -C "$OPT" merge -q --ff-only "origin/${A[GH_BRANCH]}" \
+                || err "git pull a échoué dans /opt/lapinou"
+            as_lapinou git -C "$OPT" branch -q --set-upstream-to="origin/${A[GH_BRANCH]}" \
+                || err "Suivi de origin/${A[GH_BRANCH]} impossible"
         else
-            as_lapinou git -C "$OPT" checkout -q -B "${A[GH_BRANCH]}" FETCH_HEAD \
+            as_lapinou git -C "$OPT" checkout -q -B "${A[GH_BRANCH]}" --track "origin/${A[GH_BRANCH]}" \
                 || err "Passage à la branche ${A[GH_BRANCH]} impossible"
         fi
     else

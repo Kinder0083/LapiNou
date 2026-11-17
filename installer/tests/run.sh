@@ -569,8 +569,9 @@ export STUB_USER_EXISTS=1
 run_provision --update Kinder0083/LapiNou main
 check "se termine sans erreur" rc_is 0
 check "remote remis sur le dépôt noté" log_has "remote set-url origin https://github.com/Kinder0083/LapiNou.git"
-check "git fetch de la branche" log_has "fetch -q origin main"
-check "avance rapide seulement" log_has "merge -q --ff-only FETCH_HEAD"
+check "git fetch de la branche (notée origin/main)" log_has "fetch -q origin +refs/heads/main:refs/remotes/origin/main"
+check "avance rapide seulement" log_has "merge -q --ff-only origin/main"
+check "branche suivie" log_has "branch -q --set-upstream-to=origin/main"
 check "dossiers existants non retouchés en root" log_lacks "chown -h lapinou"
 check "install.conf réécrit" file_has "$R/usr/local/lib/lapinou/install.conf" "REPO=Kinder0083/LapiNou"
 check "pas de clone" log_lacks " clone "
@@ -586,8 +587,40 @@ export STUB_USER_EXISTS=1 STUB_GIT_BRANCH=main
 run_provision --update autre/depot dev
 check "se termine sans erreur" rc_is 0
 check "remote sur le dépôt tapé" log_has "remote set-url origin https://github.com/autre/depot.git"
-check "passe à la branche" log_has "checkout -q -B dev FETCH_HEAD"
+check "passe à la branche, suivie" log_has "checkout -q -B dev --track origin/dev"
 check "install.conf mis à jour" file_has "$R/usr/local/lib/lapinou/install.conf" "BRANCH=dev"
+
+new_case "mise à jour : autre branche, vrai git, puis « Mettre à jour »"
+# Un vrai dépôt (bare, local) à la place de github.com (url.insteadOf) : après le passage de main à
+# dev par provision.sh, le bouton « Mettre à jour » (git pull --ff-only, updater.py) doit marcher.
+setup_root
+mkdir -p "$R/etc/lapinou" "$R/var/lib/lapinou/update"
+REAL_GIT=$(PATH=$(printf '%s' "$PATH" | sed "s#$STUBS:##g") command -v git)
+G="$T/git"
+mkdir -p "$G/github/autre"
+"$REAL_GIT" init -q --bare -b main "$G/github/autre/depot.git"
+"$REAL_GIT" clone -q "$G/github/autre/depot.git" "$G/work" 2>/dev/null
+"$REAL_GIT" -C "$G/work" -c user.name=t -c user.email=t@t commit -q --allow-empty -m un
+"$REAL_GIT" -C "$G/work" push -q origin HEAD:main
+"$REAL_GIT" -C "$G/work" -c user.name=t -c user.email=t@t commit -q --allow-empty -m deux
+"$REAL_GIT" -C "$G/work" push -q origin HEAD:dev
+cp "$R/opt/lapinou/server/.venv/bin/python" "$T/python-stub"
+rm -rf "$R/opt/lapinou"
+"$REAL_GIT" clone -q --branch main "$G/github/autre/depot.git" "$R/opt/lapinou"
+mkdir -p "$R/opt/lapinou/server/.venv/bin" "$R/opt/lapinou/server/systemd"
+cp "$REPO/server/systemd/lapinou.service" "$R/opt/lapinou/server/systemd/"
+cp -p "$T/python-stub" "$R/opt/lapinou/server/.venv/bin/python"
+export STUB_USER_EXISTS=1 STUB_GIT_REAL="$REAL_GIT" GIT_CONFIG_COUNT=1 \
+    GIT_CONFIG_KEY_0="url.file://$G/github/.insteadOf" GIT_CONFIG_VALUE_0="https://github.com/"
+run_provision --update autre/depot dev
+check "se termine sans erreur" rc_is 0
+check "sur la branche dev" bash -c '[ "$("$1" -C "$2" rev-parse --abbrev-ref HEAD)" = dev ]' _ "$REAL_GIT" "$R/opt/lapinou"
+check "dev suit origin/dev" bash -c '[ "$("$1" -C "$2" rev-parse --abbrev-ref "@{u}")" = origin/dev ]' _ "$REAL_GIT" "$R/opt/lapinou"
+"$REAL_GIT" -C "$G/work" -c user.name=t -c user.email=t@t commit -q --allow-empty -m trois
+"$REAL_GIT" -C "$G/work" push -q origin HEAD:dev
+check "« Mettre à jour » : git pull --ff-only marche" "$REAL_GIT" -C "$R/opt/lapinou" pull -q --ff-only
+check "et prend le nouveau commit" bash -c '[ "$("$1" -C "$2" log -1 --format=%s)" = trois ]' _ "$REAL_GIT" "$R/opt/lapinou"
+unset STUB_GIT_REAL GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
 
 new_case "mise à jour : update/ en lien symbolique"
 setup_root

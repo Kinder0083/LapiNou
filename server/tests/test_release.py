@@ -310,6 +310,21 @@ def test_checkouts_keep_no_credentials(name):
         assert s.get("with", {}).get("persist-credentials") is False, s
 
 
+@pytest.mark.parametrize("name", ["release.yml", "server.yml", "check.yml"])
+def test_guards_fail_explicitly(name):
+    """« ! grep » n'arrête jamais une étape bash -e (sauf en dernière ligne, par hasard) : une
+    garde est un « if grep …; then echo ::error::…; exit 1; fi »."""
+    runs = [s.get("run", "") for job in _workflow(name)["jobs"].values()
+            for s in job.get("steps", [])]
+    for run in runs:
+        for line in run.splitlines():
+            assert not line.strip().startswith("! "), (name, line)
+    if name == "server.yml":
+        guard = next(r for r in runs if "réglages réels ignorés" in r)
+        assert 'if grep -q "réglages réels ignorés"' in guard
+        assert "::error::" in guard and "exit 1" in guard
+
+
 def test_server_workflow_runs_on_every_push_and_from_the_release():
     wf = _workflow("server.yml")
     on = wf[True] if True in wf else wf["on"]  # YAML 1.1 : « on » se lit True

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # git simulé : « clone » crée le dossier .git de la destination ; rev-parse rend abc1234
-# (branche courante : STUB_GIT_BRANCH, défaut main).
+# (branche courante : STUB_GIT_BRANCH, défaut main). Avec STUB_GIT_REAL (le vrai git), l'appel est
+# journalisé puis passé au vrai git.
 # shellcheck source=installer/tests/stubs/_stub.sh
 . "$(dirname "$0")/_stub.sh"
+[ -n "${STUB_GIT_REAL:-}" ] && exec "$STUB_GIT_REAL" "$@"
 case " $* " in
     *" clone "*) mkdir -p "${*: -1}/.git" ;;
     *" rev-parse --abbrev-ref "*) echo "${STUB_GIT_BRANCH:-main}" ;;
