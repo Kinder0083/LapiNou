@@ -60,7 +60,7 @@ propre (SIGTERM), le démon publie `offline` puis se déconnecte.
 | `<p>/<id>/event/button` | lapin → | `{"type":"click"}` (`click`, `dclick`, `tclick`, `lclick_start`, `lclick_stop`) |
 | `<p>/<id>/event/rfid` | lapin → | `{"tag":"D0021A3502B3C4D5","action":"in"}` (`in`, `out`) |
 | `<p>/<id>/snapshot` | lapin → | l'image JPEG de `cmd/snapshot` (non retenue) |
-| `<p>/<id>/update` | lapin → | `{"installed_version":"v1.0.0","latest_version":"v1.1.0"}` (retenu) : `installed_version` est `sys_version` (le tag installé, R44 ; à défaut la première ligne de `lapinlibre-build`), `latest_version` la version trouvée par la dernière recherche (`/usr/ota/available`, absente tant qu'aucune recherche n'a abouti) ; relus toutes les 30 s et republiés quand ils changent |
+| `<p>/<id>/update` | lapin → | `{"installed_version":"v0.1.0","latest_version":"v0.2.0"}` (retenu) : `installed_version` est `sys_version` (le tag installé, R44 ; à défaut la première ligne de `lapinlibre-build`), `latest_version` la version trouvée par la dernière recherche (`/usr/ota/available`, absente tant qu'aucune recherche n'a abouti) ; relus toutes les 30 s et republiés quand ils changent |
 | `<p>/<id>/assistant` | serveur → | état de l'assistant, publié par le serveur LapiNou (Tâche 21), recopié dans l'état (64 octets au plus) |
 | `<p>/<id>/cmd/<nom>` | → lapin | commandes (ci-dessous) ; un message **retenu** reçu sur `cmd/…` est ignoré (une commande se fait une fois, quand elle est envoyée, pas à chaque reconnexion) |
 
@@ -68,7 +68,7 @@ propre (SIGTERM), le démon publie `offline` puis se déconnecte.
 
 ```json
 {"led":"00FF00","ears":{"left":0,"right":0,"preset":"debout"},"volume":60,"sleep":"off",
- "assistant":"hors ligne","wifi_rssi":-57,"version":"v1.0.0","last_tag":null}
+ "assistant":"hors ligne","wifi_rssi":-57,"version":"v0.1.0","last_tag":null}
 ```
 
 `led` : la couleur fixe ou la première couleur de la pulsation (au départ celle de l'API web, sinon

@@ -201,7 +201,8 @@ jobs:
           {
               echo "LapiNou $VERSION, construction $build."
               echo
-              echo "- Lapin, par clé USB : décompresser lapinou-key-$VERSION.zip à la racine d'une clé USB FAT32 vide, puis suivre [l'installation](https://github.com/$GITHUB_REPOSITORY/blob/$VERSION/docs/install.md)."
+              echo "- Pour commencer : [le parcours du propriétaire](https://github.com/$GITHUB_REPOSITORY/blob/$VERSION/docs/lapinou/demarrage.md) (clés de signature, serveur, clé USB ou migration, premier mot de passe, OTA)."
+              echo "- Lapin, par clé USB : décompresser lapinou-key-$VERSION.zip à la racine d'une clé USB FAT32 vide, puis suivre [le démarrage](https://github.com/$GITHUB_REPOSITORY/blob/$VERSION/docs/lapinou/demarrage.md#3-installer-le-lapin)."
               echo "- Lapin, sans clé : la page web du lapin (Mises à jour) ou le serveur LapiNou trouvent cette version et vérifient sa signature (manifest.json.sig)."
               echo "- Serveur : lapinou-server-$VERSION.tar.gz, ou le bouton « Mettre à jour » de sa page de réglages (docs/lapinou/installation.md)."
           } > "$RUNNER_TEMP/notes.md"

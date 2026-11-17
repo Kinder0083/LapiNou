@@ -8,7 +8,7 @@ le classifieur acoustique openWakeWord reste possible en option.
 | `voice.wake_method` | Ce qui se passe |
 |---|---|
 | `asr` (défaut) | Silero VAD découpe la parole, Parakeet transcrit chaque segment, le nom est cherché au début du texte. |
-| `both` | Comme `asr`, mais un segment n'est transcrit que si le classifieur openWakeWord (`voice.wake_model`) s'est déclenché pendant ce segment. Sans `wake_model` : `asr` seul, avec un avertissement. Économise du calcul, au prix du rappel du classifieur. |
+| `both` | Comme `asr`, mais un segment n'est transcrit que si le classifieur openWakeWord (`voice.wake_model`) s'est déclenché pendant ce segment. Sans `wake_model`, ou si le classifieur ne se charge pas (fichier absent ou illisible) : `asr` seul, avec un avertissement dans le journal ; le lapin n'est jamais sourd. Économise du calcul, au prix du rappel du classifieur. `voice.wake_model` (un chemin) ne se règle que dans `config.toml` : la page de réglages ne propose `both` et son seuil que s'il est réglé. |
 | `oww` | Classifieur openWakeWord seul (`lapinou.voice.wakeword.load_wakeword`). Il faut l'entraîner (`server/tools/train_wakeword/README.md`) ; les objectifs de précision n'ont pas été atteints. |
 
 ## Mise en place de la méthode `asr`

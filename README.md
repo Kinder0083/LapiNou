@@ -1,4 +1,39 @@
 <!-- SPDX-License-Identifier: MIT -->
+# LapiNou
+
+**LapiNou** fait d'un lapin Karotz (Nabaztag v3) un assistant vocal pour toute la famille : on lui
+dit « Lapinou », il écoute, comprend (Claude, ou un autre modèle de langage), répond de sa voix,
+pilote la maison par Home Assistant, lance la musique sur Lyrion, retient les minuteurs et les
+rappels. Tout passe par un **serveur LapiNou** installé à la maison (un conteneur Proxmox ou
+Docker) : seul du texte quitte la maison, jamais le son du micro. Sans serveur, le lapin peut aussi
+répondre seul, avec des services en ligne (la question enregistrée part alors chez ces services).
+
+LapiNou s'appuie sur **LapinLibre**, le firmware libre du Karotz de
+[sweetlilmre](https://github.com/sweetlilmre/LapinLibre), dont il garde le système, la clé USB
+d'installation et la page web, et auquel il ajoute le micro partagé, MQTT, les mises à jour signées
+et le serveur. Merci à LapinLibre : sans lui, rien de tout ceci.
+
+Pour commencer : **[le parcours du propriétaire](docs/lapinou/demarrage.md)** (clés de signature,
+serveur, installation du lapin, premier mot de passe, mises à jour). Les autres documents de
+LapiNou sont dans [`docs/lapinou/`](docs/lapinou/) :
+
+- [installation.md](docs/lapinou/installation.md) : le serveur sur Proxmox ;
+- [service.md](docs/lapinou/service.md) : le service, ses ports, Docker ;
+- [migration.md](docs/lapinou/migration.md) : passer un lapin de Free Rabbits OS à LapiNou par SSH ;
+- [page-web.md](docs/lapinou/page-web.md) : la page du lapin ;
+- [mqtt.md](docs/lapinou/mqtt.md) : le lapin dans Home Assistant ;
+- [ota.md](docs/lapinou/ota.md) et [ota-lapin.md](docs/lapinou/ota-lapin.md) : les mises à jour ;
+- [release.md](docs/lapinou/release.md) : publier une version ;
+- [licences.md](docs/lapinou/licences.md) : licences du code et des modèles.
+
+Vous voulez aider, ou vous avez un Karotz qui dort dans un placard ? Voir
+[CONTRIBUTING.md](CONTRIBUTING.md). Licence : MIT ([LICENSE](LICENSE)), avec les exceptions de la
+section [Licence](#licence) ci-dessous.
+
+---
+
+*The rest of this file is LapinLibre's own README, in English.*
+
 # Liberté, Égalité, Carotte
 
 This is a love letter to my poor karotz that I found abandoned in a box, yellowed by time and the sun.

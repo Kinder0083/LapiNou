@@ -10,10 +10,16 @@ Assets de la Release `vX.Y.Z` :
 
 - `manifest.json` : `{"version": "vX.Y.Z", "files": {"<nom>": {"sha256": "<hex>", "size": N}, …}}`.
   `version` est l'étiquette de la Release. Les fichiers listés sont `zImage`, `rootfs.img.gz`,
-  `usr.tar.gz` et l'archive de la clé USB (`LapinLibre-vX.Y.Z.zip` ou `lapinou-key-vX.Y.Z.zip`).
+  `usr.tar.gz`, l'archive de la clé USB (`LapinLibre-vX.Y.Z.zip` ou `lapinou-key-vX.Y.Z.zip`)
+  et l'archive du serveur (`lapinou-server-vX.Y.Z.tar.gz`).
 - `manifest.json.sig` : signature **Ed25519** des octets exacts de `manifest.json`, 64 octets
   bruts.
 - chaque fichier listé, sous le même nom.
+- `lapinou-server-vX.Y.Z.tar.gz` : l'archive du serveur (`server/`, `tools/app-server/`,
+  `userland/proto/`, `installer/`, `docs/lapinou/`, `LICENSES/` du commit étiqueté), listée et
+  signée par le manifeste comme le reste ; les lapins ne la téléchargent pas, et le bouton
+  « Mettre à jour » du serveur passe par git. `docs/lapinou/release.md` donne la liste complète
+  des assets d'une Release.
 
 Clé publique (contenu PEM, extension `.pub`, R42 amendée) : `image/core/usr/share/lapinou/ota-pubkey.pub` sur le lapin ;
 `[ota] pubkey_path` sur le serveur (par défaut `server/lapinou/ota-pubkey.pub`, livré). Le

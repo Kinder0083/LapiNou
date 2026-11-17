@@ -28,6 +28,7 @@ KEEP_CRLF = {"image/usbkey/autorun.sig"}
 UNMARKED = [
     ("*.patch", "under the licence of what it patches"),
     ("LICENSES/*", "the licence texts"),
+    ("LICENSE", "the MIT licence text (LICENSES/MIT.txt), at the root for readers and GitHub"),
     ("kernel/COPYING", "the kernel's licence text"),
     ("tests/expected/*.txt", "recorded test output"),
     ("tests/data/*", "test data"),

@@ -15,3 +15,9 @@ __pycache__/
 /server/models/openwakeword/
 # Classifieur « Lapinou » entraîné localement : jamais distribué (données NC/SA, R24)
 /server/models/lapinou_fr.onnx
+# Clés et secrets, jamais dans le dépôt : la clé privée de signature OTA, les secrets du serveur,
+# toute clé privée. La clé publique OTA est un fichier .pub, lui suivi.
+*.key
+ota-signing.key
+secrets.toml
+*.pem

@@ -17,6 +17,15 @@ Sans `--config` : `LAPINOU_CONFIG`, sinon `/etc/lapinou/config.toml`. Sans `--db
 `GET /api/health` → `{"status": "ok", "version": "…"}` (adresse canonique, celle de la page) et
 son alias `GET /health` → `{"status": "ok"}` (sondes, Docker).
 
+Réglages invalides (`config.toml`, `secrets.toml`) : le service ne démarre pas et le journal dit
+quoi corriger, une ligne par réglage (code de sortie 2). La section `[safety]` est stricte : une
+clé inconnue (faute de frappe, comme `allowed_domain` pour `allowed_domains`) arrête le
+démarrage au lieu de retomber en silence sur la valeur par défaut. Les autres sections ignorent
+une clé qu'elles ne connaissent pas.
+
+Au démarrage, la page (8080) et le TTS (8081) répondent tout de suite ; Home Assistant (ha-mcp,
+jusqu'à 30 s) et le chargement de la voix se font en tâche de fond.
+
 À l'arrêt (SIGTERM), les services sont refermés dans l'ordre inverse et le journal note
 « serveur LapiNou arrêté ». uvicorn relance ensuite le signal reçu : le processus se termine
 par SIGTERM, que systemd tient pour un arrêt propre.
@@ -103,6 +112,25 @@ fois :
 
 ```
 docker exec lapinou python -m lapinou.voice.models fetch
+docker restart lapinou
+```
+
+Premier mot de passe de la page (R40) : au premier démarrage sans mot de passe, le serveur
+écrit un **code d'installation** à usage unique dans le volume des données,
+`/var/lib/lapinou/setup-token` (0600, lisible par l'utilisateur du service seulement) ; le
+journal le rappelle (« le code d'installation de la page de réglages est dans … »). Pour le lire :
+
+```
+docker exec lapinou cat /var/lib/lapinou/setup-token
+```
+
+puis ouvrez `http://<hôte>:8080`, collez le code et choisissez le mot de passe (8 caractères
+au moins) ; le fichier est effacé dès que le mot de passe existe. Sans passer par la page, le
+mot de passe peut aussi être enregistré directement, comme le fait l'installateur Proxmox
+(lu sur l'entrée standard, jamais en argument) :
+
+```
+docker exec -i lapinou python -m lapinou.web.auth --config /etc/lapinou/config.toml
 docker restart lapinou
 ```
 
