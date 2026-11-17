@@ -3,7 +3,8 @@
 
 Les étapes, dans l'ordre, de rien jusqu'à un lapin qui répond et se met à jour tout seul. Chaque
 étape renvoie au document qui la détaille. Dans les exemples, la première version publiée
-s'appelle `v0.1.0`.
+s'appelle `v0.3.0` : les étiquettes `v0.1.0` à `v0.2.0` sont celles de LapinLibre, le projet
+d'origine, et LapiNou numérote ses versions au-dessus pour éviter toute confusion.
 
 ## 1. La paire de clés de signature, puis la première étiquette
 
@@ -13,7 +14,7 @@ gestionnaire de mots de passe et dans le secret GitHub `OTA_SIGNING_KEY`, puis c
 publique dans les deux fichiers `ota-pubkey.pub` du dépôt :
 [release.md, « Une seule fois : créer la paire de clés de signature »](release.md#une-seule-fois--créer-la-paire-de-clés-de-signature).
 
-Puis publiez la première version : étiquette `v0.1.0` poussée sur le commit testé, et le workflow
+Puis publiez la première version : étiquette `v0.3.0` poussée sur le commit testé, et le workflow
 `release` construit, signe et publie la clé USB, les images OTA et l'archive du serveur
 ([release.md, « Chaque version »](release.md#chaque-version)).
 
@@ -37,7 +38,7 @@ Deux voies, au choix :
 
 - **Clé USB** (un lapin d'usine, sous LapinLibre, ou à réinstaller) : page de réglages du serveur
   → **Clé USB** (Wi-Fi du lapin, puis téléchargement de l'archive), ou bien la clé de la Release
-  `lapinou-key-v0.1.0.zip` avec son `lapinlibre.txt` rempli. Dézippez-la à la racine d'une clé
+  `lapinou-key-v0.3.0.zip` avec son `lapinlibre.txt` rempli. Dézippez-la à la racine d'une clé
   USB vide en **FAT32**, lapin éteint, mettez la clé, allumez-le et attendez la fin
   ([install.md](../install.md), en anglais).
 - **Migration** d'un lapin sous Free Rabbits OS, par SSH et sans clé USB, depuis un PC du même

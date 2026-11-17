@@ -16,7 +16,7 @@ tools/lapinou-migrate/migrate-from-fros.sh --rabbit 192.168.1.103 --key out/usbk
 conviennent :
 
 1. **La clé de la Release** : téléchargez `lapinou-key-vX.Y.Z.zip` sur la page Releases du dépôt
-   (par exemple `v0.1.0`) et décompressez-le dans un dossier vide (`--key lapinou-key-v0.1.0`).
+   (par exemple `v0.3.0`) et décompressez-le dans un dossier vide (`--key lapinou-key-v0.3.0`).
    Son `lapinlibre.txt` est vide : remplissez au besoin `WEB_PASSWORD`, `LAPINOU_SERVER`,
    `MQTT_HOST`… (pas le Wi-Fi : voir plus bas).
 2. **La clé faite par le serveur LapiNou** (page de réglages, « Clé USB ») : décompressez

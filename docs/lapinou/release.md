@@ -143,12 +143,12 @@ clé provisoire.
    workflow », même sur une étiquette, le workflow ne signe et ne publie rien) :
 
    ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
+   git tag v0.3.0
+   git push origin v0.3.0
    ```
 
 5. Sur GitHub, Actions → `release` de l'étiquette : environ 50 minutes en tout.
-6. À la fin, Releases → `v0.1.0` : les sept assets du tableau plus haut, et les notes avec
+6. À la fin, Releases → `v0.3.0` : les sept assets du tableau plus haut, et les notes avec
    l'empreinte de la construction. Contrôle possible sur ta machine, après téléchargement des
    assets dans un dossier vide :
 
@@ -169,11 +169,11 @@ essai sous le même nom). Avant de relancer :
 
    ```bash
    gh release list --repo Kinder0083/LapiNou          # un brouillon est marqué « Draft »
-   gh release delete v0.1.0 --repo Kinder0083/LapiNou --yes
+   gh release delete v0.3.0 --repo Kinder0083/LapiNou --yes
    ```
 
    ou sur github.com : Releases → le brouillon → icône de corbeille.
-2. Supprime l'étiquette : `git push origin :refs/tags/v0.1.0` puis `git tag -d v0.1.0`.
+2. Supprime l'étiquette : `git push origin :refs/tags/v0.3.0` puis `git tag -d v0.3.0`.
 3. Corrige, puis reprends à l'étape 1 de [Chaque version](#chaque-version).
 
 Messages fréquents : `OTA_SIGNING_KEY is missing` : le secret n'existe pas (étape 5 de la
@@ -190,8 +190,8 @@ Pour voir tout le chemin (étiquette → Release signée) sans risque pour le vr
 2. Dans un dossier temporaire, crée une **paire jetable** (étapes 2 et 3 plus haut) et mets sa
    clé privée dans le secret `OTA_SIGNING_KEY` **du dépôt jetable** (`--repo <toi>/lapinou-essai`).
 3. Dans un clone du dépôt jetable seulement, remplace les deux `.pub` par la clé publique
-   jetable, commite, pousse, puis pousse une étiquette `v0.1.0`.
-4. Vérifie la Release `v0.1.0` du dépôt jetable : sept assets, et `sign-ota.py --verify` avec la
+   jetable, commite, pousse, puis pousse une étiquette `v0.3.0`.
+4. Vérifie la Release `v0.3.0` du dépôt jetable : sept assets, et `sign-ota.py --verify` avec la
    clé publique jetable.
 5. Supprime le dépôt jetable (`gh repo delete <toi>/lapinou-essai --yes`, après
    `gh auth refresh -s delete_repo`) et la paire jetable. Ce commit de clés jetables ne doit

@@ -4,7 +4,7 @@
 `/usr/karotz/bin/lapinou-ota` met le lapin à jour sans clé USB, avec une version publiée et signée. Le format des versions et les adresses du serveur sont ceux de `docs/lapinou/ota.md` (branche du serveur).
 
 ```
-lapinou-ota check      # {"installed":"v0.1.0","available":"v0.2.0"}
+lapinou-ota check      # {"installed":"v0.3.0","available":"v0.4.0"}
 lapinou-ota install    # télécharge, vérifie, écrit, redémarre
 lapinou-ota install --allow-downgrade   # accepte une version plus ancienne que celle installée
 ```
