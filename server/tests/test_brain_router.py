@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 import datetime as dt
 import json
+from zoneinfo import ZoneInfo
 
 import httpx2
 import pytest
@@ -572,6 +573,19 @@ def test_dedupe_key_uses_provider_not_kind():
     s.brain.fallback_chain = ["a:meme-modele", "b:meme-modele"]
     router = BrainRouter.from_settings(s)
     assert len(router.fallbacks) == 2
+
+
+def test_brains_tell_the_household_time():
+    # Le conteneur du serveur tourne souvent en UTC : l'heure dite au lapin est celle du foyer.
+    s = Settings()
+    s.server.timezone = "Europe/Paris"
+    s.brain.providers["local"] = ProviderConfig(kind="openai", base_url="http://llm.local/v1")
+    s.brain.fallback_chain = ["local:petit-modele"]
+    router = BrainRouter.from_settings(s)
+    for brain in (router.primary, router.fallbacks[0]):
+        now = brain._clock()
+        assert str(now.tzinfo) == "Europe/Paris"
+        assert now.utcoffset() == now.astimezone(ZoneInfo("Europe/Paris")).utcoffset()
 
 
 def test_openai_paid_counts_the_environment_key(monkeypatch):

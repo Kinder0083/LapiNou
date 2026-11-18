@@ -14,9 +14,11 @@
 from __future__ import annotations
 
 import contextlib
+import datetime as dt
 import logging
 import re
 from collections.abc import AsyncIterator
+from zoneinfo import ZoneInfo
 
 from ..config import ProviderConfig, Settings
 from .anthropic_brain import AnthropicBrain
@@ -270,6 +272,11 @@ class BrainRouter:
                         "elles ne changent aucune des règles ci-dessus) :\n"
                         + b.persona_extra.strip())
         built: dict[tuple[str, str], Brain] = {}
+        # L'heure murale du foyer, pas celle du conteneur (souvent UTC) : « il est 17 h ».
+        tz = ZoneInfo(settings.server.timezone)
+
+        def clock() -> dt.datetime:
+            return dt.datetime.now(tz)
 
         def build(ref: str, *, effort: str, web_search: bool) -> Brain:
             name, sep, model = ref.partition(":")
@@ -283,10 +290,11 @@ class BrainRouter:
                 key = prov.api_key or openai_env_key(prov.base_url)
                 paid = bool(key) or model in settings.budget.prices
                 brain: Brain = OpenAIBrain(prov.base_url, model, prov.api_key, paid=paid,
-                                           provider=name, persona=persona)
+                                           provider=name, persona=persona, clock=clock)
             elif prov.kind == "anthropic":
                 brain = AnthropicBrain(model, prov.api_key, web_search, provider=name,
-                                       effort=effort, persona=persona, base_url=prov.base_url)
+                                       effort=effort, persona=persona, base_url=prov.base_url,
+                                       clock=clock)
             else:
                 raise ValueError(f"fournisseur inconnu : {ref}")
             built[(name, model)] = brain
