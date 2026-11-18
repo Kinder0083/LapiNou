@@ -59,3 +59,19 @@ décaler la référence de 46 à 50 ms.
 
 Le MP3 garde la fréquence du moteur (pas de rééchantillonnage côté serveur ni côté lapin), à
 64 kbit/s, comme `tts_server.py` de LapinLibre.
+
+## Voix claire (R51)
+
+`[voice] clarity = true` (par défaut) fait passer le WAV du moteur par ffmpeg avant l'encodage MP3,
+à la même fréquence, avec le filtre `tts.CLARITY_FILTER` :
+`highpass=f=180,equalizer=f=250:t=q:w=1:g=-4,equalizer=f=3200:t=q:w=1.2:g=3` (grondement coupé
+sous 180 Hz, zone « caverneuse » de 250 Hz baissée de 4 dB, clarté de 3,2 kHz remontée de 3 dB).
+
+| Piper `fr_FR-siwis-medium`, « Bonjour, je suis Lapinou. » | Temps (moyenne de 3, après échauffement) |
+|---|---|
+| `clarity = false` | 135 ms |
+| `clarity = true` | 218 ms (+82 ms : un lancement de ffmpeg) |
+
+Mesuré sur la VM de construction (4 vCPU), pas sur le conteneur du serveur. Si ffmpeg manque
+ou échoue, un avertissement « voix claire impossible » est écrit et la phrase garde la voix du
+moteur.

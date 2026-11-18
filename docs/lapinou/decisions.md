@@ -30,6 +30,7 @@ Ce document liste les décisions prises pendant le projet. Celles marquées **(t
 - **R35 : mode sans serveur.** Il utilise le modèle rapide (Haiku) par défaut pour rester sous 3 secondes. Opus peut être choisi dans les réglages.
 - **R32, R36 : si l'IA refuse de répondre**, Lapinou dit une phrase douce et sa LED passe à l'orange, au lieu d'un son d'erreur.
 - **R50 : budget épuisé en pleine réponse.** Lapinou finit par « J'ai atteint mon budget du mois… », sans relancer la demande ailleurs. Ce qui a déjà été consommé est compté.
+- **R51 : voix claire.** La voix Piper sonnait caverneuse. Parmi 8 essais écoutés sur le PC puis sur le lapin, le propriétaire a choisi le n° 2 : même hauteur, moins de graves, un peu plus de clarté. Le serveur filtre chaque phrase par ffmpeg (`[voice] clarity`, activé par défaut). Si ffmpeg échoue, la voix d'origine est gardée. Une voix plus expressive (voix en ligne dirigée) reste une piste pour plus tard.
 
 ## Le lapin
 
