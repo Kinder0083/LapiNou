@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 [project]
 name = "lapinou"
-version = "0.3.0"
+version = "0.3.1"
 description = "Serveur LapiNou (passerelle vocale pour lapins Karotz)"
 requires-python = ">=3.12"
 license = "MIT"
