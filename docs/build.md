@@ -450,7 +450,7 @@ This stage builds the rabbit's kernel on Linux 2.6.32.71 with the system toolcha
 
 1. It unpacks Linux 2.6.32.71 and applies `system/kernel/linux-2.6.32-modern-gcc.patch`.
 2. It copies `kernel/src/` (the RABBITV3 board and its drivers) over the tree.
-3. It applies `system/kernel/patches/*.patch` in sequence: the rabbit's character drivers, the I2S data pin, the camera, the platform devices, the board, the USB gadget and framebuffer, the rt2x00 timeout, the rt73usb software decryption, the I2C delay, the NAND timings, the mac80211 scan time, the UDA134x codec, the s3c-hwmon build, the 2.6.32 APIs for `kernel/src`, and the time of the built-in initramfs.
+3. It applies `system/kernel/patches/*.patch` in sequence: the rabbit's character drivers, the I2S data pin, the camera, the platform devices, the board, the USB gadget and framebuffer, the rt2x00 timeout, the I2C delay, the NAND timings, the mac80211 scan time, the UDA134x codec, the s3c-hwmon build, the 2.6.32 APIs for `kernel/src`, and the time of the built-in initramfs.
 4. It sets the machine name in `MACHINE_START` from `config.toml` `kernel.machine`.
 5. It exports the pinned YAFFS2 commit and runs `kernel/yaffs.py YAFFS_TREE LINUX_TREE`. The script copies the YAFFS2 sources into `fs/yaffs2` and adds the folder to `fs/Kconfig` and `fs/Makefile`.
 6. It writes `.config` from `system/kernel/rabbitv3_defconfig`, with `CONFIG_LOCALVERSION` from `kernel.localversion`.
