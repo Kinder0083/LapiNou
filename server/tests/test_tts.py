@@ -459,3 +459,13 @@ def test_render_mp3_applique_clarity(monkeypatch, synth):
     clear = tts.Voice("piper", "fr_FR-siwis-medium", synth=synth, clarity=True).render_mp3("Bonjour.")
     assert len(calls) == 1
     assert clear != plain
+
+
+@needs_ffmpeg
+def test_clarify_ffmpeg_qui_echoue_garde_la_voix(monkeypatch, caplog):
+    # Un WAV valide, mais ffmpeg sort en erreur (filtre inconnu) : voix d'origine.
+    monkeypatch.setattr(tts, "CLARITY_FILTER", "pas_un_filtre")
+    src = sine_wav()
+    with caplog.at_level(logging.WARNING, logger="lapinou.voice.tts"):
+        assert tts.clarify(src) == src
+    assert "voix claire" in caplog.text
