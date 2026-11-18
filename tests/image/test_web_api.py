@@ -95,8 +95,11 @@ def fingerprint(b64):
 def sandbox_copy(src, dst, sb):
     """A program or the library with its absolute paths and PATH moved into the sandbox."""
     text = src.read_text(encoding="utf-8")
-    text = text.replace("PATH=/bin:/sbin:/usr/bin:/usr/sbin\n", f"PATH={sb}/bin\n")
+    # The PATH line goes in after the paths are moved: a sandbox under /tmp would be moved again.
+    marker = "PATH=@LL_SANDBOX_PATH@\n"
+    text = text.replace("PATH=/bin:/sbin:/usr/bin:/usr/sbin\n", marker)
     text = SANDBOXED.sub(lambda m: f"{sb}{m.group(0)}", text)
+    text = text.replace(marker, f"PATH={sb}/bin\n")
     if text.startswith("#!/bin/sh\n"):
         text = f"#!{sb}/bin/sh\n" + text[len("#!/bin/sh\n"):]
     dst.parent.mkdir(parents=True, exist_ok=True)
