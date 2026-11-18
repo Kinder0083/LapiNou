@@ -175,6 +175,9 @@ class VoiceConfig(_Section):
     wake_method: Literal["asr", "oww", "both"] = "asr"
     tts_engine: Literal["kokoro", "piper"] = "piper"
     voice: str = "fr_FR-siwis-medium"
+    # Voix claire (essai 2, choisi à l'écoute) : moins de graves, un peu plus de clarté, même
+    # hauteur. false : la voix du moteur telle quelle.
+    clarity: bool = True
     wake_threshold: float = Field(default=0.9, ge=0, le=1)  # validé : tools/train_wakeword/README.md
     # Classifieur openWakeWord entraîné localement (tools/train_wakeword) ; vide = absent.
     # Non distribué : il hérite des licences NC/SA de ses données d'entraînement.

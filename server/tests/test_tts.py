@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
+import shutil
 import socket
 import sys
 import textwrap
@@ -28,9 +30,9 @@ from lapinou.web import tts_compat
 RATE = 24000
 
 
-def sine_wav(seconds: float = 0.6, rate: int = RATE) -> bytes:
+def sine_wav(seconds: float = 0.6, rate: int = RATE, freq: float = 440) -> bytes:
     t = np.arange(int(seconds * rate)) / rate
-    pcm = (np.sin(2 * np.pi * 440 * t) * 0.5 * 32767).astype("<i2")
+    pcm = (np.sin(2 * np.pi * freq * t) * 0.5 * 32767).astype("<i2")
     out = io.BytesIO()
     with wave.open(out, "wb") as w:
         w.setnchannels(1)
@@ -154,6 +156,9 @@ def test_from_settings():
     s.voice.tts_engine, s.voice.voice = "kokoro", "ff_siwis"
     v = tts.Voice.from_settings(s, base_url="http://x:8080")
     assert (v.engine, v.voice) == ("kokoro", "ff_siwis")
+    assert v.clarity is True  # voix claire par défaut
+    s.voice.clarity = False
+    assert tts.Voice.from_settings(s).clarity is False
     s.voice.tts_engine = "inconnu"
     with pytest.raises(ValueError):
         tts.Voice.from_settings(s)
@@ -386,3 +391,71 @@ async def test_piper_reel_par_sous_processus():
         assert np.abs(speech.pcm16k).max() > 3000
     finally:
         v.close()
+
+
+# --- voix claire (essai 2 : moins de graves, plus de clarté) --------------------------------------
+
+needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg absent")
+
+
+def wav_info(data: bytes) -> tuple[int, int, int, np.ndarray]:
+    with wave.open(io.BytesIO(data)) as w:
+        pcm = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2")
+        return w.getframerate(), w.getnchannels(), w.getsampwidth(), pcm
+
+
+def rms(pcm: np.ndarray) -> float:
+    return float(np.sqrt(np.mean(pcm.astype(np.float64) ** 2)))
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("rate", [22050, 24000])  # Piper, Kokoro
+def test_clarify_garde_la_frequence(rate):
+    src = sine_wav(rate=rate)
+    out = tts.clarify(src)
+    got_rate, channels, width, pcm = wav_info(out)
+    assert (got_rate, channels, width) == (rate, 1, 2)
+    assert out != src
+    assert len(pcm) > 0.9 * 0.6 * rate
+
+
+@needs_ffmpeg
+def test_clarify_coupe_les_graves():
+    src = sine_wav(rate=22050, freq=100)
+    out = tts.clarify(src)
+    assert rms(wav_info(out)[3]) < 0.5 * rms(wav_info(src)[3])
+
+
+@needs_ffmpeg
+def test_clarify_phrase_courte():
+    assert len(wav_info(tts.clarify(sine_wav(0.1, rate=22050)))[3]) >= 1000
+
+
+def test_clarify_sans_ffmpeg_garde_la_voix(monkeypatch, caplog):
+    monkeypatch.setattr(tts.shutil, "which", lambda name: None)
+    src = sine_wav()
+    with caplog.at_level(logging.WARNING, logger="lapinou.voice.tts"):
+        assert tts.clarify(src) == src
+    assert "voix claire" in caplog.text
+
+
+@needs_ffmpeg
+def test_clarify_ffmpeg_en_erreur_garde_la_voix(caplog):
+    with caplog.at_level(logging.WARNING, logger="lapinou.voice.tts"):
+        assert tts.clarify(b"pas un wav") == b"pas un wav"
+    assert "voix claire" in caplog.text
+
+
+def test_render_mp3_applique_clarity(monkeypatch, synth):
+    calls: list[bytes] = []
+
+    def spy(wav: bytes) -> bytes:
+        calls.append(wav)
+        return sine_wav(freq=880)
+
+    monkeypatch.setattr(tts, "clarify", spy)
+    plain = tts.Voice("piper", "fr_FR-siwis-medium", synth=synth).render_mp3("Bonjour.")
+    assert calls == []
+    clear = tts.Voice("piper", "fr_FR-siwis-medium", synth=synth, clarity=True).render_mp3("Bonjour.")
+    assert len(calls) == 1
+    assert clear != plain

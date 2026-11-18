@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 import logging
 import re
@@ -31,6 +32,7 @@ import sys
 import threading
 import time
 import uuid
+import wave
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -158,6 +160,30 @@ def decode_mp3_16k(mp3: bytes) -> np.ndarray:
     except (OSError, subprocess.SubprocessError) as e:
         raise RuntimeError(f"décodage du MP3 impossible (ffmpeg requis) : {e}") from e
     return np.frombuffer(r.stdout, dtype="<i2").astype(np.int16)
+
+
+# Voix claire : coupe le grondement sous 180 Hz, creuse la zone « caverneuse » (250 Hz), avive la
+# clarté (3,2 kHz). Le filtre exact de l'essai écouté sur le lapin (docs/lapinou/mesures.md).
+CLARITY_FILTER = "highpass=f=180,equalizer=f=250:t=q:w=1:g=-4,equalizer=f=3200:t=q:w=1.2:g=3"
+
+
+def clarify(wav: bytes) -> bytes:
+    """WAV 16 bits mono -> le même, filtré (`CLARITY_FILTER`), à la même fréquence.
+    Si ffmpeg manque ou échoue : avertissement et WAV d'origine (Lapinou ne doit pas se taire)."""
+    try:
+        if shutil.which("ffmpeg") is None:
+            raise RuntimeError("ffmpeg absent")
+        with wave.open(io.BytesIO(wav)) as w:
+            rate = w.getframerate()
+        r = subprocess.run(
+            ["ffmpeg", "-loglevel", "error", "-i", "-", "-af", CLARITY_FILTER, "-ac", "1",
+             "-ar", str(rate), "-c:a", "pcm_s16le", "-f", "wav", "-"],
+            input=wav, capture_output=True, check=True, timeout=30,
+        )  # fmt: skip
+        return r.stdout
+    except (OSError, RuntimeError, subprocess.SubprocessError, wave.Error, EOFError) as e:
+        log.warning("voix claire impossible (%s) : voix d'origine", e)
+        return wav
 
 
 def _kokoro_synth(voice: str, models: Path | None) -> Callable[[str], bytes]:
@@ -315,6 +341,7 @@ class Voice:
         base_url: str = "",
         store: Mp3Store | None = None,
         synth: Callable[[str], bytes] | None = None,
+        clarity: bool = False,
     ):
         if engine not in ENGINES:
             raise ValueError(f"moteur de synthèse inconnu : {engine!r} (kokoro ou piper)")
@@ -323,11 +350,13 @@ class Voice:
         self.base_url = base_url.rstrip("/")
         self.store = store if store is not None else Mp3Store()
         self._synth = synth
+        self.clarity = clarity  # voix claire (`clarify`) avant l'encodage MP3
         self._lock = threading.Lock()  # un seul calcul à la fois (les moteurs ne sont pas sûrs en parallèle)
         self._cache: OrderedDict[str, bytes] = OrderedDict()  # texte -> MP3 (serveur de compatibilité)
 
     @classmethod
     def from_settings(cls, settings: Settings, **kwargs) -> Voice:
+        kwargs.setdefault("clarity", settings.voice.clarity)
         return cls(settings.voice.tts_engine, settings.voice.voice, **kwargs)  # type: ignore[arg-type]
 
     def load(self) -> None:
@@ -379,6 +408,8 @@ class Voice:
             synth = self._load()
             try:
                 wav = synth(text)
+                if self.clarity:
+                    wav = clarify(wav)
                 return tts_server.to_mp3(wav)
             except subprocess.CalledProcessError as e:
                 raise RuntimeError(f"encodage MP3 impossible : {e}") from e
