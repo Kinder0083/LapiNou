@@ -113,9 +113,25 @@ async def test_schedule_config_sent_with_timezone(platform):
 
 
 
-async def test_refused_interactive_mode_is_retried_soon(monkeypatch):
+async def test_schedule_config_error_reply_is_not_a_refusal(platform, caplog):
+    """Le vrai contrôleur répond ERROR à scheduleConfig même quand il règle l'heure et le
+    fuseau (tests/expected/controller_platform.txt) : pas d'avertissement « commande refusée »."""
+    c = await platform.connect("lapin-s")
+    schedule = await c.until(r"^scheduleConfig \{")
+    sid = re.search(r'^id: "([^"]*)"', schedule, re.M).group(1)
+    with caplog.at_level("DEBUG", logger="lapinou.rabbit.platform"):
+        await c.send(f'id: "c-s" correlationId: "{sid}" response {{ code: ERROR }}')
+        await c.send('id: "c-p" ping { }')
+        await c.until(r'^correlationId: "c-p"')
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+    assert platform.get("lapin-s").state == "ready"
+
+
+async def test_refused_interactive_mode_is_retried_soon(monkeypatch, caplog):
     """Le contrôleur refuse tant qu'il n'est pas AVAILABLE : le serveur réessaie vite, pas
-    au renouvellement (des heures plus tard)."""
+    au renouvellement (des heures plus tard). Le premier refus suit chaque connexion (le
+    contrôleur se configure encore) : une information, pas un avertissement."""
+    caplog.set_level("INFO", logger="lapinou.rabbit.platform")
     import lapinou.rabbit.platform as platform_mod
 
     monkeypatch.setattr(platform_mod, "INTERACTIVE_RETRY_S", 0.05)
@@ -144,6 +160,8 @@ async def test_refused_interactive_mode_is_retried_soon(monkeypatch):
         await asyncio.wait_for(loop(), 10)
         await asyncio.wait_for(registry.get("lapin-r").wait_ready(), 10)
         assert registry.get("lapin-r").state == "ready"
+        refused = [r.levelname for r in caplog.records if "mode interactif refusé" in r.getMessage()]
+        assert refused == ["INFO", "WARNING"]
     finally:
         await c.close()
         await registry.close()

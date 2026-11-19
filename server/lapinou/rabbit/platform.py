@@ -104,6 +104,9 @@ class Rabbit:
         self._stale_stops = 0  # STOP attendus pour des lectures déjà remplacées
         self._last_resync = float("-inf")  # horloge de la boucle au dernier _resync
         self._play_req: str | None = None
+        # scheduleConfig envoyés : le contrôleur y répond ERROR même quand il règle l'heure et
+        # le fuseau (tests/expected/controller_platform.txt), ce n'est pas un refus.
+        self._schedule_reqs: set[str] = set()
         self._events: asyncio.Queue | None = None  # file des événements (créée par le registre)
 
     @property
@@ -124,18 +127,23 @@ class Rabbit:
         self._playback_id, self._stale_stops = None, 0
         self._interactive_id = None
         self._pending_interactive.clear()
+        self._schedule_reqs.clear()
         # Comme le serveur d'applications de LapinLibre : `config` d'abord. Sans lui, le
         # contrôleur reste CONNECTING et refuse le mode interactif ; il passe par
         # UPDATING_CONF puis AVAILABLE. Puis l'horloge (scheduleConfig) et le drapeau des
         # messages (nez vert seul).
-        await link.send(self._registry.config_text())
-        await link.send(self._registry.schedule_text())
-        await link.send("pendingmessage: false")
+        await self._push_config(link)
         self._interactive_tries = 0
         await self._start_interactive(link)
         if self._renew_task is not None:
             self._renew_task.cancel()
         self._renew_task = self._registry._spawn(self._renew_loop(link))
+
+    async def _push_config(self, link: _Link) -> None:
+        """config, puis l'horloge (scheduleConfig) et le drapeau des messages (nez vert seul)."""
+        await link.send(self._registry.config_text())
+        self._schedule_reqs.add(await link.send(self._registry.schedule_text()))
+        await link.send("pendingmessage: false")
 
     async def _start_interactive(self, link: _Link) -> None:
         """Prend (ou reprend) la main ; l'identifiant n'est adopté qu'à la réponse OK du contrôleur."""
@@ -291,11 +299,17 @@ class Rabbit:
                 # lapin endormi) : nouvel essai bientôt, pas au prochain renouvellement.
                 self._interactive_tries += 1
                 delay = min(INTERACTIVE_RETRY_MAX_S, INTERACTIVE_RETRY_S * 2 ** min(self._interactive_tries - 1, 6))
-                log.warning("lapin %s : mode interactif refusé (%s), nouvel essai dans %.0f s",
-                            self.id, code, delay)
+                # Le premier refus suit chaque connexion (le contrôleur se configure encore).
+                level = logging.INFO if self._interactive_tries == 1 else logging.WARNING
+                log.log(level, "lapin %s : mode interactif refusé (%s), nouvel essai dans %.0f s",
+                        self.id, code, delay)
                 link = self._link
                 if link is not None:
                     self._registry._spawn(self._retry_interactive(link, delay))
+            return
+        if corr in self._schedule_reqs:
+            self._schedule_reqs.discard(corr)
+            log.debug("lapin %s : scheduleConfig, réponse %s (heure réglée)", self.id, code)
             return
         if code == "OK":
             self._sent.pop(corr, None)
@@ -334,9 +348,7 @@ class Rabbit:
         try:
             if resync:
                 log.warning("lapin %s : mode interactif perdu, reprise de la main", self.id)
-                await link.send(self._registry.config_text())
-                await link.send(self._registry.schedule_text())
-                await link.send("pendingmessage: false")
+                await self._push_config(link)
                 self._interactive_tries = 0
             await self._start_interactive(link)
             req = await self._command(body, msg_id=req_id if is_play else None)
