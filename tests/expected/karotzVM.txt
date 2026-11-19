@@ -507,15 +507,7 @@ led {
   }
 }
 
-DEBUG: SetTimeout: 1
-DEBUG: Sending MSG
-id: "<uuid9>"
-interactiveId: "<uuid1>"
-ears {
-  left: 5
-  right: 7
-}
-
+DEBUG: SetTimeout: 500
 DEBUG: message received
 DEBUG: Received MSG
 id: "ctl-5"
@@ -558,6 +550,15 @@ event {
 }
 
 WARNING: NO CORRELATION FOUND
+DEBUG: SetTimeout: 1
+DEBUG: Sending MSG
+id: "<uuid9>"
+interactiveId: "<uuid1>"
+ears {
+  left: 5
+  right: 7
+}
+
 DEBUG: message received
 DEBUG: Received MSG
 id: "ctl-8"
@@ -636,16 +637,7 @@ ears {
   relative: true
 }
 
-DEBUG: SetTimeout: 1
-DEBUG: Sending MSG
-id: "<uuid14>"
-interactiveId: "<uuid1>"
-ears {
-  left: 1
-  right: 1
-  reset: true
-}
-
+DEBUG: SetTimeout: 500
 DEBUG: message received
 DEBUG: Received MSG
 id: "ctl-10"
@@ -688,6 +680,16 @@ event {
 }
 
 WARNING: NO CORRELATION FOUND
+DEBUG: SetTimeout: 1
+DEBUG: Sending MSG
+id: "<uuid14>"
+interactiveId: "<uuid1>"
+ears {
+  left: 1
+  right: 1
+  reset: true
+}
+
 DEBUG: message received
 DEBUG: Received MSG
 id: "ctl-13"
@@ -732,18 +734,7 @@ ears {
   reset: true
 }
 
-DEBUG: SetTimeout: 1
-MESSAGE: TTS: say[hello]
-MESSAGE: TTS: lang[fr]
-DEBUG: Sending MSG
-id: "<uuid18>"
-interactiveId: "<uuid1>"
-tts {
-  action: START
-  text: "hello"
-  lang: "fr"
-}
-
+DEBUG: SetTimeout: 500
 DEBUG: message received
 DEBUG: Received MSG
 id: "ctl-14"
@@ -783,6 +774,18 @@ response {
 }
 
 WARNING: NO CORRELATION FOUND
+DEBUG: SetTimeout: 1
+MESSAGE: TTS: say[hello]
+MESSAGE: TTS: lang[fr]
+DEBUG: Sending MSG
+id: "<uuid18>"
+interactiveId: "<uuid1>"
+tts {
+  action: START
+  text: "hello"
+  lang: "fr"
+}
+
 DEBUG: message received
 DEBUG: Received MSG
 id: "ctl-17"
@@ -900,19 +903,7 @@ tts {
   action: STOP
 }
 
-DEBUG: SetTimeout: 1
-MESSAGE: MULTIMEDIA: play[./sound.mp3]
-MESSAGE: MULTIMEDIA: app-relative path[sound.mp3]
-MESSAGE: MULTIMEDIA: buffer play[/tmp/karotzvm-apps-<pid>/devices/sound.mp3]
-DEBUG: Sending MSG
-id: "<uuid24>"
-interactiveId: "<uuid1>"
-multimedia {
-  play {
-    url: "/tmp/karotzvm-apps-<pid>/devices/sound.mp3"
-  }
-}
-
+DEBUG: SetTimeout: 500
 DEBUG: message received
 DEBUG: Received MSG
 id: "ctl-20"
@@ -955,6 +946,19 @@ event {
 }
 
 WARNING: NO CORRELATION FOUND
+DEBUG: SetTimeout: 1
+MESSAGE: MULTIMEDIA: play[./sound.mp3]
+MESSAGE: MULTIMEDIA: app-relative path[sound.mp3]
+MESSAGE: MULTIMEDIA: buffer play[/tmp/karotzvm-apps-<pid>/devices/sound.mp3]
+DEBUG: Sending MSG
+id: "<uuid24>"
+interactiveId: "<uuid1>"
+multimedia {
+  play {
+    url: "/tmp/karotzvm-apps-<pid>/devices/sound.mp3"
+  }
+}
+
 DEBUG: message received
 DEBUG: Received MSG
 id: "ctl-23"
@@ -1012,16 +1016,7 @@ multimedia {
   }
 }
 
-DEBUG: SetTimeout: 1
-MESSAGE: MULTIMEDIA: pause
-DEBUG: Sending MSG
-id: "<uuid28>"
-interactiveId: "<uuid1>"
-multimedia {
-  pause {
-  }
-}
-
+DEBUG: SetTimeout: 500
 DEBUG: message received
 DEBUG: Received MSG
 id: "ctl-24"
@@ -1064,6 +1059,16 @@ event {
 }
 
 WARNING: NO CORRELATION FOUND
+DEBUG: SetTimeout: 1
+MESSAGE: MULTIMEDIA: pause
+DEBUG: Sending MSG
+id: "<uuid28>"
+interactiveId: "<uuid1>"
+multimedia {
+  pause {
+  }
+}
+
 DEBUG: message received
 DEBUG: Received MSG
 id: "ctl-27"
@@ -1260,16 +1265,7 @@ multimedia {
   }
 }
 
-DEBUG: SetTimeout: 1
-MESSAGE: MULTIMEDIA: GetArtist
-DEBUG: Sending MSG
-id: "<uuid38>"
-interactiveId: "<uuid1>"
-multimedia {
-  getartist {
-  }
-}
-
+DEBUG: SetTimeout: 500
 DEBUG: message received
 DEBUG: Received MSG
 id: "ctl-32"
@@ -1340,6 +1336,16 @@ event {
 }
 
 WARNING: NO CORRELATION FOUND
+DEBUG: SetTimeout: 1
+MESSAGE: MULTIMEDIA: GetArtist
+DEBUG: Sending MSG
+id: "<uuid38>"
+interactiveId: "<uuid1>"
+multimedia {
+  getartist {
+  }
+}
+
 DEBUG: message received
 DEBUG: Received MSG
 id: "ctl-37"
@@ -1542,19 +1548,7 @@ webcam {
   photo: "http://x/nocallback"
 }
 
-DEBUG: SetTimeout: 1
-DEBUG: LED Light: color[FF0000]
-DEBUG: Sending MSG
-id: "<uuid47>"
-interactiveId: "<uuid1>"
-dock {
-  led {
-    light {
-      color: "FF0000"
-    }
-  }
-}
-
+DEBUG: SetTimeout: 500
 DEBUG: message received
 DEBUG: Received MSG
 id: "ctl-44"
@@ -1583,6 +1577,19 @@ event {
 }
 
 WARNING: NO CORRELATION FOUND
+DEBUG: SetTimeout: 1
+DEBUG: LED Light: color[FF0000]
+DEBUG: Sending MSG
+id: "<uuid47>"
+interactiveId: "<uuid1>"
+dock {
+  led {
+    light {
+      color: "FF0000"
+    }
+  }
+}
+
 DEBUG: message received
 DEBUG: Received MSG
 id: "ctl-46"
@@ -1719,17 +1726,7 @@ dock {
   }
 }
 
-DEBUG: SetTimeout: 1
-MESSAGE: MULTIMEDIA: GetSong
-DEBUG: Sending MSG
-id: "<uuid54>"
-interactiveId: "<uuid1>"
-multimedia {
-  getsong {
-  }
-}
-
-DEBUG: SetTimeout: 3000
+DEBUG: SetTimeout: 500
 DEBUG: message received
 DEBUG: Received MSG
 id: "ctl-49"
@@ -1786,6 +1783,17 @@ event {
 }
 
 WARNING: NO CORRELATION FOUND
+DEBUG: SetTimeout: 1
+MESSAGE: MULTIMEDIA: GetSong
+DEBUG: Sending MSG
+id: "<uuid54>"
+interactiveId: "<uuid1>"
+multimedia {
+  getsong {
+  }
+}
+
+DEBUG: SetTimeout: 3000
 DEBUG: message received
 DEBUG: Received MSG
 id: "ctl-53"
@@ -2514,6 +2522,40 @@ karotzMessageQuery {
 }
 
 DEBUG: message: id: "<uuid8>" interactiveId: "<uuid1>" karotzMessageQuery { action: NEW message { header { to { objects { idDB: "o1" } objects { idDB: "o2" } uuid: "u-to" } } content { type: TEXT content: "hello message" } } }
+DEBUG: SetTimeout: 500
+DEBUG: message received
+DEBUG: Received MSG
+id: "ctl-7"
+correlationId: "<uuid8>"
+response {
+  code: OK
+}
+karotzMessageResponse {
+  karotzMessageList {
+    header {
+      id: "m1"
+      date: 1234
+      status: READ
+      from {
+        firstname: "Ann"
+      }
+      to {
+        objects {
+          idDB: "o9"
+          name: "me"
+        }
+        uuid: "u-me"
+      }
+    }
+    content {
+      type: TEXT
+      header: "h"
+      content: "hi there"
+    }
+  }
+}
+
+WARNING: NO CORRELATION FOUND
 DEBUG: SetTimeout: 1
 DEBUG: call
 DEBUG: Sending MSG
@@ -2563,6 +2605,7 @@ k2k {
   }
 }
 
+DEBUG: SetTimeout: 500
 DEBUG: SetTimeout: 1
 MESSAGE: ConfigKarotzGet
 DEBUG: Sending MSG
@@ -2571,39 +2614,6 @@ interactiveId: "<uuid1>"
 karotzinfo_query {
 }
 
-DEBUG: message received
-DEBUG: Received MSG
-id: "ctl-7"
-correlationId: "<uuid8>"
-response {
-  code: OK
-}
-karotzMessageResponse {
-  karotzMessageList {
-    header {
-      id: "m1"
-      date: 1234
-      status: READ
-      from {
-        firstname: "Ann"
-      }
-      to {
-        objects {
-          idDB: "o9"
-          name: "me"
-        }
-        uuid: "u-me"
-      }
-    }
-    content {
-      type: TEXT
-      header: "h"
-      content: "hi there"
-    }
-  }
-}
-
-WARNING: NO CORRELATION FOUND
 DEBUG: message received
 DEBUG: Received MSG
 id: "ctl-8"
@@ -2705,16 +2715,7 @@ interactiveId: "<uuid1>"
 ping {
 }
 
-DEBUG: SetTimeout: 1
-MESSAGE: ASR: grammar[oui|non]
-DEBUG: Sending MSG
-id: "<uuid19>"
-interactiveId: "<uuid1>"
-asr {
-  dictionary: "oui|non"
-  lang: "fr-FR"
-}
-
+DEBUG: SetTimeout: 500
 DEBUG: message received
 DEBUG: Received MSG
 id: "ctl-11"
@@ -2743,6 +2744,16 @@ event {
 }
 
 WARNING: NO CORRELATION FOUND
+DEBUG: SetTimeout: 1
+MESSAGE: ASR: grammar[oui|non]
+DEBUG: Sending MSG
+id: "<uuid19>"
+interactiveId: "<uuid1>"
+asr {
+  dictionary: "oui|non"
+  lang: "fr-FR"
+}
+
 DEBUG: message received
 DEBUG: Received MSG
 id: "ctl-13"
@@ -2825,113 +2836,7 @@ asr {
 MESSAGE: JSLOG: asr.file cb -> undefined
 WARNING: access denied: ../descriptor.xml
 MESSAGE: JSLOG: asr.file denied threw access denied: ../descriptor.xml
-DEBUG: SetTimeout: 1
-DEBUG: Sending MSG
-id: "<uuid22>"
-interactiveId: "<uuid1>"
-serial {
-  open {
-    port: "/dev/ttyUSB0"
-    baud: 115200
-  }
-}
-
-DEBUG: Sending MSG
-id: "<uuid23>"
-interactiveId: "<uuid1>"
-serial {
-  open {
-    port: "/dev/ttyUSB1"
-    baud: 9600
-  }
-}
-
-DEBUG: Sending MSG
-id: "<uuid24>"
-interactiveId: "<uuid1>"
-serial {
-  open {
-    port: "/dev/ttyUSB2"
-    baud: 9600
-  }
-}
-
-DEBUG: Sending MSG
-id: "<uuid25>"
-interactiveId: "<uuid1>"
-serial {
-  write {
-    port: "/dev/ttyUSB0"
-    data: "hello serial"
-    base: "a"
-  }
-}
-
-DEBUG: Sending MSG
-id: "<uuid26>"
-interactiveId: "<uuid1>"
-serial {
-  write {
-    port: "/dev/ttyUSB0"
-    data: "undefined"
-    base: "undefined"
-  }
-}
-
-MESSAGE: JSLOG: open__ bad baud threw arg 2 is Integer baudrate
-MESSAGE: JSLOG: open__() threw Wrong arguments
-DEBUG: SetTimeout: 1
-DEBUG: Sending MSG
-id: "<uuid27>"
-interactiveId: "<uuid1>"
-serial {
-  open {
-    port: "/dev/ttyGS0"
-    baud: 9600
-  }
-}
-
-DEBUG: Sending MSG
-id: "<uuid28>"
-interactiveId: "<uuid1>"
-serial {
-  write {
-    port: "/dev/ttyGS0"
-    data: "plain line"
-    base: "a"
-  }
-}
-
-DEBUG: Sending MSG
-id: "<uuid29>"
-interactiveId: "<uuid1>"
-serial {
-  write {
-    port: "/dev/ttyGS0"
-    data: "0a0d"
-    base: "h"
-  }
-}
-
-DEBUG: Sending MSG
-id: "<uuid30>"
-interactiveId: "<uuid1>"
-serial {
-  write {
-    port: "/dev/ttyUSB0"
-    data: "three arguments"
-    base: "a"
-  }
-}
-
-MESSAGE: JSLOG: write() threw Wrong arguments
-MESSAGE: PingFunction
-DEBUG: Sending MSG
-id: "<uuid31>"
-interactiveId: "<uuid1>"
-ping {
-}
-
+DEBUG: SetTimeout: 500
 DEBUG: message received
 DEBUG: Received MSG
 id: "ctl-15"
@@ -3013,6 +2918,114 @@ MESSAGE: node type: Element, content: 1
 MESSAGE: node type: Element, name: z
 
 MESSAGE: node type: Element, content: 2
+
+DEBUG: SetTimeout: 1
+DEBUG: Sending MSG
+id: "<uuid22>"
+interactiveId: "<uuid1>"
+serial {
+  open {
+    port: "/dev/ttyUSB0"
+    baud: 115200
+  }
+}
+
+DEBUG: Sending MSG
+id: "<uuid23>"
+interactiveId: "<uuid1>"
+serial {
+  open {
+    port: "/dev/ttyUSB1"
+    baud: 9600
+  }
+}
+
+DEBUG: Sending MSG
+id: "<uuid24>"
+interactiveId: "<uuid1>"
+serial {
+  open {
+    port: "/dev/ttyUSB2"
+    baud: 9600
+  }
+}
+
+DEBUG: Sending MSG
+id: "<uuid25>"
+interactiveId: "<uuid1>"
+serial {
+  write {
+    port: "/dev/ttyUSB0"
+    data: "hello serial"
+    base: "a"
+  }
+}
+
+DEBUG: Sending MSG
+id: "<uuid26>"
+interactiveId: "<uuid1>"
+serial {
+  write {
+    port: "/dev/ttyUSB0"
+    data: "undefined"
+    base: "undefined"
+  }
+}
+
+MESSAGE: JSLOG: open__ bad baud threw arg 2 is Integer baudrate
+MESSAGE: JSLOG: open__() threw Wrong arguments
+DEBUG: SetTimeout: 500
+DEBUG: SetTimeout: 1
+DEBUG: Sending MSG
+id: "<uuid27>"
+interactiveId: "<uuid1>"
+serial {
+  open {
+    port: "/dev/ttyGS0"
+    baud: 9600
+  }
+}
+
+DEBUG: Sending MSG
+id: "<uuid28>"
+interactiveId: "<uuid1>"
+serial {
+  write {
+    port: "/dev/ttyGS0"
+    data: "plain line"
+    base: "a"
+  }
+}
+
+DEBUG: Sending MSG
+id: "<uuid29>"
+interactiveId: "<uuid1>"
+serial {
+  write {
+    port: "/dev/ttyGS0"
+    data: "0a0d"
+    base: "h"
+  }
+}
+
+DEBUG: Sending MSG
+id: "<uuid30>"
+interactiveId: "<uuid1>"
+serial {
+  write {
+    port: "/dev/ttyUSB0"
+    data: "three arguments"
+    base: "a"
+  }
+}
+
+MESSAGE: JSLOG: write() threw Wrong arguments
+MESSAGE: PingFunction
+DEBUG: Sending MSG
+id: "<uuid31>"
+interactiveId: "<uuid1>"
+ping {
+}
 
 DEBUG: message received
 DEBUG: Received MSG

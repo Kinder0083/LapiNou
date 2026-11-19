@@ -79,6 +79,10 @@ function next() {
     var f = steps.shift();
     if (f) setTimeout(1, function () { f(); return false; });
 }
+// After calls with no callback: give the controller's replies (that nobody waits for) time
+// to arrive and be logged before the next step, so the log's order doesn't depend on the
+// machine's load.
+function settle() { setTimeout(500, function () { next(); return false; }); }
 function str(v) { try { return JSON.stringify(v); } catch (e) { return "" + v; } }
 function show(tag) {
     return function () {
@@ -237,26 +241,26 @@ exit();
 add(function () { karotz.led.light("FF0000", done("light")); });
 add(function () { karotz.led.fade("00FF00", 500, done("fade")); });
 add(function () { karotz.led.pulse("0000FF", 300, 1000, done("pulse")); });
-add(function () { karotz.led.light("123456"); karotz.led.fade("abcdef", -1); karotz.led.pulse("1", 2, 3); next(); });
+add(function () { karotz.led.light("123456"); karotz.led.fade("abcdef", -1); karotz.led.pulse("1", 2, 3); settle(); });
 add(function () { karotz.ears.move(5, 7, done("move")); });
 add(function () { karotz.ears.moveRelative(1, -2, done("moveRelative")); });
-add(function () { karotz.ears.move(null, 3); karotz.ears.move(2.7, "4"); karotz.ears.moveRelative(1, null); next(); });
+add(function () { karotz.ears.move(null, 3); karotz.ears.move(2.7, "4"); karotz.ears.moveRelative(1, null); settle(); });
 add(function () { karotz.ears.reset(function (c, l, r) { show("reset").apply(this, arguments); next(); }); });
-add(function () { karotz.ears.resetLeft(); karotz.ears.resetRight(); karotz.ears.reset(); next(); });
+add(function () { karotz.ears.resetLeft(); karotz.ears.resetRight(); karotz.ears.reset(); settle(); });
 add(function () { karotz.tts.start("hello", "fr", done("tts")); });
 add(function () { karotz.tts.start("bonjour", done("tts2")); });
 add(function () { karotz.tts.stop(done("ttsstop")); });
-add(function () { karotz.tts.start("café"); karotz.tts.start("a", "b", 3); karotz.tts.stop(); next(); });
+add(function () { karotz.tts.start("café"); karotz.tts.start("a", "b", 3); karotz.tts.stop(); settle(); });
 add(function () { karotz.multimedia.play("./sound.mp3", done("play")); });
 add(function () { karotz.multimedia.play("http://host/a.mp3"); karotz.multimedia.play("./x");
-                  karotz.multimedia.play("/abs/b.mp3"); next(); });
+                  karotz.multimedia.play("/abs/b.mp3"); settle(); });
 add(function () { karotz.multimedia.pause(done("pause")); });
 add(function () { karotz.multimedia.resume(done("resume")); });
 add(function () { karotz.multimedia.stop(done("stop")); });
 add(function () { karotz.multimedia.next(done("next")); });
 add(function () { karotz.multimedia.previous(done("previous")); });
 add(function () { karotz.multimedia.pause(); karotz.multimedia.resume(); karotz.multimedia.stop();
-                  karotz.multimedia.next(); karotz.multimedia.previous(); next(); });
+                  karotz.multimedia.next(); karotz.multimedia.previous(); settle(); });
 add(function () { karotz.multimedia.artist(function (a) { show("artist").apply(this, arguments); next(); }); });
 add(function () { karotz.multimedia.folder(function (a) { show("folder").apply(this, arguments); next(); }); });
 add(function () { karotz.multimedia.genre(function (a) { show("genre").apply(this, arguments); next(); }); });
@@ -275,13 +279,13 @@ add(function () {
         if (++calls == 2) { karotz.multimedia.play(e.data); next(); }
     });
 });
-add(function () { karotz.webcam.photo("http://x/nocallback"); next(); });
+add(function () { karotz.webcam.photo("http://x/nocallback"); settle(); });
 add(function () { karotz.dock.light("FF0000", done("docklight")); });
 add(function () { karotz.dock.fade("00FF00", 400, done("dockfade")); });
 add(function () { karotz.dock.pulse("0000FF", 300, 900, done("dockpulse")); });
 // (dock.move(direction) alone sends an uninitialised time: not tested.)
 add(function () { karotz.dock.move("LEFT", 2000); karotz.dock.move("STOP", 0); karotz.dock.move("RIGHT", 5);
-                  karotz.dock.move("DOWN", 1.5); next(); });
+                  karotz.dock.move("DOWN", 1.5); settle(); });
 add(function () { karotz.multimedia.song(function (a) { log("song " + a); }); setTimeout(3000, function () { next(); return false; }); });
 add(function () { log("devices done"); exit(); });
 start();
@@ -295,18 +299,18 @@ add(function () { karotz.message.list(function (m) { show("list").apply(this, ar
 add(function () { karotz.message.get({a: "m1", b: "m2"}, function (m) { show("get").apply(this, arguments); next(); }); });
 add(function () { karotz.message["delete"]({x: "m3"}, function (m) { show("delete").apply(this, arguments); next(); }); });
 add(function () { karotz.message.markAsRead({x: "m4"}, function (m) { show("read").apply(this, arguments); next(); }); });
-add(function () { karotz.message["new"]({uuid: "u-to", objects: ["o1", "o2"]}, "hello message"); next(); });
+add(function () { karotz.message["new"]({uuid: "u-to", objects: ["o1", "o2"]}, "hello message"); settle(); });
 add(function () { karotz.k2k.call("sip:bob@example"); karotz.k2k.answer(1); karotz.k2k.answer(0);
-                  karotz.k2k.hangup(); karotz.k2k.account("id", "domain", "pw", "stun"); next(); });
+                  karotz.k2k.hangup(); karotz.k2k.account("id", "domain", "pw", "stun"); settle(); });
 add(function () { karotz.info(function (i) { show("info").apply(this, arguments); next(); }); });
 add(function () { karotz.ping(done("karotz.ping")); });
 add(function () { ping(done("ping")); });
-add(function () { ping(); karotz.ping(); next(); });
+add(function () { ping(); karotz.ping(); settle(); });
 add(function () { karotz.asr.string("oui|non", "fr-FR", function (r) { show("asr").apply(this, arguments); next(); }); });
 add(function () { attempt("asr.file", function () { return karotz.asr.file("grammar.xml"); });
                   attempt("asr.file cb", function () { return karotz.asr.file("grammar.xml", function () {}); });
                   attempt("asr.file denied", function () { return karotz.asr.file("../descriptor.xml"); });
-                  next(); });
+                  settle(); });
 add(function () {
     karotz.serial.open__("/dev/ttyUSB0", 115200);
     karotz.serial.open__("/dev/ttyUSB1");
@@ -315,7 +319,7 @@ add(function () {
     karotz.serial.write__("/dev/ttyUSB0");
     attempt("open__ bad baud", function () { return karotz.serial.open__("p", "x"); });
     attempt("open__()", function () { return karotz.serial.open__(); });
-    next();
+    settle();
 });
 add(function () {
     karotz.serial.open("/dev/ttyGS0", 9600);
