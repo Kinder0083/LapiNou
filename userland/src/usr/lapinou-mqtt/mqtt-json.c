@@ -158,74 +158,144 @@ static int read_word(Reader *r, const char *word)
     return 1;
 }
 
-GHashTable *json_parse_flat_object(const char *text, gsize len)
+/* A scalar value at r->p (string, number, true, false or null), or NULL. */
+static JsonValue *read_scalar(Reader *r)
 {
-    Reader r = { text, text + len };
+    JsonValue *value = g_new0(JsonValue, 1);
+
+    if (r->p < r->end && *r->p == '"') {
+        value->kind = JSON_STRING;
+        value->string = read_string(r);
+        if (value->string != NULL)
+            return value;
+    } else if (read_word(r, "true")) {
+        value->kind = JSON_BOOL;
+        value->truth = TRUE;
+        return value;
+    } else if (read_word(r, "false")) {
+        value->kind = JSON_BOOL;
+        return value;
+    } else if (read_word(r, "null")) {
+        value->kind = JSON_NULL;
+        return value;
+    } else if (read_number(r, &value->number)) {
+        value->kind = JSON_NUMBER;
+        return value;
+    }
+    value_free(value);
+    return NULL;
+}
+
+/* A flat object at r->p (on its opening brace), or NULL. When `list_key` is given, that member
+ * may be an array of flat objects instead: it goes to *list (a new array of GHashTable). */
+static GHashTable *read_object(Reader *r, const char *list_key, GPtrArray **list)
+{
     GHashTable *object = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, value_free);
 
-    skip_space(&r);
-    if (r.p >= r.end || *r.p++ != '{')
+    skip_space(r);
+    if (r->p >= r->end || *r->p++ != '{')
         goto bad;
-    skip_space(&r);
-    if (r.p < r.end && *r.p == '}') {
-        r.p++;
-        goto done;
+    skip_space(r);
+    if (r->p < r->end && *r->p == '}') {
+        r->p++;
+        return object;
     }
     for (;;) {
         char *key;
         JsonValue *value;
 
-        skip_space(&r);
-        key = read_string(&r);
+        skip_space(r);
+        key = read_string(r);
         if (key == NULL)
             goto bad;
-        skip_space(&r);
-        if (r.p >= r.end || *r.p++ != ':') {
+        skip_space(r);
+        if (r->p >= r->end || *r->p++ != ':') {
             g_free(key);
             goto bad;
         }
-        skip_space(&r);
-        value = g_new0(JsonValue, 1);
-        if (r.p < r.end && *r.p == '"') {
-            value->kind = JSON_STRING;
-            value->string = read_string(&r);
-            if (value->string == NULL) {
-                value_free(value);
+        skip_space(r);
+        if (list_key && list && *list == NULL && strcmp(key, list_key) == 0 && r->p < r->end && *r->p == '[') {
+            g_free(key);
+            r->p++;
+            *list = g_ptr_array_new_with_free_func((GDestroyNotify)g_hash_table_destroy);
+            skip_space(r);
+            if (r->p < r->end && *r->p == ']') {
+                r->p++;
+            } else {
+                for (;;) {
+                    GHashTable *item = read_object(r, NULL, NULL);
+
+                    if (item == NULL)
+                        goto bad;
+                    g_ptr_array_add(*list, item);
+                    skip_space(r);
+                    if (r->p < r->end && *r->p == ',') {
+                        r->p++;
+                        skip_space(r);
+                        continue;
+                    }
+                    if (r->p < r->end && *r->p == ']') {
+                        r->p++;
+                        break;
+                    }
+                    goto bad;
+                }
+            }
+        } else {
+            value = read_scalar(r);
+            if (value == NULL) {
                 g_free(key);
                 goto bad;
             }
-        } else if (read_word(&r, "true")) {
-            value->kind = JSON_BOOL;
-            value->truth = TRUE;
-        } else if (read_word(&r, "false")) {
-            value->kind = JSON_BOOL;
-        } else if (read_word(&r, "null")) {
-            value->kind = JSON_NULL;
-        } else if (read_number(&r, &value->number)) {
-            value->kind = JSON_NUMBER;
-        } else {
-            value_free(value);
-            g_free(key);
-            goto bad;
+            g_hash_table_replace(object, key, value);
         }
-        g_hash_table_replace(object, key, value);
-        skip_space(&r);
-        if (r.p < r.end && *r.p == ',') {
-            r.p++;
+        skip_space(r);
+        if (r->p < r->end && *r->p == ',') {
+            r->p++;
             continue;
         }
-        if (r.p < r.end && *r.p == '}') {
-            r.p++;
-            break;
+        if (r->p < r->end && *r->p == '}') {
+            r->p++;
+            return object;
         }
         goto bad;
     }
-done:
-    skip_space(&r);
-    if (r.p == r.end)
-        return object;
 bad:
     g_hash_table_destroy(object);
+    return NULL;
+}
+
+GHashTable *json_parse_flat_object(const char *text, gsize len)
+{
+    Reader r = { text, text + len };
+    GHashTable *object = read_object(&r, NULL, NULL);
+
+    skip_space(&r);
+    if (object && r.p == r.end)
+        return object;
+    if (object)
+        g_hash_table_destroy(object);
+    return NULL;
+}
+
+GPtrArray *json_parse_object_list(const char *text, gsize len, const char *key, GHashTable **rest)
+{
+    Reader r = { text, text + len };
+    GPtrArray *list = NULL;
+    GHashTable *object = read_object(&r, key, &list);
+
+    skip_space(&r);
+    if (object && r.p == r.end && list) {
+        if (rest)
+            *rest = object;
+        else
+            g_hash_table_destroy(object);
+        return list;
+    }
+    if (object)
+        g_hash_table_destroy(object);
+    if (list)
+        g_ptr_array_free(list, TRUE);
     return NULL;
 }
 

@@ -116,7 +116,13 @@
 #define TICK_S         30   /* Wi-Fi signal and sleep state read again */
 #define CALL_MS        10000
 #define JOB_KILL_S     60   /* a program run for a command that takes longer is killed */
+#define JOB_REAP_S     5    /* then looked at again this often until it has exited */
 #define JOB_OUT_MAX    4096
+#define LIST_OUT_MAX   (256 * 1024)  /* a list program's reply (500 stations and their URLs) */
+#define LIST_MAX       200  /* a list's most options in Home Assistant */
+#define LABEL_URL_MAX  200  /* a station without a name shown by its URL up to this length (a select's
+                             * state holds 255 characters) */
+#define LISTS_S        300  /* the lists read again (the USB stick put in or taken out) */
 #define MPD_PORT       6600
 #define MPD_PASSWORD   "karotz_admin"  /* multimedia-daemon's (mpd.conf) */
 #define PICTURE_MAX    (1024 * 1024)
@@ -324,6 +330,8 @@ static void publish_state(gboolean force)
     app.last_state = json;
 }
 
+static void lists_refresh(gboolean force);
+
 static void publish_all(void)
 {
     DiscoveryContext c = { app.prefix, app.discovery, app.rabbit_id, app.version };
@@ -341,6 +349,7 @@ static void publish_all(void)
     update = update_json(app.installed, app.latest);
     publish_text("update", update, 1, 1);
     g_free(update);
+    lists_refresh(TRUE);
 }
 
 /* The update entity's versions read again: published when they changed. */
@@ -434,8 +443,10 @@ typedef void (*JobDone)(Job *job);
 struct Job {
     char *name;      /* for the log */
     GPid pid;
-    GString *out;    /* its standard output (at most JOB_OUT_MAX bytes), when captured */
+    GString *out;    /* its standard output (at most out_max bytes), when captured */
+    gsize out_max;
     gboolean eof, exited, ok;
+    gboolean killed;
     int status;
     guint kill_source, out_source;
     JobDone done;
@@ -479,8 +490,8 @@ static gboolean job_output(GIOChannel *channel, GIOCondition condition, gpointer
 
     if (condition & G_IO_IN) {
         s = g_io_channel_read_chars(channel, buf, sizeof buf, &n, NULL);
-        if (n && j->out->len < JOB_OUT_MAX)
-            g_string_append_len(j->out, buf, (gssize)MIN(n, JOB_OUT_MAX - j->out->len));
+        if (n && j->out->len < j->out_max)
+            g_string_append_len(j->out, buf, (gssize)MIN(n, j->out_max - j->out->len));
         if (s == G_IO_STATUS_NORMAL || s == G_IO_STATUS_AGAIN)
             return TRUE;
     }
@@ -502,14 +513,20 @@ static gboolean job_kill(gpointer data)
         job_finish(j);
         return FALSE;
     }
-    g_log(NULL, G_LOG_LEVEL_MESSAGE, "%s still runs after %d s: killed", j->name, JOB_KILL_S);
-    kill(j->pid, SIGKILL);
+    if (!j->killed) {
+        g_log(NULL, G_LOG_LEVEL_MESSAGE, "%s still runs after %d s: killed", j->name, JOB_KILL_S);
+        kill(j->pid, SIGKILL);
+        j->killed = TRUE;
+    }
+    /* Looked at again soon: once it has exited, its output is closed even if a child of its own
+     * still holds it, so `done` runs (the lists are read one after the other and wait for it). */
+    j->kill_source = g_timeout_add_seconds(JOB_REAP_S, job_kill, j);
     return FALSE;
 }
 
-/* Run argv (with envp, or the daemon's environment for NULL); its standard output is kept when
- * `capture`; `done` (may be NULL) once it has ended and its output is read. */
-static void job_start(const char *name, char **argv, char **envp, gboolean capture, JobDone done, gpointer data)
+/* Run argv (with envp, or the daemon's environment for NULL); its standard output's first
+ * `capture` bytes are kept (0: none); `done` (may be NULL) once it has ended and its output is read. */
+static void job_start(const char *name, char **argv, char **envp, gsize capture, JobDone done, gpointer data)
 {
     GError *error = NULL;
     Job *j = g_new0(Job, 1);
@@ -517,6 +534,7 @@ static void job_start(const char *name, char **argv, char **envp, gboolean captu
 
     j->name = g_strdup(name);
     j->out = g_string_new(NULL);
+    j->out_max = capture;
     j->done = done;
     j->data = data;
     if (!g_spawn_async_with_pipes(NULL, argv, envp,
@@ -547,7 +565,7 @@ static void job_start(const char *name, char **argv, char **envp, gboolean captu
 
 /* Run the web API's program `endpoint` with `query` (URL-encoded) as tag_listener's cgi_run does:
  * as the user web, from 127.0.0.1, as the web API's user, with no other environment. */
-static void cgi_run(const char *endpoint, const char *query, JobDone done, gpointer data)
+static void cgi_run_max(const char *endpoint, const char *query, gsize out_max, JobDone done, gpointer data)
 {
     char *cgi = g_build_filename(app.web_cgi, endpoint, NULL);
     char *name = g_strdup_printf("the web API's %s", endpoint);
@@ -560,7 +578,7 @@ static void cgi_run(const char *endpoint, const char *query, JobDone done, gpoin
     char *direct[] = { cgi, NULL };
 
     /* The tests' programs (LAPINOU_WEB_CGI) are run as they are. */
-    job_start(name, getenv("LAPINOU_WEB_CGI") ? direct : as_web, envp, TRUE, done, data);
+    job_start(name, getenv("LAPINOU_WEB_CGI") ? direct : as_web, envp, out_max, done, data);
     g_free(cgi);
     g_free(name);
     g_free(qs);
@@ -568,15 +586,27 @@ static void cgi_run(const char *endpoint, const char *query, JobDone done, gpoin
     g_free(uri);
 }
 
+static void cgi_run(const char *endpoint, const char *query, JobDone done, gpointer data)
+{
+    cgi_run_max(endpoint, query, JOB_OUT_MAX, done, data);
+}
+
+/* A web API program's body (after the CGI headers), or NULL. */
+static const char *cgi_body(Job *j)
+{
+    const char *body = strstr(j->out->str, "\r\n\r\n");
+
+    return body ? body + 4 : (body = strstr(j->out->str, "\n\n")) ? body + 2 : NULL;
+}
+
 /* A web API program's reply (its body, after the CGI headers) as a flat JSON object, or NULL. On
  * a reply that isn't {"return":"0",...}, its message is logged under `what`. */
 static GHashTable *cgi_reply(Job *j, const char *what)
 {
-    const char *body = strstr(j->out->str, "\r\n\r\n");
+    const char *body = cgi_body(j);
     GHashTable *o;
     const JsonValue *r, *msg;
 
-    body = body ? body + 4 : (body = strstr(j->out->str, "\n\n")) ? body + 2 : NULL;
     o = body && g_utf8_validate(body, -1, NULL) ? json_parse_flat_object(body, strlen(body)) : NULL;
     r = o ? json_get(o, "return", JSON_STRING) : NULL;
     if (r && !strcmp(r->string, "0"))
@@ -630,7 +660,7 @@ static void volume_keep(int volume)
     char **envp = g_environ_setenv(g_get_environ(), "PATH", "/usr/bin:/usr/sbin:/bin:/sbin", TRUE);
 
     g_snprintf(value, sizeof value, "%d", volume);
-    job_start("lapinou_set audio volume", argv, envp, FALSE, NULL, NULL);
+    job_start("lapinou_set audio volume", argv, envp, 0, NULL, NULL);
     g_strfreev(envp);
 }
 
@@ -1096,12 +1126,16 @@ static void cmd_sleep(const char *text)
 {
     gboolean on;
 
+    if (!g_ascii_strcasecmp(text, "silent")) {
+        cgi_run("wakeup", "silent=1", slept, GINT_TO_POINTER(FALSE));
+        return;
+    }
     if (!g_ascii_strcasecmp(text, "on") || !strcmp(text, "1") || !g_ascii_strcasecmp(text, "true"))
         on = TRUE;
     else if (!g_ascii_strcasecmp(text, "off") || !strcmp(text, "0") || !g_ascii_strcasecmp(text, "false"))
         on = FALSE;
     else {
-        g_log(NULL, G_LOG_LEVEL_MESSAGE, "cmd/sleep: on or off");
+        g_log(NULL, G_LOG_LEVEL_MESSAGE, "cmd/sleep: on, off or silent");
         publish_state(TRUE);
         return;
     }
@@ -1150,6 +1184,256 @@ static void cmd_snapshot(void)
     cgi_run("snapshot", "", snapshot_done, NULL);
 }
 
+/* --- the web page's lists: radios, moods, stories ------------------------------------------ */
+
+/* A list of the web page, as a select in Home Assistant: its options are the page's labels, the
+ * command gets the label back and runs the page's program with the item's value. */
+typedef struct {
+    const char *object, *name, *icon; /* the select (cmd/<object>) */
+    const char *program, *key;        /* the web API's list program, and its reply's array */
+    const char *label_key;            /* the member shown (empty: the id) */
+    const char *value_key;            /* the member the command needs */
+    const char *play, *param;         /* the program that plays an item, and its parameter */
+    GPtrArray *labels, *values;       /* NULL until read once */
+    gboolean changed;                 /* not published since it changed */
+} List;
+
+static List lists[] = {
+    { "radio", "Radio", "mdi:radio", "radios_list", "streams", "name", "url", "sound", "url", NULL, NULL, FALSE },
+    { "mood", "Humeur", "mdi:emoticon-outline", "moods_list", "moods", "text", "id", "apps/moods", "id", NULL, NULL,
+      FALSE },
+    { "story", "Histoire", "mdi:book-open-variant", "stories_list", "stories", "name", "id", "stories", "id", NULL,
+      NULL, FALSE },
+};
+#define LIST_COUNT ((int)G_N_ELEMENTS(lists))
+
+static int lists_reading = -1; /* the list being read, -1 when none */
+static gboolean lists_again;   /* read them again once done */
+static gboolean lists_force;   /* publish every list once read, changed or not */
+
+static gboolean same_strings(GPtrArray *a, GPtrArray *b)
+{
+    guint i;
+
+    if (a == NULL || b == NULL || a->len != b->len)
+        return FALSE;
+    for (i = 0; i < a->len; i++)
+        if (strcmp(g_ptr_array_index(a, i), g_ptr_array_index(b, i)) != 0)
+            return FALSE;
+    return TRUE;
+}
+
+static gboolean has_string(GPtrArray *a, const char *s)
+{
+    guint i;
+
+    for (i = 0; i < a->len; i++)
+        if (strcmp(g_ptr_array_index(a, i), s) == 0)
+            return TRUE;
+    return FALSE;
+}
+
+/* Each list's select, when it changed (or every one, `lists_force`): an empty list removes it. */
+static void lists_publish(void)
+{
+    DiscoveryContext c = { app.prefix, app.discovery, app.rabbit_id, app.version };
+    int i;
+
+    if (app.state != MQTT_CONNECTED)
+        return;
+    for (i = 0; i < LIST_COUNT; i++) {
+        List *l = &lists[i];
+        DiscoveryMessage *m;
+
+        if (l->labels == NULL || (!l->changed && !lists_force))
+            continue;
+        m = discovery_list(&c, l->object, l->name, l->icon, l->labels);
+        publish(m->topic, m->payload, (int)strlen(m->payload), 1, 1);
+        discovery_message_free(m);
+        l->changed = FALSE;
+    }
+    lists_force = FALSE;
+}
+
+static void list_read(int i);
+
+/* A list program has answered: its labels and values, the last ones kept if it failed. */
+static void list_done(Job *j)
+{
+    List *l = &lists[GPOINTER_TO_INT(j->data)];
+    const char *body = cgi_body(j);
+    GHashTable *rest = NULL;
+    GPtrArray *items = NULL, *labels, *values;
+    const JsonValue *r;
+    guint k;
+
+    if (body && g_utf8_validate(body, -1, NULL))
+        items = json_parse_object_list(body, strlen(body), l->key, &rest);
+    r = rest ? json_get(rest, "return", JSON_STRING) : NULL;
+    if (items == NULL || r == NULL || strcmp(r->string, "0") != 0) {
+        g_log(NULL, G_LOG_LEVEL_MESSAGE, "the web API's %s gave no list: the last one kept", l->program);
+    } else {
+        labels = g_ptr_array_new_with_free_func(g_free);
+        values = g_ptr_array_new_with_free_func(g_free);
+        for (k = 0; k < items->len && labels->len < LIST_MAX; k++) {
+            GHashTable *item = g_ptr_array_index(items, k);
+            const JsonValue *id_text = json_get(item, "id", JSON_STRING);
+            const JsonValue *id_number = json_get(item, "id", JSON_NUMBER);
+            const JsonValue *label = json_get(item, l->label_key, JSON_STRING);
+            const JsonValue *value = json_get(item, l->value_key, JSON_STRING);
+            char *text, id[32];
+
+            /* radios_list numbers its stations; the moods' and stories' ids are names. */
+            if (id_text && *id_text->string)
+                g_strlcpy(id, id_text->string, sizeof id);
+            else if (id_number)
+                g_snprintf(id, sizeof id, "%.0f", id_number->number);
+            else
+                continue;
+            if (value == NULL || !*value->string)
+                continue;
+            /* No label: the id, or for a station (its id is only its line) its URL. */
+            if (label && *g_strstrip(label->string))
+                text = g_strdup(label->string);
+            else if (id_text || strlen(value->string) > LABEL_URL_MAX)
+                text = g_strdup_printf(id_text ? "%s" : "Station %s", id);
+            else
+                text = g_strdup(value->string);
+            if (has_string(labels, text)) {
+                char *other = g_strdup_printf("%s (%s)", text, id);
+
+                g_free(text);
+                text = other;
+                if (has_string(labels, text)) {
+                    g_free(text);
+                    continue;
+                }
+            }
+            g_ptr_array_add(labels, text);
+            g_ptr_array_add(values, g_strdup(value->string));
+        }
+        if (l->labels == NULL || !same_strings(l->labels, labels) || !same_strings(l->values, values)) {
+            if (l->labels) {
+                g_ptr_array_free(l->labels, TRUE);
+                g_ptr_array_free(l->values, TRUE);
+            }
+            l->labels = labels;
+            l->values = values;
+            l->changed = TRUE;
+        } else {
+            g_ptr_array_free(labels, TRUE);
+            g_ptr_array_free(values, TRUE);
+        }
+    }
+    if (items)
+        g_ptr_array_free(items, TRUE);
+    if (rest)
+        g_hash_table_destroy(rest);
+    list_read(GPOINTER_TO_INT(j->data) + 1);
+}
+
+/* The lists, one after the other (their selects published in a fixed order, once all are read). */
+static void list_read(int i)
+{
+    if (i < LIST_COUNT) {
+        lists_reading = i;
+        cgi_run_max(lists[i].program, "", LIST_OUT_MAX, list_done, GINT_TO_POINTER(i));
+        return;
+    }
+    lists_reading = -1;
+    lists_publish();
+    if (lists_again) {
+        lists_again = FALSE;
+        list_read(0);
+    }
+}
+
+/* Read the lists again; `force`: publish every select once read (a new connection, Home
+ * Assistant started again). */
+static void lists_refresh(gboolean force)
+{
+    lists_force |= force;
+    if (lists_reading >= 0) {
+        lists_again = TRUE;
+        return;
+    }
+    list_read(0);
+}
+
+static gboolean lists_tick(gpointer data)
+{
+    (void)data;
+    lists_refresh(FALSE);
+    return TRUE;
+}
+
+/* --- the web page's other functions -------------------------------------------------------- */
+
+/* A web API program run for a command has answered (`j->data`: the command, for the log). */
+static void web_done(Job *j)
+{
+    GHashTable *o = cgi_reply(j, j->data);
+
+    if (o)
+        g_hash_table_destroy(o);
+}
+
+/* cmd/radio, cmd/mood, cmd/story: the item `text` names in the list, with the page's program. */
+static void cmd_list(const List *l, const char *text)
+{
+    const char *value = NULL;
+    char *escaped, *query, *what;
+    guint i;
+
+    for (i = 0; l->labels && i < l->labels->len && value == NULL; i++)
+        if (strcmp(g_ptr_array_index(l->labels, i), text) == 0)
+            value = g_ptr_array_index(l->values, i);
+    if (value == NULL) {
+        g_log(NULL, G_LOG_LEVEL_MESSAGE, "cmd/%s: nothing called \"%s\" in the list", l->object, text);
+        return;
+    }
+    escaped = query_escape(value);
+    query = g_strdup_printf("%s=%s", l->param, escaped);
+    what = g_strdup_printf("cmd/%s", l->object);
+    cgi_run(l->play, query, web_done, (gpointer)g_intern_string(what));
+    g_free(what);
+    g_free(escaped);
+    g_free(query);
+}
+
+static void cmd_media(const char *text)
+{
+    static const char *const actions[] = { "pause", "resume", "stop", "next", "previous" };
+    char *query;
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(actions) && strcmp(actions[i], text) != 0; i++)
+        ;
+    if (i == G_N_ELEMENTS(actions)) {
+        g_log(NULL, G_LOG_LEVEL_MESSAGE, "cmd/media: pause, resume, stop, next or previous");
+        return;
+    }
+    query = g_strdup_printf("cmd=%s", actions[i]);
+    cgi_run("sound_control", query, web_done, "cmd/media");
+    g_free(query);
+}
+
+/* The web API's ears_random has answered: the ears where it put them. */
+static void ears_randomized(Job *j)
+{
+    GHashTable *o = cgi_reply(j, "cmd/ears_random");
+    const JsonValue *left = o ? json_get(o, "left", JSON_STRING) : NULL;
+    const JsonValue *right = o ? json_get(o, "right", JSON_STRING) : NULL;
+
+    if (left && right) {
+        app.rabbit.ear_left = atoi(left->string);
+        app.rabbit.ear_right = atoi(right->string);
+        publish_state(FALSE);
+    }
+    if (o)
+        g_hash_table_destroy(o);
+}
+
 /* A command's payload: `text` (NUL-terminated, valid UTF-8, trimmed), `o` its JSON object or NULL. */
 static void command(const char *name, const char *text, GHashTable *o)
 {
@@ -1163,6 +1447,20 @@ static void command(const char *name, const char *text, GHashTable *o)
         cmd_snapshot();
     else if (!strcmp(name, "sound"))
         cmd_sound(text);
+    else if (!strcmp(name, "radio"))
+        cmd_list(&lists[0], text);
+    else if (!strcmp(name, "mood"))
+        cmd_list(&lists[1], text);
+    else if (!strcmp(name, "story"))
+        cmd_list(&lists[2], text);
+    else if (!strcmp(name, "mood_random"))
+        cgi_run("apps/moods", "", web_done, "cmd/mood_random");
+    else if (!strcmp(name, "media"))
+        cmd_media(text);
+    else if (!strcmp(name, "clock"))
+        cgi_run("apps/clock", "", web_done, "cmd/clock");
+    else if (!strcmp(name, "ears_random"))
+        cgi_run("ears_random", "", ears_randomized, NULL);
     else if (strcmp(name, "led") && strcmp(name, "ears") && strcmp(name, "say")) {
         g_log(NULL, G_LOG_LEVEL_MESSAGE, "cmd/%s: no such command", name);
         return;
@@ -1203,8 +1501,11 @@ static void message(const char *topic, const char *payload, int len, gboolean re
     } else if (g_str_has_prefix(topic, cmd_prefix) && retained) {
         g_log(NULL, G_LOG_LEVEL_MESSAGE, "%s: a retained command, ignored (commands are done when sent)", topic);
     } else if (g_str_has_prefix(topic, cmd_prefix) && !strchr(topic + strlen(cmd_prefix), '/')) {
-        GHashTable *o = text[0] == '{' ? json_parse_flat_object(text, strlen(text)) : NULL;
-        if (text[0] == '{' && !o)
+        const char *name = topic + strlen(cmd_prefix);
+        /* cmd/radio, cmd/mood and cmd/story take a label, whatever it starts with. */
+        gboolean label = !strcmp(name, "radio") || !strcmp(name, "mood") || !strcmp(name, "story");
+        GHashTable *o = text[0] == '{' && !label ? json_parse_flat_object(text, strlen(text)) : NULL;
+        if (text[0] == '{' && !label && !o)
             g_log(NULL, G_LOG_LEVEL_MESSAGE, "%s: not a JSON object of strings, numbers and booleans", topic);
         else
             command(topic + strlen(cmd_prefix), text, o);
@@ -1731,6 +2032,7 @@ int main(void)
     daemons_connect();
     g_unix_signal_add(SIGTERM, on_term, NULL);
     g_timeout_add_seconds(TICK_S, tick, NULL);
+    g_timeout_add_seconds(LISTS_S, lists_tick, NULL);
     if (app.uri)
         connect_now();
     g_main_loop_run(app.loop);

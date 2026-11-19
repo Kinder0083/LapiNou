@@ -134,14 +134,15 @@ static void done(Builder *b, Obj *o, const char *component, const char *object)
     g_ptr_array_add(b->out, m);
 }
 
-GPtrArray *discovery_messages(const DiscoveryContext *c)
+/* The members every message shares: the base topic, the device and the origin. */
+static void builder_start(Builder *b, const DiscoveryContext *c)
 {
-    Builder b = { c, g_ptr_array_new_with_free_func(message_free), NULL, NULL, NULL };
-    Obj o, d;
-    GString *options;
-    int i;
+    Obj d;
 
-    b.base = g_strdup_printf("%s/%s", c->prefix, c->rabbit_id);
+    b->c = c;
+    b->out = g_ptr_array_new_with_free_func(message_free);
+    b->base = g_strdup_printf("%s/%s", c->prefix, c->rabbit_id);
+    b->device = b->origin = NULL;
     d = (Obj){ g_string_new(NULL), 0 };
     {
         char *id = g_strdup_printf("lapinou_%s", c->rabbit_id);
@@ -157,11 +158,44 @@ GPtrArray *discovery_messages(const DiscoveryContext *c)
     str(&d, "manufacturer", "LapiNou");
     str(&d, "model", "Karotz");
     str(&d, "sw_version", c->version);
-    b.device = end(&d);
+    b->device = end(&d);
     d = (Obj){ g_string_new(NULL), 0 };
     str(&d, "name", "lapinou-mqtt");
     str(&d, "sw_version", c->version);
-    b.origin = end(&d);
+    b->origin = end(&d);
+}
+
+/* The messages made, the builder's own strings freed. */
+static GPtrArray *builder_end(Builder *b)
+{
+    g_free(b->base);
+    g_free(b->device);
+    g_free(b->origin);
+    return b->out;
+}
+
+/* A button that publishes `payload` on cmd/<command>. */
+static void button(Builder *b, const char *name, const char *object, const char *icon, const char *command,
+                   const char *payload)
+{
+    Obj o = entity(b, name, object);
+    char *rest = g_strdup_printf("cmd/%s", command);
+
+    str(&o, "icon", icon);
+    str_topic(b, &o, "command_topic", rest);
+    str(&o, "payload_press", payload);
+    done(b, &o, "button", object);
+    g_free(rest);
+}
+
+GPtrArray *discovery_messages(const DiscoveryContext *c)
+{
+    Builder b;
+    Obj o;
+    GString *options;
+    int i;
+
+    builder_start(&b, c);
 
     /* The LED: a light of the template schema, on the state topic's "led" (RRGGBB). */
     o = entity(&b, "LED", "led");
@@ -271,6 +305,19 @@ GPtrArray *discovery_messages(const DiscoveryContext *c)
     str(&o, "state_on", "on");
     str(&o, "state_off", "off");
     done(&b, &o, "switch", "sleep");
+    button(&b, "S'endormir", "go_to_sleep", "mdi:sleep", "sleep", "on");
+    button(&b, "Se réveiller", "wake_up", "mdi:alarm", "sleep", "off");
+    button(&b, "Se réveiller en silence", "wake_up_silently", "mdi:bell-sleep", "sleep", "silent");
+
+    /* The web page's other functions (the lists' selects come apart: discovery_list()). */
+    button(&b, "Humeur au hasard", "mood_random", "mdi:emoticon-outline", "mood_random", "PRESS");
+    button(&b, "Pause", "media_pause", "mdi:pause", "media", "pause");
+    button(&b, "Reprendre", "media_resume", "mdi:play", "media", "resume");
+    button(&b, "Stop", "media_stop", "mdi:stop", "media", "stop");
+    button(&b, "Suivant", "media_next", "mdi:skip-next", "media", "next");
+    button(&b, "Précédent", "media_previous", "mdi:skip-previous", "media", "previous");
+    button(&b, "Dire l'heure", "clock", "mdi:clock-outline", "clock", "PRESS");
+    button(&b, "Oreilles au hasard", "ears_random", "mdi:shuffle-variant", "ears_random", "PRESS");
 
     o = entity(&b, "Assistant", "assistant");
     str(&o, "icon", "mdi:robot");
@@ -295,10 +342,52 @@ GPtrArray *discovery_messages(const DiscoveryContext *c)
     str_topic(&b, &o, "state_topic", "update");
     done(&b, &o, "update", "firmware");
 
-    g_free(b.base);
-    g_free(b.device);
-    g_free(b.origin);
-    return b.out;
+    return builder_end(&b);
+}
+
+DiscoveryMessage *discovery_list(const DiscoveryContext *c, const char *object, const char *name,
+                                 const char *icon, const GPtrArray *labels)
+{
+    Builder b;
+    Obj o;
+    GString *options;
+    GPtrArray *out;
+    DiscoveryMessage *m;
+    char *rest;
+    guint i;
+
+    builder_start(&b, c);
+    if (labels == NULL || labels->len == 0) {
+        m = g_new0(DiscoveryMessage, 1);
+        m->topic = g_strdup_printf("%s/select/%s/%s/config", c->discovery, c->rabbit_id, object);
+        m->payload = g_strdup("");
+        g_ptr_array_add(b.out, m);
+    } else {
+        o = entity(&b, name, object);
+        str(&o, "icon", icon);
+        rest = g_strdup_printf("cmd/%s", object);
+        str_topic(&b, &o, "command_topic", rest);
+        g_free(rest);
+        options = g_string_new("[");
+        for (i = 0; i < labels->len; i++) {
+            if (i)
+                g_string_append_c(options, ',');
+            json_append_string(options, g_ptr_array_index(labels, i));
+        }
+        g_string_append_c(options, ']');
+        raw(&o, "options", options->str);
+        g_string_free(options, TRUE);
+        done(&b, &o, "select", object);
+    }
+    out = builder_end(&b);
+    m = g_ptr_array_steal_index(out, 0);
+    g_ptr_array_free(out, TRUE);
+    return m;
+}
+
+void discovery_message_free(DiscoveryMessage *m)
+{
+    message_free(m);
 }
 
 char *state_json(const RabbitState *s)

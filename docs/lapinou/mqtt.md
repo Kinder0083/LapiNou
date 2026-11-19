@@ -88,10 +88,26 @@ et booléens) :
 | `cmd/say` | le texte (1 à 1024 octets) | `Voice.tts_speak` (voice-daemon, dont le `TTS_SERVER` est le serveur LapiNou, port 8081) ; en mode sans serveur (`[cloud] enabled=1`, `[server] enabled` différent de 1), `LapinouCloud.say(s)` si `com.mindscape.karotz.LapinouCloud` est sur le bus |
 | `cmd/sound` | une URL `http(s)://…`, ou le nom d'un son | le programme `sound` de l'API web (`url=` ou `id=`) |
 | `cmd/volume` | `0` à `100` | voir « Volume » ; gardé dans `[audio] volume` |
-| `cmd/sleep` | `on` / `off` | les programmes `sleep` et `wakeup` de l'API web ; ensuite l'état dit ce qu'ils ont fait : en veille la LED éteinte et les oreilles à 4, au réveil la LED de l'API web et les oreilles à 0 (sauf si `ears_mode` a coupé les mouvements d'oreilles) |
+| `cmd/sleep` | `on` / `off` / `silent` | les programmes `sleep` et `wakeup` de l'API web (`silent` : `wakeup?silent=1`, le réveil sans son) ; ensuite l'état dit ce qu'ils ont fait : en veille la LED éteinte et les oreilles à 4, au réveil la LED de l'API web et les oreilles à 0 (sauf si `ears_mode` a coupé les mouvements d'oreilles) |
+| `cmd/radio` | le libellé d'une station (une option du `select` Radio) | le programme `sound` avec l'URL de la station (`url=`) |
+| `cmd/mood` | le libellé d'une humeur | `apps/moods?id=` |
+| `cmd/mood_random` | quelconque | `apps/moods` sans `id` : une humeur au hasard |
+| `cmd/story` | le libellé d'une histoire | `stories?id=` |
+| `cmd/media` | `pause`, `resume`, `stop`, `next`, `previous` | `sound_control?cmd=` |
+| `cmd/clock` | quelconque | `apps/clock` : le lapin dit l'heure |
+| `cmd/ears_random` | quelconque | `ears_random` ; l'état prend les positions qu'il a choisies |
 | `cmd/snapshot` | quelconque | le programme `snapshot` de l'API web ; l'image qu'il a rangée (`/var/run/lapinlibre-web/snapshots/…`, 1 Mio au plus) part sur `<p>/<id>/snapshot` |
 
-`cmd/sound`, `cmd/snapshot` et `cmd/sleep` lancent les programmes de l'API web eux-mêmes, comme
+Les listes de la page web (radios de `radios.txt`, humeurs et histoires de la clé USB) sont lues
+par ses programmes `radios_list`, `moods_list` et `stories_list`, l'un après l'autre : après chaque
+connexion au broker, au « online » de Home Assistant et toutes les 5 minutes (clé insérée ou
+retirée). Leurs `select` sont publiés après chaque connexion et « online », sinon seulement quand
+une liste change ; une liste vide retire son `select` (message de découverte vide, retenu) ; un
+programme qui échoue laisse la liste d'avant. Une option est le libellé de la page (nom de la
+station, texte de l'humeur, nom de l'histoire, sinon l'identifiant) ; un libellé déjà pris reçoit
+« (identifiant) » en plus ; 200 options au plus. Un libellé inconnu est noté au journal.
+
+`cmd/sound`, `cmd/snapshot`, `cmd/sleep` et les commandes de la page ci-dessus lancent les programmes de l'API web eux-mêmes, comme
 `tag_listener` (`cgi_run` : utilisateur `web`, depuis 127.0.0.1, utilisateur web `admin`) : leurs
 règles sont celles de la page web, sans copie dans le démon (vérification des URL `valid_url`, le
 verrou `web_lock`, l'état de lecture, les refus pendant la veille ou pendant une application).
@@ -151,6 +167,12 @@ Découverte sous `<discovery_prefix>/<composant>/<id>/<objet>/config`, retenue. 
 | `image/snapshot` | Photo | `snapshot` (`image/jpeg`) |
 | `button/take_snapshot` | Prendre une photo | `cmd/snapshot` |
 | `switch/sleep` | Veille | `cmd/sleep`, état `sleep` |
+| `button/go_to_sleep`, `button/wake_up`, `button/wake_up_silently` | S'endormir, Se réveiller, Se réveiller en silence | `cmd/sleep` `on`, `off`, `silent` |
+| `select/radio`, `select/mood`, `select/story` | Radio, Humeur, Histoire | `cmd/radio`, `cmd/mood`, `cmd/story` ; options : les listes de la page ; sans état (Home Assistant garde le dernier choix) |
+| `button/mood_random` | Humeur au hasard | `cmd/mood_random` |
+| `button/media_pause`, `media_resume`, `media_stop`, `media_next`, `media_previous` | Pause, Reprendre, Stop, Suivant, Précédent | `cmd/media` |
+| `button/clock` | Dire l'heure | `cmd/clock` |
+| `button/ears_random` | Oreilles au hasard | `cmd/ears_random` |
 | `sensor/assistant` | Assistant | état `assistant` |
 | `sensor/wifi` | Signal Wi-Fi | état `wifi_rssi` (dBm, diagnostic) |
 | `update/firmware` | Micrologiciel | `update` (`installed_version`, `latest_version`) ; informatif : pas de `command_topic`, l'installation se fait depuis la page web du lapin |

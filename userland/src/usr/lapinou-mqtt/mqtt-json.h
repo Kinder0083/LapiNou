@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 /*
  * The little JSON lapinou-mqtt needs, without a JSON library (the rabbit has no json-glib):
- * writing strings into a GString, and reading a command's payload, a flat object whose values
- * are strings, numbers, true, false or null (anything nested is refused).
+ * writing strings into a GString, reading a command's payload, a flat object whose values are
+ * strings, numbers, true, false or null (anything nested is refused), and the web API's lists.
  */
 #ifndef MQTT_JSON_H
 #define MQTT_JSON_H
@@ -25,6 +25,12 @@ typedef struct {
  * JSON, not an object, nested values, invalid UTF-8, trailing text). Free with
  * g_hash_table_destroy(). A key given twice keeps its last value. */
 GHashTable *json_parse_flat_object(const char *text, gsize len);
+
+/* An object whose member `key` is an array of flat objects, the other members flat values (the
+ * web API's lists: {"moods":[{"id":"1","text":"..."}],"return":"0"}): that array (of GHashTable,
+ * each as json_parse_flat_object gives it), or NULL if the text isn't such an object. `rest`
+ * (may be NULL) gets the other members (free with g_hash_table_destroy()). */
+GPtrArray *json_parse_object_list(const char *text, gsize len, const char *key, GHashTable **rest);
 
 /* The value of `key` if it has that kind, else NULL. */
 const JsonValue *json_get(GHashTable *object, const char *key, JsonKind kind);

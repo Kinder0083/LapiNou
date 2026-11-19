@@ -40,6 +40,14 @@ namespace: started by sandbox_setup before the daemon, the broker later again th
      an application owns the rabbit (the controller's state 21).
   9. cmd/sleep on: the web API's sleep (the LED off, the ears at 4, its sleep flag); the LED
      refused while asleep; cmd/sleep off: its wakeup (its LED state, the ears at 0).
+  9b. The web page's lists and functions: the selects of the stick's radios (radios.txt: a name
+     with quotes and an accent, a URL to escape, a name given twice, no name: its URL, a
+     name that starts like JSON), moods (moods.txt labels, one
+     given twice) and stories, read through the web API's radios_list, moods_list and
+     stories_list after every connection; cmd/radio, cmd/mood, cmd/story by label (an unknown
+     one: logged), cmd/mood_random, cmd/media, cmd/clock, cmd/ears_random (its random positions
+     masked), cmd/sleep silent; radios.txt and the stories taken away: their selects removed
+     (an empty retained message) at Home Assistant's next "online".
  10. The server's assistant state, then Home Assistant's "online": everything published again.
  11. Payloads that aren't commands: ignored, the daemon goes on.
  12. The connection dropped (the will published by the broker): connected again, everything
@@ -100,6 +108,12 @@ def sandbox_setup(workdir, sysroot):
     (w / "ioctl-data").write_text(MIXER_WITH_VOLUME)
     WEB = test_web_api.Sandbox(None)
     PICTURE = test_web_api.JPEG
+    WEB.mount_stick()  # its sounds, moods (1, 2, "x y") and story (tale)
+    WEB.write("mnt/usbkey/radios.txt",
+              '# the stick\'s stations\nFrance Inter|http://radio.example/inter.mp3\n'
+              '"Radio" Été|https://radio.example/b?x=1&y=%C3%A9\nFrance Inter|http://radio.example/inter2.mp3\n'
+              '|http://radio.example/noname\n{Jazz} FM|http://radio.example/jazz\n')
+    WEB.write("mnt/usbkey/moods/moods.txt", "1:Joyeux\n2:Joyeux\n")
     (w / "wireless").write_text(
         "Inter-| sta-|   Quality        |   Discarded packets               | Missed | WE\n"
         " face | tus | link level noise |  nwid  crypt   frag  retry   misc | beacon | 22\n"
@@ -211,8 +225,12 @@ def describe(e, stamp):
 
 
 def discovery_check(events):
-    """The discovery messages' count, and whether each is a JSON object as Home Assistant wants it."""
-    found = [e for e in events if e["ev"] == "publish" and e["topic"].startswith("homeassistant/")]
+    """The discovery messages' count, and whether each is a JSON object as Home Assistant wants it
+    (an empty one removes an entity: counted apart)."""
+    found = [e for e in events if e["ev"] == "publish" and e["topic"].startswith("homeassistant/")
+             and e["payload_b64"]]
+    removed = [e for e in events if e["ev"] == "publish" and e["topic"].startswith("homeassistant/")
+               and not e["payload_b64"] and e["retain"]]
     ok = True
     for e in found:
         try:
@@ -224,7 +242,8 @@ def discovery_check(events):
         ok &= (len(parts) == 5 and parts[2] == UUID and parts[4] == "config" and e["retain"] and isinstance(c, dict)
                and c.get("unique_id") == f"lapinou_{UUID}_{parts[3]}" and c.get("availability_topic") == f"{BASE}/availability"
                and c.get("device", {}).get("identifiers") == [f"lapinou_{UUID}"])
-    return f"  discovery: {len(found)} messages, each retained, valid JSON, with the device, unique_id and availability: {ok}"
+    return (f"  discovery: {len(found)} messages, each retained, valid JSON, with the device, unique_id and "
+            f"availability: {ok}; {len(removed)} removals")
 
 
 class Services:
@@ -336,10 +355,15 @@ def drive(d, bus):
     def cmd(name, payload, retain=False):
         broker.publish(f"{BASE}/cmd/{name}", payload, retain)
 
+    def lists_published():
+        """The last list's select (published once the three lists are read, after a connection)."""
+        return lambda: published(broker.pending(), f"homeassistant/select/{UUID}/story/config")
+
     try:
         record.append(f"fake daemons ready: {services.start()}")
         # 1. The connection
         wait_until(lambda: published(broker.pending(), f"{BASE}/update"))
+        wait_until(lists_published())
         first = broker.pending()
         step("1. connection", lambda: True)
         record.append(discovery_check(first))
@@ -451,12 +475,45 @@ def drive(d, bus):
         step("cmd/led while asleep: refused (the state again)", lambda: published(broker.pending(), f"{BASE}/state"))
         cmd("sleep", "off")
         step("cmd/sleep off", state_has('"sleep":"off"'))
+        cmd("sleep", "silent")
+        step("cmd/sleep silent: the web API's wakeup without its sound", web_calls(2))
+
+        # 9b. The web page's lists and functions
+        cmd("radio", '"Radio" Été')
+        step("9b. cmd/radio by its label: the station's URL to the web API's sound", web_calls(2))
+        cmd("radio", "France Inter (3)")
+        step("cmd/radio, the second station of the same name (its line, 3)", web_calls(2))
+        cmd("radio", "{Jazz} FM")
+        step("cmd/radio, a label that starts like JSON: still a label", web_calls(2))
+        cmd("radio", "Radio Inconnue")
+        step("cmd/radio, no such station: logged")
+        cmd("mood", "Joyeux (2)")
+        step("cmd/mood by its label", web_calls(3))
+        cmd("mood_random", "PRESS")
+        step("cmd/mood_random", web_calls(3))
+        cmd("story", "tale")
+        step("cmd/story (no label: its id)", web_calls(2))
+        cmd("media", "pause")
+        step("cmd/media pause", web_calls(1))
+        cmd("media", "stop")
+        step("cmd/media stop", web_calls(1))
+        cmd("media", "rewind")
+        step("cmd/media, not an action: logged")
+        cmd("clock", "PRESS")
+        step("cmd/clock: the time said", web_calls(1))
+        cmd("ears_random", "PRESS")
+        step("cmd/ears_random", web_calls(2))
+        cmd("ears", '{"reset":true}')
+        step("cmd/ears reset: the ears known again", state_has('"preset":"debout"'))
+        (WEB.sb / "mnt/usbkey/radios.txt").unlink()
+        (WEB.sb / "mnt/usbkey/stories/tale.mp3").unlink()
 
         # 10. The assistant's state, Home Assistant online
         broker.publish(f"{BASE}/assistant", "écoute", retain=True)
         step("10. the server's assistant state", state_has('"assistant":"écoute"'))
         broker.publish("homeassistant/status", "online")
         wait_until(lambda: published(broker.pending(), f"{BASE}/update"))
+        wait_until(lists_published())
         again = broker.pending()
         step("Home Assistant online: everything again", lambda: True)
         record.append(discovery_check(again))
@@ -473,6 +530,7 @@ def drive(d, bus):
         broker.control({"op": "drop"})
         wait_until(lambda: len([e for e in broker.pending() if e["ev"] == "connect"]) >= 1)
         wait_until(lambda: published(broker.pending(), f"{BASE}/update"))
+        wait_until(lists_published())
         again = broker.pending()
         step("12. the connection dropped (the retained cmd/say not done again)", lambda: True, settle=2)
         record.append(discovery_check(again))
@@ -482,6 +540,7 @@ def drive(d, bus):
         time.sleep(0.5)
         record.append(f"broker started again: {broker.restart()}")
         wait_until(lambda: published(broker.pending(), f"{BASE}/update"), 40)
+        wait_until(lists_published())
         again = broker.pending()
         step("13. the broker started again", lambda: True)
         record.append(discovery_check(again))
@@ -503,12 +562,25 @@ def drive(d, bus):
 
 
 def normalise_record(record):
-    """Attempts that failed while the broker was down (their number depends on timing) as one, and
-    the snapshot's name (its time)."""
+    """Attempts that failed while the broker was down (their number depends on timing) as one, the
+    snapshot's name (its time), and the ears' random positions (cmd/ears_random)."""
     out = []
+    random_ears = random_mood = clock = False
     pair = [f"{IFACE}.mqtt_state(string \"connecting\")", f"{IFACE}.mqtt_state(string \"disconnected\")"]
     for line in record:
         line = re.sub(r"snapshot_\d{4}(_\d{2}){5}", "snapshot_<time>", line)
+        if line.startswith("== "):
+            random_ears = line == "== cmd/ears_random"
+            random_mood = line == "== cmd/mood_random"
+            clock = line.startswith("== cmd/clock")
+        if random_mood:
+            line = re.sub(r"moods/\d+\.mp3", "moods/<n>.mp3", line)
+        if clock:
+            line = re.sub(r"\d+:\d+", "<hh:mm>", line)
+        if random_ears:
+            line = re.sub(r'"left":\d+,"right":\d+,"preset":"[^"]*"', '"left":<n>,"right":<n>,"preset":<p>', line)
+            line = re.sub(r"int32:\d+", "int32:<n>", line)
+            line = re.sub(r'"(left|right)":"\d+"', r'"\1":"<n>"', line)
         out.append(line)
         if len(out) >= 4 and out[-2:] == pair and out[-4:-2] == pair:
             del out[-2:]

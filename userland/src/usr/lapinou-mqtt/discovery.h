@@ -40,6 +40,12 @@ typedef struct {
  * its messages. */
 GPtrArray *discovery_messages(const DiscoveryContext *c);
 
+/* A list's select (cmd/<object>, its options `labels`), or, for an empty list, the empty message
+ * that removes it from Home Assistant. Free with discovery_message_free(). */
+DiscoveryMessage *discovery_list(const DiscoveryContext *c, const char *object, const char *name,
+                                 const char *icon, const GPtrArray *labels);
+void discovery_message_free(DiscoveryMessage *m);
+
 /* What the state topic carries. */
 typedef struct {
     char led[7];           /* RRGGBB */
