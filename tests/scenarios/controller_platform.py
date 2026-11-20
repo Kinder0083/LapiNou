@@ -79,6 +79,9 @@ EXPECTED_WARNINGS = [
     r"^earsMove returned FALSE$",
     # After the platform closes, the controller connects again, refused at times.
     r"^connectServer Error in delayed connection\(\) \d+ - Connection refused$",
+    # Or finds no network: the sandbox takes the fake platform's network away before the
+    # controller stops (controller_update_newer, controller_message_query, at times).
+    r"^connectServer Error connecting 101 - Network is unreachable$",
 ]
 
 

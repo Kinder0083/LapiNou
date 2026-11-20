@@ -19,9 +19,8 @@ from scenarios.controller_standalone import BusAddress, FakeCloud
 
 DAEMON = "controller"
 DEVICES = []
-# controller_platform's, and the reconnection at the end, when the sandbox takes the fake platform's
-# network away before the controller stops (as in controller_k2k_no_config, at times).
-EXPECTED_WARNINGS = base.EXPECTED_WARNINGS + [r"^connectServer Error connecting 101 - Network is unreachable$"]
+# controller_platform's (with the reconnection at the end that finds no network).
+EXPECTED_WARNINGS = base.EXPECTED_WARNINGS
 normalise_record = base.normalise_record
 
 LAPINOU_CONF = "[server]\nenabled=1\nhost=10.9.0.1\n[cloud]\nenabled=1\n"
