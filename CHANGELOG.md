@@ -5,6 +5,7 @@
 
 ### Fixed
 
+- The rabbit answers on the Wi-Fi again when a computer looks for it. The rt73usb driver put the network's group key in the first free slot of the dongle's key table, but the dongle finds a received frame's key by its key index (1 or 2 for a WPA2 group key), so it couldn't decrypt broadcast frames and missed the ARP requests: a computer that didn't know the rabbit's address yet couldn't reach it. The key now goes in the slot of its index, as in Ralink's own driver (system/kernel/patches/74-rt73usb-shared-key-slot.patch).
 - A tag's speech that fails no longer passes for done. The tag listener used to log `tts done` as soon as the text was taken, and a speech server that couldn't be reached gave silence. It now waits for the speech to be played and logs `tts played` or `tts failed`; when it failed, the nose pulses red while the error sound plays. The web API's `tts` still answers at once.
 - A speech server that doesn't answer is given up after 3 s instead of 10 s, so the rabbit stops counting as speaking sooner.
 - The clock is set again when the first try at boot fails. The start-up tried the time servers once, for 30 s, and a rabbit that got no answer kept a 1970 clock, so every HTTPS request failed, until the next boot. ntpd now runs all the time: it tries again until a time server answers, and keeps the clock right. The start-up logs whether the clock was set.
