@@ -734,6 +734,60 @@ class ButtonWatcherTest(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stdout)
 
 
+ANNOUNCE = ROOT / "image/core/usr/scripts/arp_announce"
+
+
+class ArpAnnounceTest(unittest.TestCase):
+    """image/core's arp_announce with stub ifconfig, arping and sleep: the sleep stub counts the
+    rounds and ends the script after the third."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        sb = self.sb = Path(self.tmp.name)
+        self.log = sb / "actions.log"
+        self.addr = sb / "addr"
+        stub(sb / "bin/ifconfig", f'[ "$1" = wlan0 ] || exit 1\nprintf "wlan0  Link\\n  inet addr:%s  Bcast\\n" "$(cat {self.addr})"')
+        stub(sb / "bin/arping", f'echo "arping $*" >> {self.log}')
+        stub(sb / "bin/sleep", f'echo "sleep $*" >> {self.log}\n'
+             f'[ "$(grep -c ^sleep {self.log})" -ge 3 ] && kill $PPID\nexit 0')
+        # The script with its PATH on the stubs.
+        script = ANNOUNCE.read_text(encoding="utf-8")
+        own_path = "PATH=/bin:/sbin:/usr/bin:/usr/sbin\n"
+        self.assertEqual(script.count(own_path), 1)
+        self.script = sb / "arp_announce"
+        self.script.write_text(script.replace(own_path, f"PATH={sb}/bin:/usr/bin:/bin\n"), newline="\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_announce(self, *args):
+        subprocess.run(["sh", str(self.script), *args], env={"PATH": f"{self.sb}/bin:/usr/bin:/bin"},
+                       capture_output=True, text=True, timeout=30)
+        return self.log.read_text().splitlines()
+
+    def test_announces_the_address_every_round(self):
+        # Every 20 s: an unsolicited ARP on wlan0 for the rabbit's own address, so the network's
+        # computers keep it and seldom need to ask (some broadcasts never reach the rabbit).
+        self.addr.write_text("192.168.1.103")
+        self.assertEqual(self.run_announce(), ["arping -q -U -c 1 -I wlan0 192.168.1.103", "sleep 20"] * 3)
+
+    def test_the_period_is_its_argument(self):
+        self.addr.write_text("10.0.0.7")
+        self.assertEqual(self.run_announce("5")[:2], ["arping -q -U -c 1 -I wlan0 10.0.0.7", "sleep 5"])
+
+    def test_no_address_no_announce(self):
+        # wlan0 without an address yet (DHCP still asking): nothing sent, it waits for the next round.
+        self.addr.write_text("")
+        self.assertEqual(self.run_announce(), ["sleep 20"] * 3)
+
+    def test_shell_checks(self):
+        r = subprocess.run(["sh", "-n", str(ANNOUNCE)], capture_output=True, text=True, timeout=30)
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        if shutil.which("shellcheck"):
+            r = subprocess.run(["shellcheck", "-s", "sh", str(ANNOUNCE)], capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 0, r.stdout)
+
+
 S40 = ROOT / "image/core/usr/etc/init.d/S40lapinlibre"
 LISTENER = ROOT / "image/core/usr/scripts/tag_listener"
 CONF_SH = ROOT / "image/core/usr/share/lapinou/conf.sh"
@@ -758,7 +812,7 @@ class S40Test(unittest.TestCase):
         stub(sb / "bin/uuidgen", "echo 1234")
         stub(sb / "bin/start-stop-daemon", f'echo "start-stop-daemon $*" >> {self.log}')
         stub(sb / "bin/logger", f'echo "logger $*" >> {self.log}')
-        for name in ("dbus_watcher", "tag_listener"):
+        for name in ("dbus_watcher", "tag_listener", "arp_announce"):
             stub(sb / "usr/scripts" / name, "exit 0")
         (sb / "usr/share/lapinou").mkdir(parents=True)
         (sb / "usr/share/lapinou/conf.sh").write_text(CONF_SH.read_text(encoding="utf-8"), newline="\n")
@@ -810,6 +864,17 @@ class S40Test(unittest.TestCase):
         self.log.unlink()
         self.run_s40("start")
         self.assertEqual(self.started().count("tag_listener"), 1)
+
+    def test_arp_announce_started_once(self):
+        # The rabbit's own ARP announce, root's, under immortaldog, and never twice.
+        self.run_s40("start")
+        lines = self.log.read_text().splitlines()
+        self.assertEqual([line for line in lines if line.startswith("immortaldog arp_announce ")],
+                         [f"immortaldog arp_announce {self.sb}/usr/scripts/arp_announce"])
+        self.log.unlink()
+        self.run_s40("start")
+        self.assertNotIn("arp_announce", self.started())
+        self.run_s40("stop")
 
     def test_microphone_before_its_readers(self):
         # lapinou-mic (not "-daemon") owns /dev/audio: up before voice-daemon and multimedia-daemon.

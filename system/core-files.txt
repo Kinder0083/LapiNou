@@ -1322,6 +1322,7 @@ usr:etc/usbkey.d d 0755 0:0
 usr:etc/usbkey.d/50mpd f 0755 0:0 core  # mpd rescans the stick's music
 usr:scripts/dbus_watcher f 0755 0:0 core  # the head button's tones and its /etc/button.d hooks, under immortaldog
 usr:scripts/tag_listener f 0755 0:0 core  # the web API's tag listener: tag learning and the tags' stored actions, under immortaldog
+usr:scripts/arp_announce f 0755 0:0 core  # the rabbit's address announced every 20 s (ARP), under immortaldog
 usr:etc/button.d d 0755 0:0
 usr:www d 0755 0:0
 usr:www/index.html f 0644 0:0 core  # LapiNou's home page (status, quick controls, settings, updates), with lapinou/

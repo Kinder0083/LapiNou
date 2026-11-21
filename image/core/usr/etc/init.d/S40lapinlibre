@@ -13,7 +13,8 @@
 # (/usr/scripts/dbus_watcher: tones and /etc/button.d hooks) and the web API's tag listener
 # (/usr/scripts/tag_listener: tag learning and the tags' actions, as the user web, like the web API
 # whose programs it runs; web-files.sh makes its files first), each also under immortaldog and
-# never twice; then, once the daemons it talks to are on the bus (at most 15 s), the controller,
+# never twice; the rabbit's own ARP announce (/usr/scripts/arp_announce: its address every 20 s,
+# since some broadcasts never reach it), also under immortaldog and never twice; then, once the daemons it talks to are on the bus (at most 15 s), the controller,
 # which connects to the app server karotz.conf names and starts karotzVM for the applications; then
 # mDNS: mdnsd answers to the host name (<name>.local) on wlan0 and advertises the services in
 # /etc/mdns.d (SSH), started as Buildroot's own mdnsd script starts it. Last, LapiNou's daily update
@@ -29,6 +30,7 @@ MDNSD_PID=/var/run/mdnsd.pid
 MDNSD_ARGS="-i wlan0"
 WATCHER=/usr/scripts/dbus_watcher
 LISTENER=/usr/scripts/tag_listener
+ANNOUNCE=/usr/scripts/arp_announce
 PLAYSOUNDS=/usr/etc/conf/playsounds
 ACCOUNT=/usr/etc/conf/account.conf
 UUID=/usr/karotz/uuid.conf
@@ -113,6 +115,7 @@ start() {
     once dbus_watcher $WATCHER
     $WEB_FILES
     once tag_listener $LISTENER web
+    once arp_announce $ANNOUNCE
     for i in $(seq 1 15); do
         missing=""
         for n in $NEEDS; do
@@ -132,7 +135,7 @@ start() {
 stop() {
     start-stop-daemon -K -q -p $MDNSD_PID -x $MDNSD
     # immortaldog stops its daemon on SIGTERM and removes its pid file.
-    for name in controller tag_listener dbus_watcher lapinou-cloud $DAEMONS; do
+    for name in controller arp_announce tag_listener dbus_watcher lapinou-cloud $DAEMONS; do
         [ -f "$RUN/$name.pid" ] && kill "$(cat "$RUN/$name.pid")" 2> /dev/null
     done
     return 0

@@ -1,0 +1,17 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# The rabbit's own ARP announce, for S40lapinlibre (under immortaldog):   arp_announce [SECONDS]
+# Every SECONDS (default 20), an unsolicited ARP on wlan0 for the rabbit's own address, so the
+# network's computers keep it in their tables and seldom need to ask for it. The rabbit's Wi-Fi
+# loses some of the network's broadcasts (some group frames fail CCMP's check, by bursts), an ARP
+# question among them now and then: without this, a computer that had forgotten the rabbit could
+# not find it until its next try. Sending works; only some broadcasts received are lost.
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export PATH
+PERIOD=${1:-20}
+
+while :; do
+    ip=$(ifconfig wlan0 2> /dev/null | sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p')
+    [ -n "$ip" ] && arping -q -U -c 1 -I wlan0 "$ip"
+    sleep "$PERIOD"
+done

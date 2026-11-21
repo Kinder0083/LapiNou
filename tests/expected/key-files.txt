@@ -1483,6 +1483,7 @@ usr:scripts/k2k d 0755 0:0
 usr:scripts/k2k/playback f 0755 0:0
 usr:scripts/k2k/rec f 0755 0:0
 usr:scripts/tag_listener f 0755 0:0
+usr:scripts/arp_announce f 0755 0:0
 usr:share d 0755 0:0
 usr:share/dbus-1 d 0755 0:0
 usr:share/dbus-1/services d 0755 0:0

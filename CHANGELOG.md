@@ -5,6 +5,8 @@
 
 ### Fixed
 
+- A computer that had forgotten the rabbit finds it again. The rabbit's Wi-Fi loses about one broadcast in eight (group frames that fail CCMP's check, by bursts), and now and then the ARP question that asks for the rabbit's address was among them. The rabbit now announces its own address every 20 s (`/usr/scripts/arp_announce`, an unsolicited ARP, under immortaldog), so the network's computers keep it and check it by unicast, which always gets through.
+
 - A tag's speech that fails no longer passes for done. The tag listener used to log `tts done` as soon as the text was taken, and a speech server that couldn't be reached gave silence. It now waits for the speech to be played and logs `tts played` or `tts failed`; when it failed, the nose pulses red while the error sound plays. The web API's `tts` still answers at once.
 - A speech server that doesn't answer is given up after 3 s instead of 10 s, so the rabbit stops counting as speaking sooner.
 - The clock is set again when the first try at boot fails. The start-up tried the time servers once, for 30 s, and a rabbit that got no answer kept a 1970 clock, so every HTTPS request failed, until the next boot. ntpd now runs all the time: it tries again until a time server answers, and keeps the clock right. The start-up logs whether the clock was set.
