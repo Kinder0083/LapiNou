@@ -236,6 +236,31 @@ Exemple d'automatisation : armer avec l'alarme, puis prévenir le téléphone.
           url: "{{ trigger.to_state.attributes.enregistrement }}"
 ```
 
+Pour garder les enregistrements dans Home Assistant (le serveur efface les siens après 7 jours) :
+l'intégration **Downloader** (Paramètres → Appareils et services), dossier `/media`, puis une
+automatisation qui copie chaque enregistrement dans **Médias → Mes médias → lapinou**, sous un nom
+daté (`2026-11-21_23-06-02_voix.wav`). Home Assistant ne supprime pas ces copies tout seul.
+
+```yaml
+- alias: "Lapinou : garder les enregistrements"
+  mode: queued
+  max: 20
+  triggers:
+    - trigger: event.received
+      target:
+        entity_id: event.lapinou_evenement_sonore
+      options:
+        event_type: [bruit, voix]
+  actions:
+    - action: downloader.download_file
+      data:
+        url: "{{ trigger.to_state.attributes.enregistrement }}"
+        subdir: lapinou
+        filename: >-
+          {{ as_local(as_datetime(trigger.to_state.attributes.debut)).strftime('%Y-%m-%d_%H-%M-%S')
+          }}_{{ trigger.to_state.attributes.event_type }}.wav
+```
+
 Ces configurations ont été vérifiées avec les schémas de découverte de Home Assistant 2026.11.1.
 
 ## D-Bus
