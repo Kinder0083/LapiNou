@@ -1,4 +1,4 @@
 # SPDX-License-Identifier: MIT
 """Serveur LapiNou."""
 
-__version__ = "0.3.5"
+__version__ = "0.3.6"
