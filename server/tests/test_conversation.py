@@ -1109,3 +1109,35 @@ async def test_gestures_survive_an_unexpected_error():
     gestures.show("error")
     await until(lambda: calls == ["0000FF", "FF8000"])
     await gestures.close()
+
+
+# --- Surveillance sonore -----------------------------------------------------------------------
+
+
+class FakeSurveillance:
+    def __init__(self) -> None:
+        self.added: list[str] = []
+        self.fed: list[tuple[str, int, bool]] = []
+
+    def add(self, rabbit_id: str) -> None:
+        self.added.append(rabbit_id)
+
+    def feed(self, rabbit_id: str, pcm, muted: bool) -> None:
+        self.fed.append((rabbit_id, len(pcm), muted))
+
+
+async def test_the_microphone_goes_to_the_surveillance_muted_while_the_rabbit_speaks(world):
+    surveillance = FakeSurveillance()
+    world.rabbit.hold = True  # la réponse dure jusqu'à stop_playback
+    brain = ScriptedBrain([TextDelta("Coucou !"), done()])
+    session = world.start(brain, FakeTranscriber("bonjour", None), surveillance=surveillance)
+    assert surveillance.added == [RID]
+    await until(lambda: len(surveillance.fed) >= 3)
+    assert all(rid == RID and not muted for rid, _, muted in surveillance.fed)
+    session.on_button("long_start")
+    await until(lambda: session.state == "speaking")
+    n = len(surveillance.fed)
+    await until(lambda: len(surveillance.fed) >= n + 3)
+    assert all(muted for _, _, muted in surveillance.fed[n + 1:])
+    await world.rabbit.stop_playback()
+    await world.idle()

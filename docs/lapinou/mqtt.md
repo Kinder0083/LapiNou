@@ -180,6 +180,64 @@ Découverte sous `<discovery_prefix>/<composant>/<id>/<objet>/config`, retenue. 
 Ces configurations ont été vérifiées avec les schémas de découverte de Home Assistant 2026.11.1
 (aucune clé rejetée ni ignorée) et leurs modèles rendus par son moteur de modèles.
 
+## Surveillance sonore
+
+Le serveur LapiNou écoute le micro du lapin quand la surveillance est armée, et le dit à Home
+Assistant (conception : `docs/superpowers/specs/2026-11-21-surveillance-sonore-design.md`). Rien
+ne change sur le lapin : le serveur reçoit déjà son micro. Il faut `[mqtt] host` dans la
+configuration du serveur ; ses entités rejoignent l'appareil « Lapinou » du lapin.
+
+| Entité | Nom | Topics (`lapinou/<id>/surveillance/…`) |
+|---|---|---|
+| `switch/surv_armed` | Surveillance sonore | `armed` (`ON`, `OFF`), commande `armed/set` ; gardé à travers un redémarrage du serveur |
+| `number/surv_threshold` | Seuil de bruit | `threshold` (dBFS, de −70 à −10, −40 au départ), commande `threshold/set` |
+| `sensor/surv_level` | Niveau sonore | `level` (dBFS) : au plus une fois par seconde, quand il change de 2 dB ou toutes les 30 s ; `None` hors surveillance |
+| `binary_sensor/surv_noise` | Bruit détecté | `noise` : au-dessus du seuil pendant 300 ms d'affilée ; retombe après 5 s calmes |
+| `binary_sensor/surv_voice` | Voix détectée | `voice` : de la parole (Silero VAD) ; retombe après 5 s sans parole |
+| `event/surv_event` | Événement sonore | `event` (types `bruit`, `voix`), à la fin de chaque enregistrement |
+
+L'événement porte `enregistrement` (l'adresse du WAV), `texte` (ce qui a été dit, quand une voix a
+été entendue), `niveau` (la crête, en dBFS), `debut` (heure UTC), `bruit` et `voix`. Un
+enregistrement dure 10 s, dont les 3 s d'avant le début du bruit ou de la voix ; tant que ça
+dure, un autre suit. Les WAV sont gardés 7 jours (500 au plus) dans le dossier de la base du
+serveur (`surveillance/clips/`) et servis par `GET /surveillance/clips/<jeton>.wav`, sans
+connexion : le jeton aléatoire de 128 bits est le secret, comme pour les MP3 de `/tts/`.
+
+Pendant que le lapin parle ou joue un son, rien ne se déclenche. Hors surveillance, le micro
+n'est ni examiné ni gardé. Les entités sont indisponibles quand le lapin ou le serveur l'est
+(`lapinou/server/availability`, testament du serveur).
+
+Réglages du serveur, section `[surveillance]` : `enabled` (`true`), `threshold_db` (−40, le
+seuil de départ), `min_noise_ms` (300), `calm_s` (5), `pre_s` (3), `clip_s` (10, `pre_s`
+compris), `keep_days` (7), `keep_max` (500), `transcribe` (`true`) ; `[mqtt] discovery_prefix`
+(`homeassistant`).
+
+Exemple d'automatisation : armer avec l'alarme, puis prévenir le téléphone.
+
+```yaml
+- alias: Surveillance sonore avec l'alarme
+  triggers:
+    - trigger: state
+      entity_id: alarm_control_panel.maison
+  actions:
+    - action: "switch.turn_{{ 'on' if trigger.to_state.state.startswith('armed') else 'off' }}"
+      target:
+        entity_id: switch.lapinou_surveillance_sonore
+- alias: Bruit pendant l'alarme
+  triggers:
+    - trigger: state
+      entity_id: event.lapinou_evenement_sonore
+  actions:
+    - action: notify.mobile_app_telephone
+      data:
+        title: "Lapinou a entendu {{ trigger.to_state.attributes.event_type }}"
+        message: "{{ trigger.to_state.attributes.texte or 'Écouter l’enregistrement' }}"
+        data:
+          url: "{{ trigger.to_state.attributes.enregistrement }}"
+```
+
+Ces configurations ont été vérifiées avec les schémas de découverte de Home Assistant 2026.11.1.
+
 ## D-Bus
 
 `com.mindscape.karotz.LapinouMqtt`, chemin `/com/mindscape/karotz/LapinouMqtt`, interface

@@ -159,7 +159,8 @@ class SessionDeps:
     `Speech` ; `transcriber` : `transcribe_utterance(...)` ; `make_detector()` : un détecteur
     de mot d'activation par lapin (`feed`, `reset`) ; `make_aec(reference, marks)` : un
     annuleur d'écho par lapin ; `ha` : `pending` / `confirm` des actions sensibles ;
-    `memory` : `relevant(phrase)` ; `state` : `publish(rabbit_id, état)` (MQTT).
+    `memory` : `relevant(phrase)` ; `state` : `publish(rabbit_id, état)` (MQTT) ;
+    `surveillance` : `add(rabbit_id)` et `feed(rabbit_id, pcm, muted)` (surveillance sonore).
     """
 
     brain: Any
@@ -173,6 +174,7 @@ class SessionDeps:
     memory: Any = None
     log: ConversationLog | None = None
     state: Any = None
+    surveillance: Any = None
     names: tuple[str, ...] = ("lapinou",)
     followup_s: float = 5.0
     silence_ms: int = 700
@@ -335,6 +337,8 @@ class RabbitSession:
 
     def start(self) -> None:
         if self.stream is not None:
+            if self.deps.surveillance is not None:
+                self.deps.surveillance.add(self.id)
             self._spawn(self._pump())
         if self._detector is not None:
             self._spawn(self._wake_loop())
@@ -423,6 +427,11 @@ class RabbitSession:
             if not len(pcm):
                 continue
             self._mic_report(pcm)
+            if self.deps.surveillance is not None:
+                # Ce que le lapin joue lui-même (sa réponse, un son local) ne déclenche rien.
+                muted = (self.state == State.SPEAKING
+                         or self._local_playback(chunk.first_sample, len(pcm)))
+                self.deps.surveillance.feed(self.id, pcm, muted)
             if self._listen_q is not None:
                 self._listen_q.put_nowait(pcm)
             elif self._detector is not None and (

@@ -91,6 +91,9 @@ class MqttConfig(_Section):
     # Début des topics : <prefix>/<id du lapin>/…, comme [mqtt] prefix de lapinou.conf sur le
     # lapin (« lapinou » des deux côtés par défaut) ; les deux doivent être égaux.
     prefix: Annotated[str, AfterValidator(_topic_part)] = "lapinou"
+    # Début des topics de découverte de Home Assistant (celui de lapinou-mqtt, [mqtt]
+    # discovery_prefix de lapinou.conf) : les entités de la surveillance sonore y sont déclarées.
+    discovery_prefix: Annotated[str, AfterValidator(_topic_part)] = "homeassistant"
 
 
 class HaConfig(_Section):
@@ -275,6 +278,27 @@ class AdminConfig(_Section):
     password_hash: str = ""  # secret (argon2)
 
 
+class SurveillanceConfig(_Section):
+    """Surveillance sonore (lapinou/surveillance.py) : les entités n'existent qu'avec [mqtt]
+    host ; chaque lapin est armé ou désarmé depuis Home Assistant."""
+
+    enabled: bool = True
+    threshold_db: float = Field(default=-40.0, ge=-70, le=-10)  # le seuil de départ
+    min_noise_ms: int = Field(default=300, ge=0, le=5000)  # au-dessus du seuil, d'affilée
+    calm_s: float = Field(default=5.0, ge=0.5, le=120)  # calme qui finit un bruit ou une voix
+    pre_s: float = Field(default=3.0, ge=0, le=30)  # gardées avant le début
+    clip_s: float = Field(default=10.0, ge=2, le=120)  # durée d'un enregistrement, pre_s compris
+    keep_days: int = Field(default=7, ge=1, le=365)
+    keep_max: int = Field(default=500, ge=1, le=100000)
+    transcribe: bool = True  # ce qui a été dit, quand une voix a été entendue
+
+    @model_validator(mode="after")
+    def _pre_inside_clip(self):
+        if self.pre_s >= self.clip_s:
+            raise ValueError("surveillance : pre_s doit être plus court que clip_s")
+        return self
+
+
 class Settings(_Section):
     server: ServerConfig = Field(default_factory=ServerConfig)
     mqtt: MqttConfig = Field(default_factory=MqttConfig)
@@ -290,6 +314,7 @@ class Settings(_Section):
     ota: OtaConfig = Field(default_factory=OtaConfig)
     update: UpdateConfig = Field(default_factory=UpdateConfig)
     admin: AdminConfig = Field(default_factory=AdminConfig)
+    surveillance: SurveillanceConfig = Field(default_factory=SurveillanceConfig)
 
     # Emplacement du config.toml d'origine (utilisé par save_settings).
     _path: Path | None = PrivateAttr(default=None)

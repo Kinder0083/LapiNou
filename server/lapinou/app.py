@@ -63,6 +63,11 @@ def create_app(
     app.state.tts_store = tts.Mp3Store()  # MP3 des phrases, GET /tts/<id>.mp3
     app.state.services = services
     app.include_router(tts.router)
+    from . import surveillance as surveillance_mod
+
+    # Enregistrements de la surveillance sonore, GET /surveillance/clips/<jeton>.wav
+    app.state.surveillance = services.surveillance if services is not None else None
+    app.include_router(surveillance_mod.router)
     if web is None:
         web = services.web if services is not None and services.web is not None else (
             routes.WebContext(store=SettingsStore(settings)))
@@ -104,6 +109,7 @@ class Services:
     web: Any = None
     apps: Any = None
     recogniser: Any = None
+    surveillance: Any = None
     tts_server: Any = None
     asr_server: Any = None
     # Tâches de fond du démarrage (Home Assistant, chargement de la voix) : jamais attendues
@@ -125,6 +131,8 @@ class Services:
         await self.gateway.start()
         await self.timers.start()
         self.state.start()
+        if self.surveillance is not None:
+            await self.surveillance.start()
         from .web import apps as apps_mod
         from .web import asr_compat, tts_compat
 
@@ -188,6 +196,8 @@ class Services:
             ("asr", lambda: stop_server("asr_server")),
             ("tts", lambda: stop_server("tts_server")),
             ("orchestrator", self.orchestrator.close),
+            ("surveillance",
+             lambda: self.surveillance.close() if self.surveillance is not None else None),
             ("timers", self.timers.close),
             ("ha", lambda: self.ha.close() if self.ha is not None else None),
             ("gateway", self.gateway.stop),
@@ -305,6 +315,8 @@ def build_services(
         followup_s=settings.voice.followup_s,
         silence_ms=settings.voice.vad_silence_ms,
     )
+    data_dir = None if str(db_path) == ":memory:" else Path(db_path).parent
+    orchestrator.deps.surveillance = _surveillance(settings, data_dir, recogniser)
     orchestrator.attach(registry, gateway)
     from .config import SettingsStore
     from .ota import OtaRelay
@@ -313,7 +325,6 @@ def build_services(
     from .web.routes import WebContext
 
     relay = OtaRelay.from_settings(settings)
-    data_dir = None if str(db_path) == ":memory:" else Path(db_path).parent
     apps = AppHost(data_dir / "apps" if data_dir else None,
                    data_dir / "uploads" if data_dir else None)
     web = WebContext(
@@ -327,7 +338,34 @@ def build_services(
         settings=settings, db=db, registry=registry, gateway=gateway, voice=voice,
         orchestrator=orchestrator, timers=timers, state=orchestrator.deps.state, ha=ha,
         tool_sources=sources, ota=relay, web=web, apps=apps, recogniser=recogniser,
+        surveillance=orchestrator.deps.surveillance,
     )
+
+
+def _surveillance(settings: Settings, data_dir: Path | None, recogniser: Any) -> Any:
+    """La surveillance sonore : seulement avec [mqtt] host, [surveillance] enabled et un
+    dossier pour les enregistrements (pas avec une base en mémoire). La voix (Silero) et le
+    texte (Parakeet) viennent des modèles de transcription, s'ils sont là."""
+    from .surveillance import Surveillance, SurveillanceMqtt
+
+    mqtt = SurveillanceMqtt.from_settings(settings)
+    if mqtt is None or data_dir is None or not settings.surveillance.enabled:
+        return None
+    make_vad = None
+    if recogniser is not None:
+        from .voice import vad
+
+        def make_vad():
+            segmenter = vad.SileroSegmenter(recogniser, max_segment_s=30.0, silence_s=0.5)
+
+            def speaking(pcm):
+                segmenter.feed(pcm)  # les segments finis sont jetés : seule la présence compte
+                return segmenter.speaking
+
+            return speaking
+
+    return Surveillance(settings.surveillance, mqtt, data_dir / "surveillance",
+                        base_url(settings), make_vad=make_vad, transcriber=recogniser)
 
 
 def main(argv: list[str] | None = None) -> None:
