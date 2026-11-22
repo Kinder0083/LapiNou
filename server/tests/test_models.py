@@ -145,8 +145,9 @@ def test_main_fetch_gets_asr_and_the_piper_voice(monkeypatch, tmp_path):
     monkeypatch.setattr(
         models, "fetch_piper", lambda voice, d=None: calls.append(("piper", voice, d)) or tmp_path
     )
+    monkeypatch.setattr(models, "fetch_sounds", lambda d=None: calls.append(("sons", d)) or d)
     assert models.main(["models", "fetch"]) == 0
-    assert calls == [("asr", None), ("piper", tts.DEFAULT_PIPER_VOICE, None)]
+    assert calls == [("asr", None), ("piper", tts.DEFAULT_PIPER_VOICE, None), ("sons", tmp_path)]
 
 
 def test_piper_setup_creates_a_separate_venv(tmp_path, monkeypatch):
@@ -158,3 +159,65 @@ def test_piper_setup_creates_a_separate_venv(tmp_path, monkeypatch):
     assert ran[1][:3] == ["/usr/bin/uv", "pip", "install"]
     assert f"piper-tts=={models.PIPER_TTS_VERSION}" in ran[1]
     assert str(venv / "bin" / "python") in ran[1]
+
+
+# --- Reconnaissance des sons : archive de la release sherpa-onnx ------------------------------
+
+import tarfile  # noqa: E402
+
+from lapinou.voice import sounds  # noqa: E402
+
+SOUND_FILES = {sounds.MODEL: b"faux modele CED", sounds.LABELS: b"index,mid,display_name\n"}
+
+
+def sound_archive(files=SOUND_FILES, extra=None) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:bz2") as tar:
+        for name, data in {**files, **(extra or {})}.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+@pytest.fixture
+def sound_pins(monkeypatch):
+    archive = sound_archive(extra={f"{sounds.MODEL_DIR}/test_wavs/1.wav": b"wav"})
+    monkeypatch.setattr(models, "SOUNDS_ARCHIVE_SHA256", hashlib.sha256(archive).hexdigest())
+    monkeypatch.setattr(models, "SOUNDS_SHA256",
+                        {n: hashlib.sha256(c).hexdigest() for n, c in SOUND_FILES.items()})
+    return archive
+
+
+def test_fetch_sounds_keeps_only_the_model_and_its_labels(tmp_path, sound_pins):
+    seen: list[str] = []
+    models.fetch_sounds(tmp_path, make_opener({models.SOUNDS_URL: sound_pins}, seen))
+    assert seen == [models.SOUNDS_URL]
+    assert sounds.model_present(tmp_path)
+    assert (tmp_path / sounds.MODEL).read_bytes() == SOUND_FILES[sounds.MODEL]
+    assert sorted(p.name for p in (tmp_path / sounds.MODEL_DIR).iterdir()) == [
+        "class_labels_indices.csv", "model.int8.onnx"]
+    assert not list(tmp_path.glob("*.tar.bz2*"))
+    models.fetch_sounds(tmp_path, make_opener({}, seen))  # déjà là : aucune requête
+    assert len(seen) == 1
+
+
+def test_fetch_sounds_rejects_an_archive_with_another_hash(tmp_path, sound_pins):
+    with pytest.raises(RuntimeError, match="SHA-256"):
+        models.fetch_sounds(tmp_path, make_opener({models.SOUNDS_URL: b"autre"}, []))
+    assert not sounds.model_present(tmp_path)
+    assert not list(tmp_path.rglob("*.onnx"))
+
+
+def test_fetch_sounds_rejects_a_file_with_another_hash(tmp_path, monkeypatch, sound_pins):
+    monkeypatch.setitem(models.SOUNDS_SHA256, sounds.MODEL, "0" * 64)
+    with pytest.raises(RuntimeError, match="SHA-256"):
+        models.fetch_sounds(tmp_path, make_opener({models.SOUNDS_URL: sound_pins}, []))
+    assert not sounds.model_present(tmp_path)
+
+
+def test_the_sound_model_is_pinned():
+    assert models.SOUNDS_URL.startswith(
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/audio-tagging-models/")
+    assert len(models.SOUNDS_ARCHIVE_SHA256) == 64
+    assert set(models.SOUNDS_SHA256) == {sounds.MODEL, sounds.LABELS}

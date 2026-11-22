@@ -10,6 +10,7 @@ ne marche plus (R25) : l'archive de la release GitHub a été republiée avec un
 modèle. Ici les trois fichiers Parakeet viennent de la révision Hugging Face épinglée qui a
 exactement ces SHA-256 ; `tokens.txt` de la même révision ; `silero_vad.onnx` de la release
 sherpa-onnx. Un fichier dont le SHA-256 diffère est refusé et rien n'est conservé.
+`models fetch` télécharge aussi le modèle de reconnaissance des sons (CED mini, `fetch_sounds`).
 """
 
 from __future__ import annotations
@@ -18,11 +19,12 @@ import hashlib
 import shutil
 import subprocess
 import sys
+import tarfile
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
-from lapinou.voice import tts, vad
+from lapinou.voice import sounds, tts, vad
 
 asr_server = vad.asr_server
 
@@ -101,6 +103,49 @@ def fetch_piper(
     return directory
 
 
+SOUNDS_URL = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/audio-tagging-models/"
+              "sherpa-onnx-ced-mini-audio-tagging-2024-04-19.tar.bz2")
+SOUNDS_ARCHIVE_SHA256 = "bec8bfa0af2c20ec3a9e7c6dd6c92d0fb6e96d6b25370ebe7a48e7283a60a02c"
+SOUNDS_SHA256 = {
+    sounds.MODEL: "ff29f39f9fbe637f72535160e9d006d61d872fdab0fce838672265b9b38cf946",
+    sounds.LABELS: "cdd1049833c4b86127c2773ac0d14a2754b6a6d0d1798002ed5c66e699708429",
+}
+
+
+def fetch_sounds(directory: Path | None = None, opener: Callable = urllib.request.urlopen) -> Path:
+    """Le modèle de reconnaissance des sons (CED mini) : l'archive de la release sherpa-onnx
+    (SHA-256 vérifié), dont seuls le modèle int8 et les noms des sons sont gardés (SHA-256
+    vérifiés aussi). Rien n'est téléchargé s'ils sont déjà là et intacts. Rend le dossier."""
+    directory = Path(directory or asr_server.MODELS)
+    targets = {name: directory / name for name in SOUNDS_SHA256}
+    if all(p.is_file() and _sha256(p) == SOUNDS_SHA256[n] for n, p in targets.items()):
+        return directory
+    archive = directory / (sounds.MODEL_DIR + ".tar.bz2")
+    try:
+        _download(SOUNDS_URL, archive, SOUNDS_ARCHIVE_SHA256, opener)
+        with tarfile.open(archive, "r:bz2") as tar:
+            for name, target in targets.items():
+                member = tar.getmember(name)
+                if not member.isfile():
+                    raise RuntimeError(f"{name} : pas un fichier dans l'archive")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                part = target.with_name(target.name + ".part")
+                with tar.extractfile(member) as src, part.open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                got = _sha256(part)
+                if got != SOUNDS_SHA256[name]:
+                    part.unlink()
+                    raise RuntimeError(f"{name} : SHA-256 {got} au lieu de {SOUNDS_SHA256[name]}")
+                part.replace(target)
+    except BaseException:
+        for target in targets.values():
+            target.unlink(missing_ok=True)
+        raise
+    finally:
+        archive.unlink(missing_ok=True)
+    return directory
+
+
 PIPER_TTS_VERSION = "1.8.0"
 
 
@@ -126,6 +171,7 @@ def main(argv: list[str]) -> int:
         try:
             directory = fetch(Path(args[2]) if len(args) == 3 else None)
             fetch_piper(tts.DEFAULT_PIPER_VOICE)
+            fetch_sounds(directory)
         except (OSError, RuntimeError) as error:  # réseau coupé, SHA-256 différent, disque plein
             print(f"échec du téléchargement : {error}", file=sys.stderr)
             return 1

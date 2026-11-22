@@ -16,6 +16,10 @@ lapinou-mqtt déclare (`identifiers` `lapinou_<id>`) : un interrupteur, un seuil
 WAV, texte entendu s'il y a eu de la parole). Elles sont indisponibles quand le lapin ou le
 serveur l'est. L'état armé et le seuil de chaque lapin survivent à un redémarrage
 (`state.json`). Hors surveillance, rien n'est examiné, gardé ni publié.
+
+Chaque enregistrement passe aussi par la reconnaissance des sons (`voice/sounds.py`, modèle
+CED mini) : l'événement dit les sons reconnus (`sons`) et l'alerte la plus grave (`alerte` :
+verre brisé, alarme, cris, chien...).
 """
 
 from __future__ import annotations
@@ -403,7 +407,7 @@ class Surveillance:
 
     def __init__(self, cfg: SurveillanceConfig, mqtt: SurveillanceMqtt | None, directory: Path,
                  base_url: str, *, make_vad: Callable[[], Callable[[np.ndarray], bool]] | None = None,
-                 transcriber: Any = None,
+                 transcriber: Any = None, tagger: Any = None,
                  clock: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.UTC)) -> None:
         self.cfg = cfg
         self.mqtt = mqtt if cfg.enabled else None
@@ -412,6 +416,7 @@ class Surveillance:
         self.base_url = base_url.rstrip("/")
         self._make_vad = make_vad
         self._transcriber = transcriber if cfg.transcribe else None
+        self._tagger = tagger if cfg.classify else None
         self._clock = clock
         self._rabbits: dict[str, _Rabbit] = {}
         self._saved = self._load()
@@ -609,6 +614,7 @@ class Surveillance:
                 text = await asyncio.to_thread(vad.transcribe_padded, self._transcriber, samples)
             except Exception:  # noqa: BLE001 - l'événement part sans texte
                 log.exception("lapin %s : transcription de l'enregistrement en échec", rabbit_id)
+        heard = await self._sounds(rabbit_id, clip)
         event = {
             "event_type": "voix" if "voix" in clip.kinds else "bruit",
             "enregistrement": f"{self.base_url}/surveillance/clips/{token}.wav",
@@ -617,11 +623,27 @@ class Surveillance:
             "debut": clip.started.isoformat(),
             "bruit": "bruit" in clip.kinds,
             "voix": "voix" in clip.kinds,
+            "sons": heard.sons,
+            "alerte": heard.alerte,
         }
-        log.info("lapin %s : enregistrement de surveillance (%s)", rabbit_id,
-                 ", ".join(sorted(clip.kinds)))
+        log.info("lapin %s : enregistrement de surveillance (%s)%s", rabbit_id,
+                 ", ".join(sorted(clip.kinds)),
+                 f" : {', '.join(heard.sons)}" if heard.sons else "")
         if self.mqtt is not None:
             self._pub(rabbit_id, "event", json.dumps(event, ensure_ascii=False), retain=False)
+
+    async def _sounds(self, rabbit_id: str, clip: Clip):
+        """Les sons reconnus dans l'enregistrement ; aucun si le modèle manque ou échoue."""
+        from .voice import sounds
+
+        if self._tagger is None:
+            return sounds.describe([], 1.0)
+        try:
+            tags = await asyncio.to_thread(self._tagger.tags, clip.samples)
+        except Exception:  # noqa: BLE001 - l'événement part sans sons reconnus
+            log.exception("lapin %s : reconnaissance des sons en échec", rabbit_id)
+            tags = []
+        return sounds.describe(tags, self.cfg.classify_min_prob)
 
 
 def _fmt(value: float) -> str:

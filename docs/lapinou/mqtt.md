@@ -197,7 +197,12 @@ configuration du serveur ; ses entités rejoignent l'appareil « Lapinou » du l
 | `event/surv_event` | Événement sonore | `event` (types `bruit`, `voix`), à la fin de chaque enregistrement |
 
 L'événement porte `enregistrement` (l'adresse du WAV), `texte` (ce qui a été dit, quand une voix a
-été entendue), `niveau` (la crête, en dBFS), `debut` (heure UTC), `bruit` et `voix`. Un
+été entendue), `niveau` (la crête, en dBFS), `debut` (heure UTC), `bruit` et `voix`, `sons` (les
+sons reconnus, la liste de `server/lapinou/voice/sounds.py` : `chien`, `parole`, `verre brisé`,
+`alarme`…) et `alerte` (le plus grave d'entre eux parmi détonation, verre brisé, alarme, cris,
+pleurs, coups ou porte, chien ; vide sinon). La reconnaissance des sons (modèle CED mini,
+≈ 0,02 s par enregistrement) demande son modèle, téléchargé par `models fetch` à la mise à
+jour ; sans lui, `sons` est vide. Un
 enregistrement dure 10 s, dont les 3 s d'avant le début du bruit ou de la voix ; tant que ça
 dure, un autre suit. Les WAV sont gardés 7 jours (500 au plus) dans le dossier de la base du
 serveur (`surveillance/clips/`) et servis par `GET /surveillance/clips/<jeton>.wav`, sans
@@ -209,7 +214,8 @@ n'est ni examiné ni gardé. Les entités sont indisponibles quand le lapin ou l
 
 Réglages du serveur, section `[surveillance]` : `enabled` (`true`), `threshold_db` (−40, le
 seuil de départ), `min_noise_ms` (300), `calm_s` (5), `pre_s` (3), `clip_s` (10, `pre_s`
-compris), `keep_days` (7), `keep_max` (500), `transcribe` (`true`) ; `[mqtt] discovery_prefix`
+compris), `keep_days` (7), `keep_max` (500), `transcribe` (`true`), `classify` (`true`, les
+sons reconnus), `classify_min_prob` (0,3, la probabilité d'un son retenu) ; `[mqtt] discovery_prefix`
 (`homeassistant`).
 
 Exemple d'automatisation : armer avec l'alarme, puis prévenir le téléphone.
@@ -282,6 +288,28 @@ shell_command:
       data:
         jours: "{{ states('input_number.lapinou_conservation_des_enregistrements') | int(7) }}"
 ```
+
+### Exemple : la maison du propriétaire
+
+Ce qui est en place chez le propriétaire, toutes avec les entités ci-dessus et celles de
+lapinou-mqtt (« Parler », « Jouer un son », « Prendre une photo », « Veille »…) :
+
+| Automatisation ou script | Ce qu'il fait |
+|---|---|
+| Lapinou : photo sur alerte | à chaque événement sonore, le lapin prend une photo ; le téléphone reçoit la photo, le texte entendu et le lien de l'enregistrement (au plus toutes les 2 min) |
+| Lapinou : armement automatique de la surveillance | armée quand le téléphone a quitté la maison et que Frigate ne voit personne au salon depuis 15 min ; désarmée au retour |
+| Lapinou : annonce du gel | de 23 h à 8 h, le lapin annonce un risque de gel sous 3 °C dehors (une fois par nuit) |
+| Lapinou : personne dehors la nuit | de 23 h à 6 h, Frigate voit une personne dehors : le lapin l'annonce, le téléphone est prévenu |
+| Lapinou : annonce de la pluie | chaque heure de 7 h à 21 h, de la pluie prévue dans les 3 h : le lapin l'annonce (au plus toutes les 6 h) |
+| Lapinou : briefing au réveil, script « briefing du matin » | à la sortie de veille entre 5 h et 11 h (une fois par jour) : date, température dehors, météo du jour, pluie et gel |
+| Lapinou : badges, scripts « radio » et « mode nuit » | les badges du lapin appellent Home Assistant (voir ci-dessous) |
+
+Un badge qui commande Home Assistant : sur la page du lapin (Badges), apprendre le badge puis
+lui donner l'action « requête URL » vers un webhook de Home Assistant,
+`http://<home-assistant>:8123/api/webhook/lapinou_badge_radio` (radio dans la chambre et sur le
+lapin, ou arrêt si elle joue), `…/lapinou_badge_nuit` (radio coupée, « Bonne nuit », le lapin
+s'endort) ou `…/lapinou_badge_briefing`. Le badge a une action : le lapin joue son petit son au
+lieu de dire qu'il ne connaît pas l'objet. Les webhooks n'acceptent que le réseau local.
 
 Ces configurations ont été vérifiées avec les schémas de découverte de Home Assistant 2026.11.1.
 

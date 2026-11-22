@@ -12,6 +12,7 @@ gardent leur propre licence.
 |---|---|---|---|
 | Parakeet TDT 0.6B v3 (int8, sherpa-onnx) | transcription (serveur, mot d'activation par transcription) | **CC-BY-4.0** | `docs/app-server.md` (« Parakeet v3 is under CC-BY-4.0 »), `server/lapinou/voice/models.py` |
 | Silero VAD | détection de parole | **MIT** | `docs/app-server.md` (« Silero VAD under MIT ») |
+| CED mini (int8, sherpa-onnx), noms des sons d'AudioSet | reconnaissance des sons de la surveillance | **Apache-2.0** (CED, RicherMans/CED) ; ontologie AudioSet **CC BY 4.0** | `server/lapinou/voice/sounds.py`, `server/lapinou/voice/models.py` |
 | Piper (`piper-tts`, le programme) | synthèse vocale, dans un venv séparé jamais importé par le serveur (R30) | **GPL-3.0-or-later** | `server/lapinou/voice/tts.py`, `docs/lapinou/mesures.md` |
 | Voix Piper `fr_FR-siwis-medium` (voix par défaut ; aussi le son « pas de serveur » du lapin) | voix de Lapinou | **CC BY 4.0** (données SIWIS) | `server/lapinou/voice/tts.py`, `README.md`, `server/tools/train_wakeword/README.md` |
 | Autres voix Piper | — | celle du jeu de données de la voix : CC BY ou **CC BY-SA** selon la voix (`fr_FR-upmc-medium` : CC BY-SA 4.0, donc **non retenue**) ; voir le `MODEL_CARD` de chaque voix | `server/tools/train_wakeword/README.md` |

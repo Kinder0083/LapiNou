@@ -291,6 +291,8 @@ class SurveillanceConfig(_Section):
     keep_days: int = Field(default=7, ge=1, le=365)
     keep_max: int = Field(default=500, ge=1, le=100000)
     transcribe: bool = True  # ce qui a été dit, quand une voix a été entendue
+    classify: bool = True  # les sons reconnus (verre brisé, alarme, chien...), modèle CED mini
+    classify_min_prob: float = Field(default=0.3, gt=0, lt=1)  # probabilité d'un son retenu
 
     @model_validator(mode="after")
     def _pre_inside_clip(self):

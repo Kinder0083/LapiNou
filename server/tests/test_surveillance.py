@@ -263,12 +263,12 @@ class FakeClient:
         return values[-1] if values else None
 
 
-def make_hub(tmp_path, client, *, vad=None, transcriber=None, settings=None):
+def make_hub(tmp_path, client, *, vad=None, transcriber=None, settings=None, tagger=None):
     settings = settings or Settings.model_validate({"mqtt": {"host": "broker.test"}})
     mqtt = SurveillanceMqtt.from_settings(settings, client_factory=lambda: client)
     return Surveillance(settings.surveillance, mqtt, tmp_path / "surveillance",
                         "http://srv.test:8080", make_vad=vad, transcriber=transcriber,
-                        clock=lambda: T0)
+                        tagger=tagger, clock=lambda: T0)
 
 
 async def until(cond, timeout=5.0):
@@ -383,6 +383,61 @@ async def test_a_clip_with_a_voice_is_saved_transcribed_and_announced(tmp_path):
     assert hub.store.path(token) is not None
     assert transcriber.calls == 1
     await hub.close()
+
+
+class FakeTagger:
+    def __init__(self, tags=None, fail=False):
+        self.calls = 0
+        self._tags = tags or []
+        self._fail = fail
+
+    def tags(self, samples):
+        self.calls += 1
+        assert len(samples) == 160000  # l'enregistrement entier, 10 s
+        if self._fail:
+            raise RuntimeError("modèle abîmé")
+        return self._tags
+
+
+async def noisy_clip_event(tmp_path, client, tagger, settings=None):
+    hub = make_hub(tmp_path, client, tagger=tagger, settings=settings)
+    await hub.start()
+    client.connect()
+    hub.add(RID)
+    client.message(f"lapinou/{RID}/surveillance/armed/set", "ON")
+    await until(lambda: client.last(f"lapinou/{RID}/surveillance/armed") == "ON")
+    for b in seconds(lambda: tone(-10), 1) + seconds(quiet, 11):
+        hub.feed(RID, b, False)
+    await until(lambda: client.last(f"lapinou/{RID}/surveillance/event") is not None)
+    await hub.close()
+    return json.loads(client.last(f"lapinou/{RID}/surveillance/event"))
+
+
+async def test_a_clip_gets_its_recognised_sounds_and_its_alert(tmp_path):
+    client = FakeClient()
+    tagger = FakeTagger([("Shatter", 0.7), ("Bark", 0.5), ("Speech", 0.1)])
+    event = await noisy_clip_event(tmp_path, client, tagger)
+    assert event["event_type"] == "bruit"
+    assert event["sons"] == ["verre brisé", "chien"]
+    assert event["alerte"] == "verre brisé"
+    assert tagger.calls == 1
+
+
+async def test_a_failing_tagger_leaves_the_event_without_sounds(tmp_path):
+    client = FakeClient()
+    event = await noisy_clip_event(tmp_path, client, FakeTagger(fail=True))
+    assert event["sons"] == [] and event["alerte"] == ""
+    assert event["enregistrement"].endswith(".wav")
+
+
+async def test_classify_off_never_calls_the_tagger(tmp_path):
+    client = FakeClient()
+    tagger = FakeTagger([("Shatter", 0.9)])
+    settings = Settings.model_validate({"mqtt": {"host": "broker.test"},
+                                        "surveillance": {"classify": False}})
+    event = await noisy_clip_event(tmp_path, client, tagger, settings)
+    assert tagger.calls == 0
+    assert event["sons"] == [] and event["alerte"] == ""
 
 
 async def test_without_mqtt_nothing_runs(tmp_path):

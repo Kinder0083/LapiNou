@@ -365,7 +365,19 @@ def _surveillance(settings: Settings, data_dir: Path | None, recogniser: Any) ->
             return speaking
 
     return Surveillance(settings.surveillance, mqtt, data_dir / "surveillance",
-                        base_url(settings), make_vad=make_vad, transcriber=recogniser)
+                        base_url(settings), make_vad=make_vad, transcriber=recogniser,
+                        tagger=_sound_tagger())
+
+
+def _sound_tagger() -> Any:
+    """La reconnaissance des sons, si son modèle est là (`models fetch`) ; sinon aucune."""
+    from .voice import sounds, vad
+
+    directory = vad.asr_server.MODELS
+    if not sounds.model_present(directory):
+        log.info("surveillance : pas de modèle de reconnaissance des sons dans %s", directory)
+        return None
+    return sounds.SoundTagger(directory)
 
 
 def main(argv: list[str] | None = None) -> None:
