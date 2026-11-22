@@ -261,6 +261,28 @@ daté (`2026-11-21_23-06-02_voix.wav`). Home Assistant ne supprime pas ces copie
           }}_{{ trigger.to_state.attributes.event_type }}.wav
 ```
 
+Pour que Home Assistant efface ses copies après quelques jours : il n'a pas d'action qui supprime
+un fichier, donc une commande dans `configuration.yaml` (puis redémarrer Home Assistant), une
+entrée numérique `input_number.lapinou_conservation_des_enregistrements` (1 à 90 jours, 7 par
+défaut) et une automatisation qui supprime chaque nuit les copies plus vieilles.
+
+```yaml
+shell_command:
+  lapinou_purge: "find /media/lapinou -type f -name '*.wav' -mmin +{{ (jours | int) * 1440 }} -delete"
+```
+
+```yaml
+- alias: "Lapinou : supprimer les vieux enregistrements"
+  mode: single
+  triggers:
+    - trigger: time
+      at: "03:00:00"
+  actions:
+    - action: shell_command.lapinou_purge
+      data:
+        jours: "{{ states('input_number.lapinou_conservation_des_enregistrements') | int(7) }}"
+```
+
 Ces configurations ont été vérifiées avec les schémas de découverte de Home Assistant 2026.11.1.
 
 ## D-Bus
